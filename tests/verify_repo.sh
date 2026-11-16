@@ -21,6 +21,8 @@ SHELL_SCRIPTS=(
   "${ROOT_DIR}/packages/nido-desktop-settings/files/usr/local/bin/nidoagent-quicklaunch"
   "${ROOT_DIR}/packages/nido-desktop-settings/files/etc/skel/.local/share/nautilus/scripts/Giao-cho-NidoAgent"
   "${ROOT_DIR}/packages/nido-hub/files/usr/bin/nido-hub"
+  "${ROOT_DIR}/packages/nidooffice-cli/DEBIAN/postinst"
+  "${ROOT_DIR}/packages/nidooffice-cli/files/usr/bin/nidooffice"
   "${ROOT_DIR}/iso-builder/build.sh"
   "${ROOT_DIR}/iso-builder/scripts/config.sh"
   "${ROOT_DIR}/iso-builder/scripts/utils.sh"
@@ -90,6 +92,7 @@ expected = [
     "nidoagent-cli_0.1.0_all.deb",
     "nido-desktop-settings_0.1.0_all.deb",
     "nido-hub_0.1.0_all.deb",
+    "nidooffice-cli_0.1.0_all.deb",
 ]
 
 def parse_ar(raw: bytes) -> dict[str, bytes]:
@@ -128,9 +131,9 @@ for fname in expected:
         names = [m.name for m in tf.getmembers()]
         leaked = [n for n in names if n.endswith("/.env") or n.endswith("/.env.local") or n == "./.env" or n == "./.env.local"]
         assert not leaked, f"{fname}: SECRET LEAKED: {leaked}"
-print("Audited all 4 .deb archives: valid ar format, zero secret files.")
+print("Audited all 5 .deb archives: valid ar format, zero secret files.")
 PY
-pass "Built and audited 4 .deb packages (zero secrets)"
+pass "Built and audited 5 .deb packages (zero secrets)"
 
 echo "=== 4. Static APT Repository Verification ==="
 python3 "${ROOT_DIR}/scripts/build_apt_repo.py" \
@@ -150,7 +153,7 @@ for suite in ("resolute", "noble"):
         pkg_gz = repo / "dists" / suite / "main" / f"binary-{arch}" / "Packages.gz"
         assert pkg_gz.is_file(), f"Missing {pkg_gz}"
         pkg_text = gzip.decompress(pkg_gz.read_bytes()).decode("utf-8")
-        for pkg in ("nidoai-gateway", "nidoagent-cli", "nido-desktop-settings", "nido-hub"):
+        for pkg in ("nidoai-gateway", "nidoagent-cli", "nido-desktop-settings", "nido-hub", "nidooffice-cli"):
             assert f"Package: {pkg}" in pkg_text, f"{pkg} missing in {suite}/{arch}"
         digest = hashlib.sha256(pkg_gz.read_bytes()).hexdigest()
         assert digest in rel_text, f"SHA256 mismatch for {pkg_gz} in Release"

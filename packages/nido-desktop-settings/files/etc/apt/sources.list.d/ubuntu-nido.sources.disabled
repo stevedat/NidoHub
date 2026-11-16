@@ -1,6 +1,6 @@
-# Ubuntu-Nido APT repository (enable once published and signed with /etc/apt/keyrings/ubuntu-nido.gpg)
+# Ubuntu-Nido APT repository
 Types: deb
-URIs: https://apt.nido-holdings.com
+URIs: https://ubuntu-nido-apt.pages.dev
 Suites: resolute
 Components: main
 Signed-By: /etc/apt/keyrings/ubuntu-nido.gpg

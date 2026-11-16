@@ -1,0 +1,16 @@
+#!/bin/sh
+set -e
+
+CLI_DIR="/usr/lib/nidooffice-cli"
+ENGINE="$CLI_DIR/genoffice.cjs"
+BUNDLE_URL="https://ubuntu-nido-apt.pages.dev/pool/main/n/nidooffice-cli-engine.tar.gz"
+
+# Download engine bundle if not already present
+if [ ! -f "$ENGINE" ] && command -v curl >/dev/null 2>&1; then
+  echo "Downloading GenOffice CLI engine..."
+  mkdir -p "$CLI_DIR"
+  curl -fsSL "$BUNDLE_URL" | tar xz -C "$CLI_DIR" 2>/dev/null || \
+    echo "Note: GenOffice engine not yet available. Set NIDOOFFICE_CLI_ENTRY manually."
+fi
+
+exit 0
