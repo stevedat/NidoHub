@@ -46,7 +46,7 @@ step_extract() {
           local tmp_layer="$WORK_DIR/tmp_layer_$$"
           rm -rf "$tmp_layer"
           unsquashfs -d "$tmp_layer" "$WORK_DIR/mnt/casper/$layer"
-          rsync -a --remove-source-files "$tmp_layer/" "$cache_dir/"
+          cp -a "$tmp_layer/." "$cache_dir/"
           rm -rf "$tmp_layer"
         fi
       done
