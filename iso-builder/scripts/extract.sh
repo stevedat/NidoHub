@@ -43,7 +43,11 @@ step_extract() {
       for layer in minimal.standard.squashfs minimal.standard.en.squashfs; do
         if [ -f "$WORK_DIR/mnt/casper/$layer" ]; then
           info "  → Merging Ubuntu layer: $layer"
-          unsquashfs -f -d "$cache_dir" "$WORK_DIR/mnt/casper/$layer"
+          local tmp_layer="$WORK_DIR/tmp_layer_$$"
+          rm -rf "$tmp_layer"
+          unsquashfs -d "$tmp_layer" "$WORK_DIR/mnt/casper/$layer"
+          rsync -a --remove-source-files "$tmp_layer/" "$cache_dir/"
+          rm -rf "$tmp_layer"
         fi
       done
       cat > "$layout_env" <<'LAYOUT'
