@@ -1,0 +1,13 @@
+#!/bin/sh
+set -eu
+
+for full_bin in \
+  "/opt/NidoAgent/resources/bin/nidoagent" \
+  "${HOME:-/root}/.local/share/nidoagent/bin/nidoagent"; do
+  if [ -x "$full_bin" ] && [ "${NIDOAGENT_STANDALONE:-0}" != "1" ]; then
+    exec "$full_bin" "$@"
+  fi
+done
+
+CLI_ENTRY="${NIDOAGENT_CLI_ENTRY:-/usr/lib/nidoagent-cli/cli.mjs}"
+exec node "$CLI_ENTRY" "$@"

@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "distro": "Ubuntu-Nido",
+  "release": "0.1.0",
+  "aptRepo": "https://apt.nido-holdings.com",
+  "editions": [
+    {
+      "id": "core",
+      "name": "Ubuntu-Nido Core",
+      "status": "installed",
+      "packages": ["nidoai-gateway", "nidoagent-cli", "nido-desktop-settings", "fcitx5-lotus"],
+      "description": "Ubuntu-Nido desktop core with Sen Viet input and NidoAgent."
+    }
+  ]
+}

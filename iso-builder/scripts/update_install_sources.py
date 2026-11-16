@@ -1,0 +1,161 @@
+#!/usr/bin/env python3
+"""Update casper/install-sources.yaml after remastering Ubuntu 24.04/26.04 ISOs.
+
+When Ubuntu-Nido flattens layered squashfs images (`minimal.squashfs` +
+`minimal.standard*.squashfs`) into one remastered `minimal.squashfs`, Subiquity
+checks `casper/install-sources.yaml` for exact `size` (bytes) and layer paths.
+This pure-Python helper updates `size` and removes superseded layered entries
+without requiring third-party YAML packages.
+"""
+
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+
+
+def split_top_level_entries(yaml_text: str) -> tuple[list[str], list[list[str]]]:
+    """Split a top-level YAML list (`- ...`) into header lines and entry blocks."""
+    header: list[str] = []
+    entries: list[list[str]] = []
+    current: list[str] | None = None
+
+    for raw_line in yaml_text.splitlines():
+        if raw_line.startswith("- "):
+            if current is not None:
+                entries.append(current)
+            current = [raw_line]
+        elif current is None:
+            header.append(raw_line)
+        else:
+            current.append(raw_line)
+
+    if current is not None:
+        entries.append(current)
+
+    return header, entries
+
+
+def _entry_field(block: list[str], key: str) -> str | None:
+    for idx, line in enumerate(block):
+        stripped = line[2:] if idx == 0 and line.startswith("- ") else line.lstrip()
+        if idx > 0 and line.startswith("    "):
+            continue
+        if stripped.startswith(f"{key}:"):
+            return stripped.split(":", 1)[1].strip().strip("'\"")
+    return None
+
+
+def _set_top_field(block: list[str], key: str, value: str) -> list[str]:
+    out: list[str] = []
+    replaced = False
+    for idx, line in enumerate(block):
+        if idx == 0 and line.startswith("- "):
+            prefix = "- "
+            content = line[2:]
+        elif not line.startswith("    "):
+            prefix = "  "
+            content = line.lstrip()
+        else:
+            out.append(line)
+            continue
+
+        if content.startswith(f"{key}:"):
+            out.append(f"{prefix}{key}: {value}")
+            replaced = True
+        else:
+            out.append(line)
+
+    if not replaced:
+        out.append(f"  {key}: {value}")
+    return out
+
+
+def _set_name_en(block: list[str], new_name: str) -> list[str]:
+    out: list[str] = []
+    in_name = False
+    for idx, line in enumerate(block):
+        stripped = line[2:] if idx == 0 and line.startswith("- ") else line.lstrip()
+        is_top = idx == 0 or not line.startswith("    ")
+        if is_top:
+            in_name = stripped.startswith("name:")
+            out.append(line)
+        elif in_name and stripped.startswith("en:"):
+            indent = line[: len(line) - len(line.lstrip())]
+            out.append(f"{indent}en: {new_name}")
+        else:
+            out.append(line)
+    return out
+
+
+def update_install_sources(
+    yaml_text: str,
+    squashfs_filename: str,
+    squashfs_size: int,
+    display_name: str = "Ubuntu-Nido Desktop",
+) -> str:
+    """Update install-sources.yaml for a flattened remastered squashfs image."""
+    header, entries = split_top_level_entries(yaml_text)
+    if not entries:
+        return (
+            f"- default: true\n"
+            f"  id: ubuntu-nido-desktop\n"
+            f"  name:\n"
+            f"    en: {display_name}\n"
+            f"  path: {squashfs_filename}\n"
+            f"  size: {squashfs_size}\n"
+            f"  type: fsimage\n"
+        )
+
+    kept: list[list[str]] = []
+    updated_primary = False
+
+    for block in entries:
+        path_val = _entry_field(block, "path") or ""
+        type_val = _entry_field(block, "type") or ""
+
+        # Drop secondary stacked layers that were flattened into minimal.squashfs
+        if path_val != squashfs_filename and type_val == "fsimage-layered":
+            continue
+
+        if path_val == squashfs_filename or not updated_primary:
+            block = _set_top_field(block, "path", squashfs_filename)
+            block = _set_top_field(block, "size", str(squashfs_size))
+            block = _set_top_field(block, "type", "fsimage")
+            block = _set_top_field(block, "default", "true")
+            block = _set_name_en(block, display_name)
+            updated_primary = True
+        kept.append(block)
+
+    lines = list(header)
+    for block in kept:
+        lines.extend(block)
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Update casper/install-sources.yaml sizes.")
+    parser.add_argument("--yaml", required=True, type=Path, help="Path to install-sources.yaml")
+    parser.add_argument("--squashfs", required=True, type=Path, help="Path to remastered squashfs")
+    parser.add_argument("--name", default="Ubuntu-Nido Desktop", help="English selection name")
+    args = parser.parse_args()
+
+    yaml_path = args.yaml.resolve()
+    squashfs_path = args.squashfs.resolve()
+    if not squashfs_path.is_file():
+        raise FileNotFoundError(f"SquashFS file not found: {squashfs_path}")
+
+    size_bytes = squashfs_path.stat().st_size
+    original = yaml_path.read_text(encoding="utf-8") if yaml_path.is_file() else ""
+    updated = update_install_sources(
+        original,
+        squashfs_filename=squashfs_path.name,
+        squashfs_size=size_bytes,
+        display_name=args.name,
+    )
+    yaml_path.write_text(updated, encoding="utf-8")
+    print(f"Updated {yaml_path} ({squashfs_path.name} -> {size_bytes} bytes)")
+
+
+if __name__ == "__main__":
+    main()

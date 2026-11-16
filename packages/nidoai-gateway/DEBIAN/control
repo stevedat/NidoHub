@@ -1,0 +1,10 @@
+Package: nidoai-gateway
+Version: 0.1.0
+Section: utils
+Priority: optional
+Architecture: all
+Depends: nodejs (>= 22.6.0) | nodejs
+Maintainer: Nido Holdings <support@nido-holdings.com>
+Homepage: https://nido-holdings.com
+Description: Local AI Gateway for Ubuntu-Nido
+ OpenAI-compatible loopback gateway with user daemon integration.

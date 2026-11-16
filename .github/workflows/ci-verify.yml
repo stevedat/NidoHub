@@ -1,0 +1,35 @@
+name: Verify NidoHub Packages & Scripts
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install verification tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck dpkg-dev
+
+      - name: Run full verification suite
+        run: make check
+
+      - name: Test real dpkg installation on Ubuntu
+        run: |
+          sudo apt-get install -y ./packages/dist/nidoai-gateway_0.1.0_all.deb \
+            ./packages/dist/nidoagent-cli_0.1.0_all.deb \
+            ./packages/dist/nido-desktop-settings_0.1.0_all.deb
+          nidoagent --version
+          nidoai doctor

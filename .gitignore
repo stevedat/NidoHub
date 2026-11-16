@@ -1,0 +1,54 @@
+# Build & Release Staging Artifacts
+build/
+dist/
+.build/
+Binaries/
+iso-builder/build/
+packages/dist/
+packages/vendor/
+packages/nidoai-gateway/stage/
+apt-repo/
+
+# Compiled Binaries & Installers (NEVER commit to public git tree)
+*.app/
+*.dSYM/
+*.dmg
+*.zip
+*.tar.gz
+*.pkg
+*.exe
+*.msi
+*.deb
+*.rpm
+*.AppImage
+*.iso
+*.iso.sha256
+
+# Signing Certificates & Provisioning Profiles (NEVER commit)
+*.provisionprofile
+*.mobileprovision
+*.p12
+*.cer
+*.pem
+*.key
+
+# Generated Local Branding PNGs & Checksums
+iso-builder/config/includes.chroot/usr/share/backgrounds/ubuntu-nido/*.png
+*.log
+SHA256SUMS
+SHA256SUMS*.txt
+
+# Secrets & Local Env
+.env
+.env.*
+!.env.example
+
+# Internal Agent Instructions (local only, never publish)
+AGENTS.md
+CLAUDE.md
+
+# OS & Toolchain Metadata
+.DS_Store
+__pycache__/
+*.pyc
+node_modules/

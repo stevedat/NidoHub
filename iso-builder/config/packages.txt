@@ -1,0 +1,18 @@
+# Base utilities required for Ubuntu-Nido
+ca-certificates
+curl
+fcitx5
+fcitx5-config-qt
+fcitx5-frontend-gtk3
+fcitx5-frontend-gtk4
+fcitx5-frontend-qt5
+fcitx5-frontend-qt6
+git
+gnome-terminal
+im-config
+jq
+libnotify-bin
+python3
+unzip
+wget
+zenity

@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+declare -a SELECTED_FILES=()
+
+if [[ -n "${NAUTILUS_SCRIPT_SELECTED_FILE_PATHS:-}" ]]; then
+  while IFS= read -r line; do
+    [[ -n "$line" ]] && SELECTED_FILES+=("$line")
+  done <<< "$NAUTILUS_SCRIPT_SELECTED_FILE_PATHS"
+elif [[ "$#" -gt 0 ]]; then
+  SELECTED_FILES=("$@")
+fi
+
+if [[ "${#SELECTED_FILES[@]}" -eq 0 ]]; then
+  command -v zenity >/dev/null 2>&1 && zenity --error --title="NidoAgent" --text="Không có tệp nào được chọn."
+  exit 1
+fi
+
+DEFAULT_PROMPT="Tóm tắt nội dung và trích xuất các thông tin quan trọng từ tệp này."
+PROMPT="$DEFAULT_PROMPT"
+
+if command -v zenity >/dev/null 2>&1; then
+  PROMPT="$(zenity --entry \
+    --title="Giao việc cho NidoAgent" \
+    --text="Đã chọn ${#SELECTED_FILES[@]} tệp. Nhập yêu cầu xử lý:" \
+    --entry-text="$DEFAULT_PROMPT" \
+    --width=520)" || exit 0
+fi
+
+declare -a FILE_ARGS=()
+for f in "${SELECTED_FILES[@]}"; do
+  if [[ -f "$f" ]]; then
+    FILE_ARGS+=("--file" "$f")
+  fi
+done
+
+if [[ "${#FILE_ARGS[@]}" -eq 0 ]]; then
+  command -v zenity >/dev/null 2>&1 && zenity --warning --title="NidoAgent" --text="Chỉ hỗ trợ phân tích trực tiếp tệp tin thông thường."
+  exit 0
+fi
+
+if OUTPUT="$(nidoagent ask "${FILE_ARGS[@]}" "$PROMPT" 2>&1)"; then
+  if command -v zenity >/dev/null 2>&1; then
+    zenity --text-info \
+      --title="Kết quả từ NidoAgent" \
+      --width=720 --height=480 \
+      <<< "$OUTPUT"
+  else
+    printf '%s\n' "$OUTPUT"
+  fi
+else
+  if command -v zenity >/dev/null 2>&1; then
+    zenity --error --title="NidoAgent gặp lỗi" --text="$OUTPUT" --width=500
+  else
+    printf '%s\n' "$OUTPUT" >&2
+  fi
+  exit 1
+fi

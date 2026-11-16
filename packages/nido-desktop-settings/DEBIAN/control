@@ -1,0 +1,11 @@
+Package: nido-desktop-settings
+Version: 0.1.0
+Section: misc
+Priority: optional
+Architecture: all
+Depends: nidoagent-cli (>= 0.1.0)
+Recommends: zenity, libnotify-bin
+Maintainer: Nido Holdings <support@nido-holdings.com>
+Homepage: https://nido-holdings.com
+Description: Ubuntu-Nido desktop integration and setup assistant
+ Desktop shortcuts, file manager integration, and first-login AI setup.

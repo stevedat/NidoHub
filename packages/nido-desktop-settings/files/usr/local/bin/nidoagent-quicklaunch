@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if ! command -v zenity >/dev/null 2>&1; then
+  if command -v gnome-terminal >/dev/null 2>&1; then
+    exec gnome-terminal -- nidoagent chat
+  fi
+  exec nidoagent chat
+fi
+
+PROMPT="$(zenity --entry \
+  --title="NidoAgent QuickLaunch" \
+  --text="Nhập yêu cầu cho NidoAgent (hoặc để trống để mở Terminal Chat):" \
+  --width=560)" || exit 0
+
+if [[ -z "${PROMPT// }" ]]; then
+  if command -v gnome-terminal >/dev/null 2>&1; then
+    exec gnome-terminal -- nidoagent chat
+  elif command -v x-terminal-emulator >/dev/null 2>&1; then
+    exec x-terminal-emulator -e nidoagent chat
+  fi
+  exit 0
+fi
+
+if OUTPUT="$(nidoagent ask "$PROMPT" 2>&1)"; then
+  zenity --text-info \
+    --title="NidoAgent — Phản hồi" \
+    --width=720 --height=480 \
+    <<< "$OUTPUT"
+else
+  zenity --error \
+    --title="NidoAgent — Lỗi" \
+    --text="$OUTPUT" \
+    --width=520
+  exit 1
+fi

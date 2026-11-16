@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+# Hook 0900: Install Ubuntu-Nido Plymouth boot splash theme and update initramfs
+set -euo pipefail
+
+THEME_DIR="/usr/share/plymouth/themes/ubuntu-nido"
+mkdir -p "$THEME_DIR"
+rm -f "$THEME_DIR"/*.png
+
+if [ -d /usr/share/backgrounds/ubuntu-nido ]; then
+  cp -a /usr/share/backgrounds/ubuntu-nido/*.png "$THEME_DIR/" 2>/dev/null || true
+fi
+
+if [ -f "$THEME_DIR/watermark.png" ]; then
+  for i in $(seq 1 36); do
+    frame=$(printf 'animation-%04d.png' "$i")
+    [ -f "$THEME_DIR/$frame" ] || cp "$THEME_DIR/watermark.png" "$THEME_DIR/$frame"
+  done
+  for i in $(seq 1 30); do
+    frame=$(printf 'throbber-%04d.png' "$i")
+    [ -f "$THEME_DIR/$frame" ] || cp "$THEME_DIR/watermark.png" "$THEME_DIR/$frame"
+  done
+fi
+
+cat > "$THEME_DIR/ubuntu-nido.plymouth" <<'PLY'
+[Plymouth Theme]
+Name=Ubuntu-Nido
+Description=Ubuntu-Nido AI-Native Desktop boot splash
+ModuleName=two-step
+
+[two-step]
+Font=Cantarell 12
+TitleFont=Cantarell Light 30
+ImageDir=/usr/share/plymouth/themes/ubuntu-nido
+DialogHorizontalAlignment=.5
+DialogVerticalAlignment=.382
+TitleHorizontalAlignment=.5
+TitleVerticalAlignment=.382
+HorizontalAlignment=.5
+VerticalAlignment=.5
+WatermarkHorizontalAlignment=.5
+WatermarkVerticalAlignment=-1
+Transition=none
+TransitionDuration=0.0
+BackgroundStartColor=0x000000
+BackgroundEndColor=0x000000
+ProgressBarBackgroundColor=0x374151
+ProgressBarForegroundColor=0xf59e0b
+MessageBelowAnimation=true
+
+[boot-up]
+UseEndAnimation=false
+
+[shutdown]
+UseEndAnimation=false
+
+[reboot]
+UseEndAnimation=false
+
+[updates]
+SuppressMessages=true
+ProgressBarShowPercentComplete=true
+UseProgressBar=true
+Title=Installing Ubuntu-Nido Updates...
+SubTitle=Do not turn off your computer
+PLY
+
+rm -f /usr/share/plymouth/themes/default.plymouth
+ln -s "$THEME_DIR/ubuntu-nido.plymouth" /usr/share/plymouth/themes/default.plymouth
+
+update-alternatives --install \
+  /usr/share/plymouth/themes/default.plymouth \
+  default.plymouth \
+  "$THEME_DIR/ubuntu-nido.plymouth" \
+  300 >/dev/null 2>&1 || true
+update-alternatives --set default.plymouth "$THEME_DIR/ubuntu-nido.plymouth" >/dev/null 2>&1 || true
+
+if command -v update-initramfs >/dev/null 2>&1; then
+  update-initramfs -u -k all || true
+fi
+
+echo "[Ubuntu-Nido] Plymouth hook completed."

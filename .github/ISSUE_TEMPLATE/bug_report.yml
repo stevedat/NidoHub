@@ -1,0 +1,35 @@
+name: Bug Report
+description: Report a bug in Ubuntu-Nido ISO, Sen Việt IM, NidoAI Gateway, or NidoAgent CLI
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: Ubuntu-Nido Version
+      placeholder: "e.g. 0.1.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: arch
+    attributes:
+      label: Architecture
+      options:
+        - amd64 (x86_64)
+        - arm64 (aarch64)
+    validations:
+      required: true
+  - type: input
+    id: hardware
+    attributes:
+      label: Hardware / VM Model
+      placeholder: "e.g. ThinkPad T14 / Apple Silicon UTM VM / QEMU"
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: Describe the bug and steps to reproduce
+      placeholder: "What happened? Include output of `nidoagent status` or `cat /etc/nido-release` if relevant."
+    validations:
+      required: true

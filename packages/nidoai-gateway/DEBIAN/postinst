@@ -1,0 +1,15 @@
+#!/bin/sh
+set -e
+
+# Enable nidoai-gateway user service globally for new & existing desktop sessions
+if [ -d /etc/systemd/user ] && [ -f /usr/lib/systemd/user/nidoai-gateway.service ]; then
+  mkdir -p /etc/systemd/user/default.target.wants
+  ln -sf /usr/lib/systemd/user/nidoai-gateway.service \
+    /etc/systemd/user/default.target.wants/nidoai-gateway.service || true
+fi
+
+if command -v systemctl >/dev/null 2>&1; then
+  systemctl --global daemon-reload >/dev/null 2>&1 || true
+fi
+
+exit 0

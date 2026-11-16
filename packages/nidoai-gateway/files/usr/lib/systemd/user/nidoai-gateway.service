@@ -1,0 +1,16 @@
+[Unit]
+Description=NidoAI Local AI Gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStartPre=/bin/mkdir -p %h/.nidoai
+WorkingDirectory=%h/.nidoai
+Environment=NODE_NO_WARNINGS=1
+ExecStart=/usr/bin/nidoai serve
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,23 @@
+name: Feature Request
+description: Suggest an improvement for Ubuntu-Nido or NidoHub
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - ISO Builder / GNOME Desktop
+        - Sen Việt (VieLotusIM / fcitx5-lotus)
+        - NidoAI Gateway
+        - NidoAgent CLI
+    validations:
+      required: true
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary & Use Case
+      description: Describe the workflow you want supported and why it belongs in Ubuntu-Nido.
+    validations:
+      required: true

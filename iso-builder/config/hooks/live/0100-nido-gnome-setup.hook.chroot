@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+# Hook 0100: Ubuntu-Nido GNOME branding, Vietnamese locale, fonts, cursor, and release metadata
+set -euo pipefail
+export DEBIAN_FRONTEND=noninteractive
+
+NIDO_VERSION="${NIDO_VERSION:-0.1.0}"
+UBUNTU_CODENAME="${UBUNTU_CODENAME:-resolute}"
+
+# Read upstream UBUNTU_CODENAME if present in base rootfs
+if [ -f /etc/os-release ]; then
+  # shellcheck disable=SC1091
+  . /etc/os-release || true
+  UBUNTU_CODENAME="${UBUNTU_CODENAME:-resolute}"
+fi
+
+echo "[Ubuntu-Nido] Configuring Vietnamese locale & Asia/Ho_Chi_Minh timezone..."
+sed -i 's/^# *vi_VN.UTF-8 UTF-8/vi_VN.UTF-8 UTF-8/' /etc/locale.gen 2>/dev/null || true
+locale-gen vi_VN.UTF-8 en_US.UTF-8 >/dev/null 2>&1 || locale-gen >/dev/null 2>&1 || true
+
+cat > /etc/default/locale <<'LOCALE'
+LANG=vi_VN.UTF-8
+LANGUAGE=vi_VN:en
+LOCALE
+
+ln -snf /usr/share/zoneinfo/Asia/Ho_Chi_Minh /etc/localtime
+printf 'Asia/Ho_Chi_Minh\n' > /etc/timezone
+
+echo "[Ubuntu-Nido] Installing Be Vietnam Pro font & Bibata cursor (with offline resilience)..."
+mkdir -p /usr/share/fonts/truetype/be-vietnam-pro
+if wget -q --timeout=15 -O /tmp/be-vietnam-pro.zip "https://github.com/bettergui/BeVietnamPro/archive/refs/heads/master.zip"; then
+  if file /tmp/be-vietnam-pro.zip | grep -q "Zip"; then
+    unzip -qo /tmp/be-vietnam-pro.zip -d /tmp/be-vietnam-pro-extract/
+    find /tmp/be-vietnam-pro-extract/ -name "*.ttf" -exec cp {} /usr/share/fonts/truetype/be-vietnam-pro/ \;
+    fc-cache -f >/dev/null 2>&1 || true
+  fi
+  rm -rf /tmp/be-vietnam-pro.zip /tmp/be-vietnam-pro-extract
+fi
+
+BIBATA_VER="2.0.6"
+if wget -q --timeout=15 -O /tmp/bibata.tar.xz "https://github.com/ful1e5/Bibata_Cursor/releases/download/v${BIBATA_VER}/Bibata-Modern-Classic.tar.xz"; then
+  tar -xf /tmp/bibata.tar.xz -C /usr/share/icons/ || true
+  rm -f /tmp/bibata.tar.xz
+fi
+
+echo "[Ubuntu-Nido] Writing Ubuntu-Nido release identity..."
+cat > /etc/nido-release <<NIDOREL
+NAME="Ubuntu-Nido"
+VERSION="${NIDO_VERSION}"
+VERSION_ID="${NIDO_VERSION}"
+UBUNTU_CODENAME="${UBUNTU_CODENAME}"
+ID=ubuntu-nido
+ID_LIKE="ubuntu debian"
+PRETTY_NAME="Ubuntu-Nido ${NIDO_VERSION} (Ubuntu ${UBUNTU_CODENAME})"
+HOME_URL="https://nido-holdings.com"
+NIDOREL
+
+mkdir -p /usr/lib
+cat > /usr/lib/os-release <<OSREL
+PRETTY_NAME="Ubuntu-Nido ${NIDO_VERSION} LTS"
+NAME="Ubuntu-Nido"
+VERSION_ID="${NIDO_VERSION}"
+VERSION="${NIDO_VERSION} (AI-Native Desktop)"
+VERSION_CODENAME=${UBUNTU_CODENAME}
+ID=ubuntu-nido
+ID_LIKE="ubuntu debian"
+HOME_URL="https://nido-holdings.com"
+SUPPORT_URL="https://nido-holdings.com"
+BUG_REPORT_URL="https://github.com/stevedat/NidoHub/issues"
+UBUNTU_CODENAME=${UBUNTU_CODENAME}
+OSREL
+ln -sf ../usr/lib/os-release /etc/os-release
+
+if [ -d /etc/dconf/db/local.d ]; then
+  dconf update >/dev/null 2>&1 || true
+fi
+
+echo "[Ubuntu-Nido] Hook 0100 completed."

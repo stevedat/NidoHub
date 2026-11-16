@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Hook 0200: Ensure Node.js >= 22.6 and wire NidoAI Gateway + NidoAgent CLI in rootfs
+set -euo pipefail
+export DEBIAN_FRONTEND=noninteractive
+
+NEED_NODE_INSTALL=0
+if ! command -v node >/dev/null 2>&1; then
+  NEED_NODE_INSTALL=1
+else
+  NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
+  if [ "$NODE_MAJOR" -lt 22 ]; then
+    NEED_NODE_INSTALL=1
+  fi
+fi
+
+if [ "$NEED_NODE_INSTALL" -eq 1 ]; then
+  echo "[Ubuntu-Nido] Installing Node.js 22 LTS from NodeSource..."
+  curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+  apt-get install -y --no-install-recommends nodejs
+fi
+
+if [ -f /usr/lib/systemd/user/nidoai-gateway.service ]; then
+  mkdir -p /etc/systemd/user/default.target.wants
+  ln -sf /usr/lib/systemd/user/nidoai-gateway.service \
+    /etc/systemd/user/default.target.wants/nidoai-gateway.service
+fi
+
+nidoagent --version
+echo "[Ubuntu-Nido] NidoAI stack hook completed."
