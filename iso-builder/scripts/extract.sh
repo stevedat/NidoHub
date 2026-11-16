@@ -46,7 +46,16 @@ step_extract() {
           local tmp_layer="$WORK_DIR/tmp_layer_$$"
           rm -rf "$tmp_layer"
           unsquashfs -d "$tmp_layer" "$WORK_DIR/mnt/casper/$layer"
-          cp -a "$tmp_layer/." "$cache_dir/"
+          # Use rsync to merge; ignore partial-transfer warnings (exit 23)
+          # caused by directory-vs-symlink conflicts in locale-langpack overlays
+          rsync -a "$tmp_layer/" "$cache_dir/" || {
+            local rc=$?
+            if [ "$rc" -eq 23 ]; then
+              warn "rsync exit 23 (partial transfer) on layer $layer — non-critical, continuing"
+            else
+              error "rsync failed with exit code $rc on layer $layer"
+            fi
+          }
           rm -rf "$tmp_layer"
         fi
       done
