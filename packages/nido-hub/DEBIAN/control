@@ -1,0 +1,12 @@
+Package: nido-hub
+Version: 0.1.0
+Section: admin
+Priority: optional
+Architecture: all
+Depends: python3, nidoagent-cli (>= 0.1.0)
+Recommends: python3-gi, gir1.2-gtk-4.0, gir1.2-adw-1, policykit-1 | pkexec
+Maintainer: Nido Holdings <support@nido-holdings.com>
+Homepage: https://nido-holdings.com
+Description: Ubuntu-Nido Welcome, AI Setup and Application Hub
+ Native GTK4/Libadwaita desktop hub for configuring NidoAI keys, managing
+ Ubuntu-Nido packages via APT, and running NidoAgent document workflows.

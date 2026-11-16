@@ -19,6 +19,13 @@ if [[ -z "${DISPLAY:-}" && -z "${WAYLAND_DISPLAY:-}" ]]; then
   exit 0
 fi
 
+if command -v nido-hub >/dev/null 2>&1 && python3 -c 'import gi; gi.require_version("Gtk", "4.0"); gi.require_version("Adw", "1")' >/dev/null 2>&1; then
+  if [[ "$FORCE" -eq 1 ]]; then
+    exec nido-hub --page welcome
+  fi
+  exec nido-hub --page welcome --first-login
+fi
+
 if ! command -v zenity >/dev/null 2>&1; then
   exit 0
 fi

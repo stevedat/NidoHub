@@ -7,12 +7,16 @@ fcitx5-frontend-gtk3
 fcitx5-frontend-gtk4
 fcitx5-frontend-qt5
 fcitx5-frontend-qt6
+gir1.2-adw-1
+gir1.2-gtk-4.0
 git
 gnome-terminal
 im-config
 jq
 libnotify-bin
+pkexec
 python3
+python3-gi
 unzip
 wget
 zenity

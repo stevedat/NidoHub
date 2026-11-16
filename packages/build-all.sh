@@ -52,7 +52,8 @@ chmod 755 \
   "${SCRIPT_DIR}/nido-desktop-settings/DEBIAN/postinst" \
   "${SCRIPT_DIR}/nido-desktop-settings/files/usr/local/bin/nido-welcome" \
   "${SCRIPT_DIR}/nido-desktop-settings/files/usr/local/bin/nidoagent-quicklaunch" \
-  "${SCRIPT_DIR}/nido-desktop-settings/files/etc/skel/.local/share/nautilus/scripts/Giao-cho-NidoAgent"
+  "${SCRIPT_DIR}/nido-desktop-settings/files/etc/skel/.local/share/nautilus/scripts/Giao-cho-NidoAgent" \
+  "${SCRIPT_DIR}/nido-hub/files/usr/bin/nido-hub"
 
 python3 "$DEB_BUILDER" \
   --source-dir "${SCRIPT_DIR}/nidoai-gateway" \
@@ -66,6 +67,10 @@ python3 "$DEB_BUILDER" \
 python3 "$DEB_BUILDER" \
   --source-dir "${SCRIPT_DIR}/nido-desktop-settings" \
   --output "${DIST_DIR}/nido-desktop-settings_0.1.0_all.deb"
+
+python3 "$DEB_BUILDER" \
+  --source-dir "${SCRIPT_DIR}/nido-hub" \
+  --output "${DIST_DIR}/nido-hub_0.1.0_all.deb"
 
 if [[ -n "$VIELOTUS_BIN_DIR" && -d "$VIELOTUS_BIN_DIR" ]]; then
   mkdir -p "${SCRIPT_DIR}/vendor"

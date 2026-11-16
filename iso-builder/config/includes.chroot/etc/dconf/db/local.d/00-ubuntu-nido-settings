@@ -15,7 +15,7 @@ picture-uri='file:///usr/share/backgrounds/ubuntu-nido/wallpaper.png'
 picture-options='zoom'
 
 [org/gnome/shell]
-favorite-apps=['org.gnome.Nautilus.desktop', 'org.gnome.Terminal.desktop', 'nido-welcome.desktop', 'org.gnome.Settings.desktop']
+favorite-apps=['org.gnome.Nautilus.desktop', 'org.gnome.Terminal.desktop', 'com.nidoholdings.NidoHub.desktop', 'org.gnome.Settings.desktop']
 
 [org/gnome/desktop/wm/keybindings]
 switch-input-source=@as []

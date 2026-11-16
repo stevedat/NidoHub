@@ -2,14 +2,28 @@
   "schemaVersion": 1,
   "distro": "Ubuntu-Nido",
   "release": "0.1.0",
-  "aptRepo": "https://apt.nido-holdings.com",
+  "aptRepo": "https://ubuntu-nido-apt.pages.dev",
   "editions": [
     {
       "id": "core",
       "name": "Ubuntu-Nido Core",
-      "status": "installed",
-      "packages": ["nidoai-gateway", "nidoagent-cli", "nido-desktop-settings", "fcitx5-lotus"],
-      "description": "Ubuntu-Nido desktop core with Sen Viet input and NidoAgent."
+      "status": "available",
+      "packages": ["nidoai-gateway", "nidoagent-cli", "nido-hub", "nido-desktop-settings"],
+      "description": "Cổng AI cục bộ, công cụ điều phối NidoAgent và Trung tâm NidoHub."
+    },
+    {
+      "id": "office-cli",
+      "name": "NidoOffice CLI (genoffice)",
+      "status": "available",
+      "packages": ["nidooffice-cli"],
+      "description": "Đọc, tạo và biên tập tài liệu Word (.docx), Excel (.xlsx), Slide (.pptx), PDF."
+    },
+    {
+      "id": "sen-viet",
+      "name": "Bộ gõ Sen Việt (VieLotusIM)",
+      "status": "available",
+      "packages": ["fcitx5-lotus"],
+      "description": "Bộ gõ tiếng Việt Telex & VNI tốc độ cao cho GNOME Wayland & X11."
     }
   ]
 }

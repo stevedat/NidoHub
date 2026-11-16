@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+
+APP_ENTRY="${NIDOHUB_APP_ENTRY:-/usr/lib/nido-hub/app.py}"
+exec python3 "$APP_ENTRY" "$@"
