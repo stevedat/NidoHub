@@ -73,7 +73,9 @@ step_repack_squashfs() {
 }
 
 step_repack_iso() {
-  ensure_work_tree
+  if [ ! -d "$WORK_DIR/custom" ]; then
+    error "Missing $WORK_DIR/custom directory for ISO repack."
+  fi
 
   local source_iso=""
   [ -f "$WORK_DIR/source-iso.path" ] && source_iso="$(cat "$WORK_DIR/source-iso.path")"
@@ -127,6 +129,11 @@ sys.stdout.buffer.write(b"\0".join(t.encode() for t in out) + b"\0")
 
   xorriso "${xorriso_args[@]}" -output "$SCRIPT_DIR/$OUTPUT_ISO" .
   cd "$SCRIPT_DIR" || return 1
+
+  if [ "${CI:-}" = "true" ] && [ "${KEEP_BASE_ISO:-0}" != "1" ] && [ -n "$source_iso" ] && [ -f "$source_iso" ]; then
+    rm -f "$source_iso"
+    info "Removed base ISO after xorriso to free runner disk space."
+  fi
 }
 
 step_repack() {

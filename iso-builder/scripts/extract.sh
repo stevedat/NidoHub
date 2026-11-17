@@ -151,11 +151,6 @@ LAYOUT
     cp -a "$cache_dir" "$WORK_DIR/squashfs"
   else
     ok "Rootfs extracted directly to active work tree."
-    if [ "${CI:-}" = "true" ] && [ "${KEEP_BASE_ISO:-0}" != "1" ] && [ -f "$BASE_ISO" ]; then
-      rm -f "$BASE_ISO"
-      info "Removed base ISO on CI to reclaim disk space:"
-      df -h / || true
-    fi
   fi
   ok "Ready for customization."
 }
