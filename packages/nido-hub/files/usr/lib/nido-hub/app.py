@@ -33,11 +33,16 @@ class NidoHubBackend:
         home_dir: Path | None = None,
         catalog_path: Path | None = None,
     ) -> None:
-        self.home_dir = home_dir or Path(os.environ.get("HOME", str(Path.home())))
-        self.nidoai_dir = Path(os.environ.get("NIDOAI_HOME", str(self.home_dir / ".nidoai")))
-        self.config_dir = Path(
-            os.environ.get("XDG_CONFIG_HOME", str(self.home_dir / ".config"))
-        ) / "ubuntu-nido"
+        if home_dir is not None:
+            self.home_dir = home_dir
+            self.nidoai_dir = home_dir / ".nidoai"
+            self.config_dir = home_dir / ".config" / "ubuntu-nido"
+        else:
+            self.home_dir = Path(os.environ.get("HOME", str(Path.home())))
+            self.nidoai_dir = Path(os.environ.get("NIDOAI_HOME", str(self.home_dir / ".nidoai")))
+            self.config_dir = Path(
+                os.environ.get("XDG_CONFIG_HOME", str(self.home_dir / ".config"))
+            ) / "ubuntu-nido"
         self.catalog_path = catalog_path or Path(
             os.environ.get("NIDOHUB_CATALOG", "/etc/nido-hub/catalog.json")
         )
