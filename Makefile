@@ -37,6 +37,6 @@ docker-iso: assets packages
 	cd iso-builder && docker compose run --rm builder ./build.sh
 
 clean:
-	rm -rf packages/dist packages/nidoai-gateway/stage apt-repo
+	rm -rf packages/dist packages/*/stage apt-repo
 	rm -f iso-builder/config/includes.chroot/usr/share/backgrounds/ubuntu-nido/*.png
 	rm -rf iso-builder/build iso-builder/Ubuntu-Nido-*.iso

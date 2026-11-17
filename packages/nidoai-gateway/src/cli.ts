@@ -388,7 +388,7 @@ async function main(): Promise<void> {
         if (!backend.configured || !isAllowedUpstreamUrl(backend.baseUrl)) {
           sendJson(res, 503, {
             error: {
-              message: `Backend '${backend.kind}' is not configured or has an invalid upstream URL. Run nido-welcome.`,
+              message: `Chưa cấu hình khóa API cho nguồn '${backend.kind}'. Hãy mở Trung tâm NidoHub → Thiết lập AI để nhập khóa API hoặc chọn Local Ollama.`,
               type: 'backend_unconfigured',
             },
           });

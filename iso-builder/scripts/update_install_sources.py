@@ -14,17 +14,33 @@ import argparse
 from pathlib import Path
 
 
-def split_top_level_entries(yaml_text: str) -> tuple[list[str], list[list[str]]]:
-    """Split a top-level YAML list (`- ...`) into header lines and entry blocks."""
+def split_yaml_document(yaml_text: str) -> tuple[list[str], list[list[str]], list[str]]:
+    """Split YAML into header lines, top-level `- ...` entry blocks, and trailing footer lines."""
     header: list[str] = []
     entries: list[list[str]] = []
+    footer: list[str] = []
     current: list[str] | None = None
+    in_footer = False
 
     for raw_line in yaml_text.splitlines():
+        is_top_level_mapping = (
+            bool(raw_line)
+            and not raw_line[0].isspace()
+            and not raw_line.startswith("- ")
+            and not raw_line.startswith("#")
+        )
         if raw_line.startswith("- "):
+            in_footer = False
             if current is not None:
                 entries.append(current)
             current = [raw_line]
+        elif current is not None and is_top_level_mapping:
+            entries.append(current)
+            current = None
+            in_footer = True
+            footer.append(raw_line)
+        elif in_footer:
+            footer.append(raw_line)
         elif current is None:
             header.append(raw_line)
         else:
@@ -33,6 +49,12 @@ def split_top_level_entries(yaml_text: str) -> tuple[list[str], list[list[str]]]
     if current is not None:
         entries.append(current)
 
+    return header, entries, footer
+
+
+def split_top_level_entries(yaml_text: str) -> tuple[list[str], list[list[str]]]:
+    """Split a top-level YAML list (`- ...`) into header lines and entry blocks."""
+    header, entries, _ = split_yaml_document(yaml_text)
     return header, entries
 
 
@@ -129,7 +151,7 @@ def update_install_sources(
     display_name: str = "Ubuntu-Nido Desktop",
 ) -> str:
     """Update install-sources.yaml for a flattened remastered squashfs image."""
-    header, entries = split_top_level_entries(yaml_text)
+    header, entries, footer = split_yaml_document(yaml_text)
     if not entries:
         return (
             f"- default: true\n"
@@ -164,9 +186,15 @@ def update_install_sources(
             updated_primary = True
         kept.append(block)
 
+    has_sources = any(line.startswith("sources:") for line in header + footer)
+    has_version = any(line.startswith("version:") for line in header + footer)
+    if has_sources and not has_version:
+        footer.append("version: 2")
+
     lines = list(header)
     for block in kept:
         lines.extend(block)
+    lines.extend(footer)
     return "\n".join(lines).rstrip() + "\n"
 
 

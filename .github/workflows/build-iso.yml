@@ -138,6 +138,9 @@ jobs:
             test -s "$MNT_DIR/$req" || { echo "ERROR: Missing or empty $req in ISO" >&2; exit 1; }
           done
           grep -q "locale_support: locale-only" "$MNT_DIR/casper/install-sources.yaml"
+          if grep -q "^sources:" "$MNT_DIR/casper/install-sources.yaml"; then
+            grep -q "^version: 2" "$MNT_DIR/casper/install-sources.yaml"
+          fi
           if grep -q "minimal.enhanced-secureboot.squashfs" "$MNT_DIR/casper/install-sources.yaml"; then
             echo "ERROR: Stale minimal.enhanced-secureboot.squashfs remained in install-sources.yaml" >&2
             exit 1

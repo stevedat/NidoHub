@@ -11,11 +11,57 @@ DONE_FILE="${CONFIG_DIR}/welcome-done"
 NIDOAI_DIR="${NIDOAI_HOME:-$HOME/.nidoai}"
 ENV_FILE="${NIDOAI_DIR}/.env.local"
 
-if [[ "$FORCE" -eq 0 && -f "$DONE_FILE" ]]; then
+if [[ -z "${DISPLAY:-}" && -z "${WAYLAND_DISPLAY:-}" ]]; then
   exit 0
 fi
 
-if [[ -z "${DISPLAY:-}" && -z "${WAYLAND_DISPLAY:-}" ]]; then
+rewrite_installer_desktop_name() {
+  local target_file="$1"
+  sed -i \
+    -e '/^Name\[vi\]=/d' \
+    -e 's/^Name=Install .*/Name=Cài đặt Ubuntu-Nido/' \
+    -e 's/^Name=Cài đặt Ubuntu-Nido$/Name=Cài đặt Ubuntu-Nido\nName[vi]=Cài đặt Ubuntu-Nido/' \
+    "$target_file" 2>/dev/null || true
+}
+
+fix_live_installer_shortcuts() {
+  local desktop_dir="$HOME/Desktop"
+  local xdg_desktop=""
+  if command -v xdg-user-dir >/dev/null 2>&1; then
+    xdg_desktop="$(xdg-user-dir DESKTOP 2>/dev/null || true)"
+  fi
+
+  local dirs=("$desktop_dir")
+  if [[ -n "$xdg_desktop" && "$xdg_desktop" != "$desktop_dir" ]]; then
+    dirs+=("$xdg_desktop")
+  fi
+
+  local d f
+  for d in "${dirs[@]}"; do
+    [[ -d "$d" ]] || continue
+    for f in "$d"/ubuntu-desktop-bootstrap*.desktop; do
+      [[ -f "$f" ]] || continue
+      rewrite_installer_desktop_name "$f"
+      chmod +x "$f" 2>/dev/null || true
+      if command -v gio >/dev/null 2>&1; then
+        gio set "$f" metadata::trusted true >/dev/null 2>&1 || true
+      fi
+    done
+  done
+
+  local snap_desktop="/var/lib/snapd/desktop/applications/ubuntu-desktop-bootstrap_ubuntu-desktop-bootstrap.desktop"
+  if [[ -f "$snap_desktop" ]]; then
+    local local_apps="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+    local local_desktop="${local_apps}/ubuntu-desktop-bootstrap_ubuntu-desktop-bootstrap.desktop"
+    mkdir -p "$local_apps"
+    cp "$snap_desktop" "$local_desktop"
+    rewrite_installer_desktop_name "$local_desktop"
+  fi
+}
+
+fix_live_installer_shortcuts
+
+if [[ "$FORCE" -eq 0 && -f "$DONE_FILE" ]]; then
   exit 0
 fi
 

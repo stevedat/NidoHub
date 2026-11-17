@@ -21,6 +21,11 @@ step_boot_config() {
     cp "$boot_splash" "$iso_dir/boot/grub/splash.png"
   fi
 
+  if [ -f "$iso_dir/.disk/info" ]; then
+    printf 'Ubuntu-Nido %s LTS - Release %s\n' "$NIDO_VERSION" "$TARGET_ARCH" > "$iso_dir/.disk/info"
+    ok "  Updated .disk/info release label"
+  fi
+
   local cfg
   while IFS= read -r -d '' cfg; do
     python3 - "$cfg" "$brand_name" "$brand_title" "$NIDO_VERSION" "${DEBUG_BOOT:-0}" <<'PY'

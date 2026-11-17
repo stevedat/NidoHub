@@ -6,7 +6,7 @@ Binaries/
 iso-builder/build/
 packages/dist/
 packages/vendor/
-packages/nidoai-gateway/stage/
+packages/*/stage/
 apt-repo/
 
 # Compiled Binaries & Installers (NEVER commit to public git tree)

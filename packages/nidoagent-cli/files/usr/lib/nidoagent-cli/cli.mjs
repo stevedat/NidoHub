@@ -78,10 +78,10 @@ function printHelp() {
   console.log(`NidoAgent CLI v${VERSION} (Ubuntu-Nido)
 
 Usage:
-  nidoagent status | doctor                                 Kiem tra ket noi NidoAI Gateway
-  nidoagent ask [--file <path>] [--out <path>] <prompt>     Gui cau hoi / tep va tuy chon xuat bao cao
-  nidoagent chat                                            Mo phien hoi thoai tuong tac
-  nidoagent --version | --help                              Hien thong tin phien ban / tro giup
+  nidoagent status | doctor                                 Kiểm tra kết nối NidoAI Gateway
+  nidoagent ask [--file <path>] [--out <path>] <prompt>     Gửi câu hỏi / tệp và tùy chọn xuất báo cáo
+  nidoagent chat                                            Mở phiên hội thoại tương tác
+  nidoagent --version | --help                              Hiện thông tin phiên bản / trợ giúp
 `);
 }
 
@@ -117,11 +117,11 @@ async function cmdStatus() {
     );
   } catch (err) {
     console.error(
-      `nidoagent: khong ket noi duoc toi NidoAI Gateway (${healthUrl}): ${
+      `nidoagent: không kết nối được tới NidoAI Gateway (${healthUrl}): ${
         err instanceof Error ? err.message : String(err)
       }`
     );
-    console.error('Goi y: chay `systemctl --user start nidoai-gateway` hoac `nidoai serve`.');
+    console.error('Gợi ý: chạy `systemctl --user start nidoai-gateway` hoặc `nidoai serve`.');
     process.exit(1);
   }
 }
@@ -130,7 +130,7 @@ function readAttachedFile(filePath) {
   const resolved = path.resolve(filePath);
   const stat = fs.statSync(resolved);
   if (!stat.isFile()) {
-    throw new Error(`Tep dinh kem khong hop le (khong phai tep thong thuong): ${resolved}`);
+    throw new Error(`Tệp đính kèm không hợp lệ (không phải tệp thông thường): ${resolved}`);
   }
   const ext = path.extname(resolved).toLowerCase();
   if (OFFICE_EXTS.has(ext)) {
@@ -162,7 +162,7 @@ function readAttachedFile(filePath) {
 async function sendChatCompletion(conn, messages) {
   if (!conn.clientToken || conn.clientToken.length < 16) {
     throw new Error(
-      'Chua co NIDOAI_CLIENT_TOKEN. Hay chay `nido-welcome` hoac `nidoai serve` truoc.'
+      'Chưa có NIDOAI_CLIENT_TOKEN. Hãy mở Trung tâm NidoHub → Thiết lập AI hoặc chạy `nidoai serve` trước.'
     );
   }
   const res = await fetch(`${conn.baseUrl}/v1/chat/completions`, {
@@ -181,11 +181,11 @@ async function sendChatCompletion(conn, messages) {
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     const msg = data?.error?.message || `HTTP ${res.status}`;
-    throw new Error(`NidoAI Gateway error: ${msg}`);
+    throw new Error(`Lỗi NidoAI Gateway: ${msg}`);
   }
   const content = data?.choices?.[0]?.message?.content;
   if (typeof content !== 'string') {
-    throw new Error('Phan hoi tu Gateway khong chua choices[0].message.content');
+    throw new Error('Phản hồi từ Gateway không chứa choices[0].message.content');
   }
   return content;
 }
@@ -199,14 +199,14 @@ async function cmdAsk(args) {
     if (args[i] === '--file' || args[i] === '-f') {
       i += 1;
       if (!args[i]) {
-        console.error('nidoagent ask: thieu duong dan sau --file');
+        console.error('nidoagent ask: thiếu đường dẫn sau --file');
         process.exit(2);
       }
       files.push(args[i]);
     } else if (args[i] === '--out' || args[i] === '-o') {
       i += 1;
       if (!args[i]) {
-        console.error('nidoagent ask: thieu duong dan sau --out');
+        console.error('nidoagent ask: thiếu đường dẫn sau --out');
         process.exit(2);
       }
       outPath = args[i];
@@ -225,14 +225,14 @@ async function cmdAsk(args) {
   for (const f of files) {
     sections.push(readAttachedFile(f));
   }
-  sections.push(prompt || 'Hay tom tat va phan tich noi dung cac tep dinh kem.');
+  sections.push(prompt || 'Hãy tóm tắt và phân tích nội dung các tệp đính kèm.');
 
   const outExt = outPath ? path.extname(outPath).toLowerCase() : '';
   let systemPrompt =
-    'Ban la NidoAgent — tro ly dieu phoi cong viec mac dinh tren he dieu hanh Ubuntu-Nido. Tra loi ngan gon, chinh xac, uu tien tieng Viet khi nguoi dung hoi bang tieng Viet.';
+    'Bạn là NidoAgent — trợ lý điều phối công việc mặc định trên hệ điều hành Ubuntu-Nido. Trả lời ngắn gọn, chính xác, ưu tiên tiếng Việt khi người dùng hỏi bằng tiếng Việt.';
   if (outExt === '.xlsx') {
     systemPrompt +=
-      ' Khi xuat bao cao bang tinh (.xlsx), hay trinh bay du lieu chinh duoi dang bang Markdown (| Cot | Gia tri |) de he thong trich xuat sang Excel chinh xac.';
+      ' Khi xuất báo cáo bảng tính (.xlsx), hãy trình bày dữ liệu chính dưới dạng bảng Markdown (| Cột | Giá trị |) để hệ thống trích xuất sang Excel chính xác.';
   }
 
   const conn = resolveGatewayConnection();
@@ -271,7 +271,7 @@ async function cmdChat() {
     {
       role: 'system',
       content:
-        'Ban la NidoAgent — tro ly dieu phoi cong viec tren Ubuntu-Nido. Tra loi ro rang, huu ich.',
+        'Bạn là NidoAgent — trợ lý điều phối công việc trên Ubuntu-Nido. Trả lời rõ ràng, hữu ích.',
     },
   ];
   const rl = readline.createInterface({
@@ -279,7 +279,7 @@ async function cmdChat() {
     output: process.stdout,
     prompt: 'nidoagent> ',
   });
-  console.log(`Ubuntu-Nido Agent Chat (${conn.baseUrl}) — go "exit" de thoat.`);
+  console.log(`Ubuntu-Nido Agent Chat (${conn.baseUrl}) — gõ "exit" để thoát.`);
   rl.prompt();
 
   for await (const line of rl) {
@@ -298,7 +298,7 @@ async function cmdChat() {
       console.log(`\n${reply}\n`);
     } catch (err) {
       messages.pop();
-      console.error(`Loi: ${err instanceof Error ? err.message : String(err)}`);
+      console.error(`Lỗi: ${err instanceof Error ? err.message : String(err)}`);
     }
     rl.prompt();
   }
@@ -328,7 +328,7 @@ async function main() {
     return;
   }
 
-  console.error(`Lenh khong ho tro: ${cmd}. Chay 'nidoagent --help'.`);
+  console.error(`Lệnh không hỗ trợ: ${cmd}. Chạy 'nidoagent --help'.`);
   process.exit(1);
 }
 

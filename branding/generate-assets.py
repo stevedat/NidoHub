@@ -7,6 +7,7 @@ macOS, Ubuntu chroot, and CI runners without Pillow or ImageMagick.
 
 from __future__ import annotations
 
+import argparse
 import math
 import os
 import struct
@@ -200,9 +201,106 @@ def generate_all(out_dir: Path = OUT_DIR) -> list[Path]:
     return generated
 
 
+def write_rgba_png(path: Path, width: int, height: int, rgba: bytearray) -> None:
+    """Write an RGBA32 (color type 6) PNG with valid headers and scanlines."""
+    stride = width * 4
+    if len(rgba) != stride * height:
+        raise ValueError(f"Expected {stride * height} bytes, got {len(rgba)}")
+
+    raw = bytearray()
+    for y in range(height):
+        raw.append(0)
+        start = y * stride
+        raw.extend(rgba[start : start + stride])
+
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)
+    idat = zlib.compress(bytes(raw), level=6)
+    png = (
+        b"\x89PNG\r\n\x1a\n"
+        + _png_chunk(b"IHDR", ihdr)
+        + _png_chunk(b"IDAT", idat)
+        + _png_chunk(b"IEND", b"")
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(png)
+
+
+def generate_hub_icons(hicolor_dir: Path) -> list[Path]:
+    """Generate distinct scalable SVG and 256x256 RGBA PNG app icons for NidoHub."""
+    svg_path = hicolor_dir / "scalable" / "apps" / "com.nidoholdings.NidoHub.svg"
+    png_path = hicolor_dir / "256x256" / "apps" / "com.nidoholdings.NidoHub.png"
+    svg_path.parent.mkdir(parents=True, exist_ok=True)
+    svg_path.write_text(
+        """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1E293B"/>
+      <stop offset="100%" stop-color="#0F172A"/>
+    </linearGradient>
+    <linearGradient id="ring" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#F59E0B"/>
+      <stop offset="100%" stop-color="#EA580C"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="112" height="112" rx="26" fill="url(#bg)" stroke="#334155" stroke-width="2"/>
+  <circle cx="64" cy="64" r="34" fill="none" stroke="url(#ring)" stroke-width="5.5"/>
+  <circle cx="64" cy="64" r="21" fill="none" stroke="#10B981" stroke-width="3.5" stroke-opacity="0.92"/>
+  <circle cx="64" cy="30" r="6.5" fill="#0F172A" stroke="#F59E0B" stroke-width="3.5"/>
+  <circle cx="93.4" cy="81" r="6.5" fill="#0F172A" stroke="#10B981" stroke-width="3.5"/>
+  <circle cx="34.6" cy="81" r="6.5" fill="#0F172A" stroke="#F59E0B" stroke-width="3.5"/>
+  <circle cx="64" cy="64" r="6" fill="#FBBF24"/>
+</svg>
+""",
+        encoding="utf-8",
+    )
+
+    w, h = 256, 256
+    rgb = make_gradient_canvas(w, h, (30, 41, 59), (15, 23, 42))
+    draw_nido_emblem(rgb, w, h, w / 2.0, h / 2.0, 1.05)
+
+    cx, cy = (w - 1) * 0.5, (h - 1) * 0.5
+    half_box = 112.0
+    corner_r = 28.0
+    rgba = bytearray(w * h * 4)
+    for y in range(h):
+        dy = abs(y - cy) - (half_box - corner_r)
+        for x in range(w):
+            dx = abs(x - cx) - (half_box - corner_r)
+            dist = math.hypot(max(dx, 0.0), max(dy, 0.0)) + min(max(dx, dy), 0.0) - corner_r
+            cov = max(0.0, min(1.0, 0.5 - dist))
+            r_val = rgb[(y * w + x) * 3]
+            g_val = rgb[(y * w + x) * 3 + 1]
+            b_val = rgb[(y * w + x) * 3 + 2]
+            if -2.2 <= dist <= 0.5:
+                # Subtle slate rim inside rounded badge border
+                rim = max(0.0, 1.0 - abs(dist + 0.8) / 1.4) * 0.55
+                r_val = int(r_val * (1.0 - rim) + 51 * rim)
+                g_val = int(g_val * (1.0 - rim) + 65 * rim)
+                b_val = int(b_val * (1.0 - rim) + 85 * rim)
+            oi = (y * w + x) * 4
+            rgba[oi] = r_val
+            rgba[oi + 1] = g_val
+            rgba[oi + 2] = b_val
+            rgba[oi + 3] = int(cov * 255)
+    write_rgba_png(png_path, w, h, rgba)
+    return [svg_path, png_path]
+
+
 def main() -> None:
-    target = Path(os.environ.get("NIDO_ASSETS_DIR", str(OUT_DIR)))
-    files = generate_all(target)
+    parser = argparse.ArgumentParser(description="Generate Ubuntu-Nido branding PNG/SVG assets.")
+    parser.add_argument(
+        "--hub-icon-dir",
+        type=Path,
+        default=None,
+        help="Optional hicolor icon theme root to write NidoHub app icons into.",
+    )
+    args = parser.parse_args()
+
+    if args.hub_icon_dir is not None:
+        files = generate_hub_icons(args.hub_icon_dir)
+    else:
+        target = Path(os.environ.get("NIDO_ASSETS_DIR", str(OUT_DIR)))
+        files = generate_all(target)
     for f in files:
         print(f"Generated {f} ({f.stat().st_size} bytes)")
 

@@ -46,19 +46,43 @@ repack_layered_live_overlays() {
   chroot "$WORK_DIR/live_merged" /bin/bash -c '
     set -e
     ldconfig
+    for desktop_file in /usr/share/applications/*fcitx*.desktop; do
+      if [ -f "$desktop_file" ]; then
+        if grep -q "^NoDisplay=" "$desktop_file"; then
+          sed -i "s/^NoDisplay=.*/NoDisplay=true/" "$desktop_file"
+        else
+          printf "\nNoDisplay=true\n" >> "$desktop_file"
+        fi
+      fi
+    done
+    if [ -f /var/lib/snapd/desktop/applications/ubuntu-desktop-bootstrap_ubuntu-desktop-bootstrap.desktop ]; then
+      sed -i "s/^Name=Install RELEASE/Name=Cài đặt Ubuntu-Nido/" \
+        /var/lib/snapd/desktop/applications/ubuntu-desktop-bootstrap_ubuntu-desktop-bootstrap.desktop || true
+    fi
     if [ -d /usr/share/glib-2.0/schemas ]; then
       glib-compile-schemas /usr/share/glib-2.0/schemas/
     fi
     if [ -d /etc/dconf/db/local.d ]; then
       dconf compile /etc/dconf/db/local /etc/dconf/db/local.d || dconf update || true
     fi
+    if command -v ibus >/dev/null 2>&1; then
+      ibus write-cache --system >/dev/null 2>&1 || true
+    fi
+    if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+      gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor || true
+    fi
+    if command -v update-desktop-database >/dev/null 2>&1; then
+      update-desktop-database -q /usr/share/applications || true
+    fi
     apt-get check
     test -x /sbin/init
     test -x /usr/bin/nidoai
     test -x /usr/bin/nidoagent
     test -x /usr/bin/nido-hub
+    test -x /usr/bin/nidobox
     test -x /usr/bin/nidooffice
     dpkg -s vielotus >/dev/null
+    dpkg -s nidobox >/dev/null
     dpkg -s casper >/dev/null
   '
 

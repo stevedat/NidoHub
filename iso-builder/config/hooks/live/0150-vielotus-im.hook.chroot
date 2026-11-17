@@ -61,6 +61,17 @@ PROFILE
 # Ensure GNOME native IBus integration remains intact (do not override globally with Fcitx IM modules)
 rm -f /etc/profile.d/ubuntu-nido-fcitx5.sh /etc/xdg/autostart/ubuntu-nido-im-enable.desktop
 
+# Hide redundant Fcitx 5 desktop entries from GNOME App Grid (Sen Viet handles its own launcher)
+for desktop_file in /usr/share/applications/*fcitx*.desktop; do
+  if [ -f "$desktop_file" ]; then
+    if grep -q '^NoDisplay=' "$desktop_file"; then
+      sed -i 's/^NoDisplay=.*/NoDisplay=true/' "$desktop_file"
+    else
+      printf '\nNoDisplay=true\n' >> "$desktop_file"
+    fi
+  fi
+done
+
 if command -v ibus >/dev/null 2>&1; then
   ibus write-cache --system >/dev/null 2>&1 || true
 fi

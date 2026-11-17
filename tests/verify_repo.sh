@@ -22,6 +22,7 @@ SHELL_SCRIPTS=(
   "${ROOT_DIR}/packages/nido-desktop-settings/files/etc/skel/.local/share/nautilus/scripts/Giao-cho-NidoAgent"
   "${ROOT_DIR}/packages/nido-desktop-settings/files/etc/skel/.local/share/nautilus/scripts/Gui-qua-NidoDrop-LAN"
   "${ROOT_DIR}/packages/nido-desktop-settings/files/etc/skel/.local/share/nautilus/scripts/Giai-nen-Chuan-Tieng-Viet"
+  "${ROOT_DIR}/packages/nido-hub/DEBIAN/postinst"
   "${ROOT_DIR}/packages/nido-hub/files/usr/bin/nido-hub"
   "${ROOT_DIR}/packages/nidooffice-cli/files/usr/bin/nidooffice"
   "${ROOT_DIR}/iso-builder/build.sh"
@@ -35,6 +36,7 @@ SHELL_SCRIPTS=(
   "${ROOT_DIR}/iso-builder/scripts/repack.sh"
   "${ROOT_DIR}/iso-builder/config/hooks/live/0100-nido-gnome-setup.hook.chroot"
   "${ROOT_DIR}/iso-builder/config/hooks/live/0150-vielotus-im.hook.chroot"
+  "${ROOT_DIR}/iso-builder/config/hooks/live/0160-nidobox.hook.chroot"
   "${ROOT_DIR}/iso-builder/config/hooks/live/0200-nido-ai-stack.hook.chroot"
   "${ROOT_DIR}/iso-builder/config/hooks/live/0900-nido-plymouth.hook.chroot"
   "${ROOT_DIR}/tests/verify_repo.sh"
@@ -132,6 +134,13 @@ for fname in expected:
         names = [m.name for m in tf.getmembers()]
         leaked = [n for n in names if n.endswith("/.env") or n.endswith("/.env.local") or n == "./.env" or n == "./.env.local"]
         assert not leaked, f"{fname}: SECRET LEAKED: {leaked}"
+        if fname == "nido-hub_0.1.0_all.deb":
+            assert "./usr/share/icons/hicolor/scalable/apps/com.nidoholdings.NidoHub.svg" in names, (
+                f"{fname}: missing scalable NidoHub SVG icon"
+            )
+            assert "./usr/share/icons/hicolor/256x256/apps/com.nidoholdings.NidoHub.png" in names, (
+                f"{fname}: missing 256x256 NidoHub PNG icon"
+            )
 print("Audited all 5 .deb archives: valid ar format, zero secret files.")
 PY
 pass "Built and audited 5 .deb packages (zero secrets)"
@@ -379,7 +388,7 @@ assert "987654321" in out_24, "Updated size missing (24.04)"
 assert "fsimage-layered" not in out_24, "Layered entry should be pruned (24.04)"
 assert "Ubuntu-Nido Desktop" in out_24, "Display name not updated (24.04)"
 
-# Fixture 2: Ubuntu 26.04 style with kernel header, langpack, preinstalled_langs, and variations
+# Fixture 2: Real Ubuntu 26.04 style with kernel header, trailing fsimage-layered entry, and version: 2 at EOF
 fixture_26 = """kernel:
   default: linux-generic-hwe-24.04
 sources:
@@ -406,10 +415,21 @@ sources:
       path: minimal.enhanced-secureboot.squashfs
       size: 1111111
       snapd_system_label: enhanced-secureboot-desktop
+- description:
+    en: Full Ubuntu Desktop
+  id: ubuntu-desktop-standard
+  name:
+    en: Standard Desktop
+  path: minimal.standard.squashfs
+  size: 2222222
+  type: fsimage-layered
+version: 2
 """
 out_26 = upd.update_install_sources(fixture_26, "minimal.squashfs", 4080263168, "Ubuntu-Nido Desktop")
 assert out_26.startswith("kernel:\n"), f"Header lost in 26.04 output: {out_26}"
 assert "4080263168" in out_26, "Updated size missing (26.04)"
+assert "fsimage-layered" not in out_26, "Layered entry must be pruned (26.04)"
+assert "version: 2" in out_26.splitlines(), f"Top-level version: 2 lost in 26.04 output: {out_26}"
 assert "locale_support: locale-only" in out_26, "locale_support must switch to locale-only"
 assert "preinstalled_langs" not in out_26, "preinstalled_langs must be stripped"
 assert "variations" not in out_26, "variations must be stripped"

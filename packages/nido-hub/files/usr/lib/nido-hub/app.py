@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -61,6 +62,52 @@ class NidoHubBackend:
             data[k.strip()] = v.strip().strip("'\"")
         return data
 
+    def _write_env_file(self, env: dict[str, str]) -> None:
+        self.nidoai_dir.mkdir(parents=True, exist_ok=True)
+        os.chmod(self.nidoai_dir, 0o700)
+        lines = [f"{k}={v}" for k, v in sorted(env.items())]
+        fd, tmp_name = tempfile.mkstemp(dir=str(self.nidoai_dir), prefix=".env.")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write("\n".join(lines) + "\n")
+            os.chmod(tmp_name, 0o600)
+            os.replace(tmp_name, self.env_file)
+            os.chmod(self.env_file, 0o600)
+        finally:
+            if os.path.exists(tmp_name):
+                os.unlink(tmp_name)
+
+    def ensure_gateway_ready(self, start_service: bool = True) -> None:
+        env = self.load_env()
+        if len(env.get("NIDOAI_CLIENT_TOKEN", "")) < 16:
+            env["NIDOAI_CLIENT_TOKEN"] = f"nidoai_{secrets.token_hex(24)}"
+            self._write_env_file(env)
+
+        if not start_service:
+            return
+
+        port = os.environ.get("NIDOAI_PORT") or env.get("NIDOAI_PORT") or "18090"
+        url = f"http://127.0.0.1:{port}/healthz"
+        try:
+            with urllib.request.urlopen(url, timeout=0.6):
+                return
+        except Exception:
+            pass
+
+        if shutil.which("systemctl"):
+            subprocess.run(
+                ["systemctl", "--user", "start", "nidoai-gateway.service"],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            for _ in range(6):
+                try:
+                    with urllib.request.urlopen(url, timeout=0.4):
+                        return
+                except Exception:
+                    time.sleep(0.25)
+
     def save_ai_settings(
         self,
         primary_backend: str,
@@ -72,8 +119,6 @@ class NidoHubBackend:
         if primary_backend not in {"gemini", "openai", "local"}:
             raise ValueError(f"Invalid backend: {primary_backend}")
 
-        self.nidoai_dir.mkdir(parents=True, exist_ok=True)
-        os.chmod(self.nidoai_dir, 0o700)
         self.config_dir.mkdir(parents=True, exist_ok=True)
 
         env = self.load_env()
@@ -88,17 +133,7 @@ class NidoHubBackend:
         if local_base_url.strip():
             env["NIDOAI_LOCAL_BASE_URL"] = local_base_url.strip()
 
-        lines = [f"{k}={v}" for k, v in sorted(env.items())]
-        fd, tmp_name = tempfile.mkstemp(dir=str(self.nidoai_dir), prefix=".env.")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                handle.write("\n".join(lines) + "\n")
-            os.chmod(tmp_name, 0o600)
-            os.replace(tmp_name, self.env_file)
-            os.chmod(self.env_file, 0o600)
-        finally:
-            if os.path.exists(tmp_name):
-                os.unlink(tmp_name)
+        self._write_env_file(env)
 
         self.welcome_done_file.write_text(
             datetime.datetime.now(datetime.timezone.utc).isoformat() + "\n",
@@ -194,6 +229,7 @@ class NidoHubBackend:
         files: list[str] | None = None,
         out_path: str | None = None,
     ) -> tuple[bool, str]:
+        self.ensure_gateway_ready(start_service="NIDOAGENT_BIN" not in os.environ)
         agent_bin = os.environ.get("NIDOAGENT_BIN") or shutil.which("nidoagent") or "/usr/bin/nidoagent"
         argv = [agent_bin, "ask"]
         for fpath in files or []:
@@ -228,6 +264,12 @@ def run_self_test() -> int:
             encoding="utf-8",
         )
         backend = NidoHubBackend(home_dir=root / "home", catalog_path=cat_file)
+        backend.ensure_gateway_ready(start_service=False)
+        assert backend.env_file.is_file(), "Missing bootstrapped .env.local"
+        assert not backend.welcome_done_file.is_file(), "welcome-done should wait for save"
+        boot_mode = backend.env_file.stat().st_mode & 0o777
+        assert boot_mode == 0o600, f"Expected 0600 on bootstrapped .env.local, got {oct(boot_mode)}"
+        assert len(backend.load_env().get("NIDOAI_CLIENT_TOKEN", "")) >= 32
         backend.save_ai_settings(
             primary_backend="gemini",
             gemini_key="test_gemini_key_placeholder",
@@ -278,7 +320,9 @@ def run_gtk_app(backend: NidoHubBackend, initial_page: str) -> int:
             self.selected_files: list[str] = []
 
         def do_activate(self) -> None:
+            Gtk.Window.set_default_icon_name("com.nidoholdings.NidoHub")
             win = Adw.ApplicationWindow(application=self)
+            win.set_icon_name("com.nidoholdings.NidoHub")
             win.set_title("NidoHub — Ubuntu-Nido")
             win.set_default_size(860, 600)
 
@@ -298,6 +342,7 @@ def run_gtk_app(backend: NidoHubBackend, initial_page: str) -> int:
 
             # --- Page 1: AI Setup ---
             ai_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+            backend.ensure_gateway_ready(start_service=True)
             banner = Adw.Banner()
             ok_gw, gw_msg = backend.probe_gateway_health()
             banner.set_title(gw_msg)
@@ -372,6 +417,7 @@ def run_gtk_app(backend: NidoHubBackend, initial_page: str) -> int:
                         title=item["name"],
                         subtitle=f"{item['description']} ({'Đã cài đặt' if item['installed'] else 'Chưa cài đặt'})",
                     )
+                    row.set_use_markup(False)
                     act_btn = Gtk.Button(
                         label="Cập nhật" if item["installed"] else "Cài đặt",
                         valign=Gtk.Align.CENTER,
@@ -416,6 +462,7 @@ def run_gtk_app(backend: NidoHubBackend, initial_page: str) -> int:
             ctrl_group.add(prompt_row)
 
             files_row = Adw.ActionRow(title="Tệp đính kèm", subtitle="Chưa chọn tệp nào")
+            files_row.set_use_markup(False)
             pick_btn = Gtk.Button(label="Chọn tệp...", valign=Gtk.Align.CENTER)
             clear_btn = Gtk.Button(label="Xóa", valign=Gtk.Align.CENTER)
             files_row.add_suffix(pick_btn)

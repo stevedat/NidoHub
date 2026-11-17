@@ -5,13 +5,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 DIST_DIR="${SCRIPT_DIR}/dist"
 STAGE_DIR="${SCRIPT_DIR}/nidoai-gateway/stage"
+NIDOHUB_STAGE_DIR="${SCRIPT_DIR}/nido-hub/stage"
 NIDOAI_SRC_DIR="${NIDOAI_SRC_DIR:-}"
 VIELOTUS_BIN_DIR="${VIELOTUS_BIN_DIR:-}"
 NIDOBOX_BIN_DIR="${NIDOBOX_BIN_DIR:-}"
 DEB_BUILDER="${ROOT_DIR}/scripts/build_deb_portable.py"
 
-rm -rf "$DIST_DIR" "$STAGE_DIR"
-mkdir -p "$DIST_DIR" "${STAGE_DIR}/usr/lib/nidoai"
+rm -rf "$DIST_DIR" "$STAGE_DIR" "$NIDOHUB_STAGE_DIR"
+mkdir -p "$DIST_DIR" "${STAGE_DIR}/usr/lib/nidoai" "${NIDOHUB_STAGE_DIR}/usr/share/icons/hicolor"
+python3 "${ROOT_DIR}/branding/generate-assets.py" --hub-icon-dir "${NIDOHUB_STAGE_DIR}/usr/share/icons/hicolor"
 
 if [[ -n "$NIDOAI_SRC_DIR" && -f "${NIDOAI_SRC_DIR}/src/cli.ts" ]]; then
   echo "==> Staging external NidoAI source from ${NIDOAI_SRC_DIR} (strict secret exclusion)"
@@ -56,6 +58,7 @@ chmod 755 \
   "${SCRIPT_DIR}/nido-desktop-settings/files/etc/skel/.local/share/nautilus/scripts/Giao-cho-NidoAgent" \
   "${SCRIPT_DIR}/nido-desktop-settings/files/etc/skel/.local/share/nautilus/scripts/Gui-qua-NidoDrop-LAN" \
   "${SCRIPT_DIR}/nido-desktop-settings/files/etc/skel/.local/share/nautilus/scripts/Giai-nen-Chuan-Tieng-Viet" \
+  "${SCRIPT_DIR}/nido-hub/DEBIAN/postinst" \
   "${SCRIPT_DIR}/nido-hub/files/usr/bin/nido-hub" \
   "${SCRIPT_DIR}/nido-hub/files/usr/lib/nido-hub/app.py" \
   "${SCRIPT_DIR}/nidooffice-cli/files/usr/bin/nidooffice" \
@@ -76,6 +79,7 @@ python3 "$DEB_BUILDER" \
 
 python3 "$DEB_BUILDER" \
   --source-dir "${SCRIPT_DIR}/nido-hub" \
+  --extra-files "$NIDOHUB_STAGE_DIR" \
   --output "${DIST_DIR}/nido-hub_0.1.0_all.deb"
 
 python3 "$DEB_BUILDER" \
