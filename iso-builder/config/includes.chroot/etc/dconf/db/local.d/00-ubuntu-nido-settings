@@ -15,7 +15,7 @@ picture-uri='file:///usr/share/backgrounds/ubuntu-nido/wallpaper.png'
 picture-options='zoom'
 
 [org/gnome/shell]
-favorite-apps=['org.gnome.Nautilus.desktop', 'org.gnome.Terminal.desktop', 'com.nidoholdings.NidoHub.desktop', 'org.gnome.Settings.desktop']
+favorite-apps=['org.gnome.Nautilus.desktop', 'org.gnome.Terminal.desktop', 'com.nidoholdings.NidoHub.desktop', 'com.nidoholdings.NidoBox.desktop', 'org.gnome.Settings.desktop']
 
 [org/gnome/desktop/input-sources]
 sources=[('xkb', 'us'), ('ibus', 'vielotus')]
@@ -25,9 +25,14 @@ switch-input-source=['<Control>space']
 switch-input-source-backward=['<Shift><Control>space']
 
 [org/gnome/settings-daemon/plugins/media-keys]
-custom-keybindings=['/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom0/']
+custom-keybindings=['/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom0/', '/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom1/']
 
 [org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom0]
 name='NidoAgent QuickLaunch'
 command='/usr/local/bin/nidoagent-quicklaunch'
 binding='<Super>space'
+
+[org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom1]
+name='NidoBox Capture Studio'
+command='/usr/bin/nidobox --capture'
+binding='<Super><Shift>s'

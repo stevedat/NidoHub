@@ -24,6 +24,13 @@
       "status": "available",
       "packages": ["vielotus"],
       "description": "Bộ gõ tiếng Việt Telex & VNI tốc độ cao cho GNOME Wayland & X11."
+    },
+    {
+      "id": "nidobox",
+      "name": "NidoBox Utility Suite",
+      "status": "available",
+      "packages": ["nidobox"],
+      "description": "NidoDrop LAN QR, Capture Studio + OCR Tiếng Việt, đổi ảnh đa luồng, giải nén giữ dấu & mở khoá ổ NTFS."
     }
   ]
 }

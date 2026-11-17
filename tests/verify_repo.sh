@@ -20,6 +20,8 @@ SHELL_SCRIPTS=(
   "${ROOT_DIR}/packages/nido-desktop-settings/files/usr/local/bin/nido-welcome"
   "${ROOT_DIR}/packages/nido-desktop-settings/files/usr/local/bin/nidoagent-quicklaunch"
   "${ROOT_DIR}/packages/nido-desktop-settings/files/etc/skel/.local/share/nautilus/scripts/Giao-cho-NidoAgent"
+  "${ROOT_DIR}/packages/nido-desktop-settings/files/etc/skel/.local/share/nautilus/scripts/Gui-qua-NidoDrop-LAN"
+  "${ROOT_DIR}/packages/nido-desktop-settings/files/etc/skel/.local/share/nautilus/scripts/Giai-nen-Chuan-Tieng-Viet"
   "${ROOT_DIR}/packages/nido-hub/files/usr/bin/nido-hub"
   "${ROOT_DIR}/packages/nidooffice-cli/files/usr/bin/nidooffice"
   "${ROOT_DIR}/iso-builder/build.sh"
@@ -154,6 +156,8 @@ for suite in ("resolute", "noble"):
         pkg_text = gzip.decompress(pkg_gz.read_bytes()).decode("utf-8")
         for pkg in ("nidoai-gateway", "nidoagent-cli", "nido-desktop-settings", "nido-hub", "nidooffice-cli"):
             assert f"Package: {pkg}" in pkg_text, f"{pkg} missing in {suite}/{arch}"
+        if (repo.parent / "packages" / "vendor" / f"nidobox_1.4.0_{arch}.deb").is_file():
+            assert "Package: nidobox" in pkg_text, f"nidobox missing in {suite}/{arch}"
         digest = hashlib.sha256(pkg_gz.read_bytes()).hexdigest()
         assert digest in rel_text, f"SHA256 mismatch for {pkg_gz} in Release"
 print("Verified static APT repo Release & Packages.gz checksums for resolute & noble (amd64/arm64).")

@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Hook 0160: Install first-party NidoBox (v1.4.0) utility suite from signed APT repository
+set -euo pipefail
+export DEBIAN_FRONTEND=noninteractive
+
+APT_LOCK_TIMEOUT="${APT_LOCK_TIMEOUT:-600}"
+APT_GET=(apt-get -o "DPkg::Lock::Timeout=${APT_LOCK_TIMEOUT}")
+ARCH="$(dpkg --print-architecture)"
+
+if dpkg -s nidobox >/dev/null 2>&1; then
+  echo "[Ubuntu-Nido] Package 'nidobox' already installed."
+else
+  echo "[Ubuntu-Nido] Installing NidoBox (${ARCH}) from signed Ubuntu-Nido APT repository..."
+  "${APT_GET[@]}" update -qq
+  "${APT_GET[@]}" install -y --no-install-recommends nidobox
+fi
+
+/usr/bin/nidobox --self-test >/dev/null
+echo "[Ubuntu-Nido] NidoBox hook completed."

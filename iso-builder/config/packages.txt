@@ -17,10 +17,14 @@ ibus
 im-config
 jq
 libnotify-bin
+ntfs-3g
 pkexec
 polkitd
 python3
 python3-gi
+tesseract-ocr
+tesseract-ocr-eng
+tesseract-ocr-vie
 unzip
 wget
 zenity

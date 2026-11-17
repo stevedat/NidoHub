@@ -207,6 +207,9 @@ step_customize() {
     test -x /usr/bin/nido-hub
     test -x /usr/bin/nidooffice
     dpkg -s vielotus >/dev/null 2>&1
+    dpkg -s nidobox >/dev/null 2>&1
+    test -x /usr/bin/nidobox
+    test -x /usr/lib/nidobox/nidobox-engine
     test -f /usr/share/plymouth/themes/ubuntu-nido/ubuntu-nido.plymouth
     apt-get clean
     rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*

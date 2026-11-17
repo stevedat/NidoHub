@@ -39,3 +39,6 @@ jobs:
           nidooffice --version
           sudo apt-get update
           apt-cache policy vielotus | grep -q "ubuntu-nido-apt"
+          apt-cache policy nidobox | grep -q "ubuntu-nido-apt"
+          sudo apt-get install -y --no-install-recommends nidobox
+          nidobox --self-test

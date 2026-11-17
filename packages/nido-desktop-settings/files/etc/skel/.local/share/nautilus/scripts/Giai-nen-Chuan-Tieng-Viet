@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+declare -a SELECTED_FILES=()
+
+if [[ -n "${NAUTILUS_SCRIPT_SELECTED_FILE_PATHS:-}" ]]; then
+  while IFS= read -r line; do
+    [[ -n "$line" ]] && SELECTED_FILES+=("$line")
+  done <<< "$NAUTILUS_SCRIPT_SELECTED_FILE_PATHS"
+elif [[ "$#" -gt 0 ]]; then
+  SELECTED_FILES=("$@")
+fi
+
+if [[ "${#SELECTED_FILES[@]}" -eq 0 ]]; then
+  command -v zenity >/dev/null 2>&1 && zenity --error --title="NidoBox" --text="Không có tệp nén nào được chọn."
+  exit 1
+fi
+
+if OUTPUT="$(/usr/bin/nidobox --extract "${SELECTED_FILES[@]}" 2>&1)"; then
+  if command -v notify-send >/dev/null 2>&1; then
+    notify-send "NidoBox" "Đã giải nén an toàn ${#SELECTED_FILES[@]} tệp nén (giữ nguyên dấu Tiếng Việt)."
+  fi
+else
+  if command -v zenity >/dev/null 2>&1; then
+    zenity --error --title="NidoBox — Lỗi giải nén" --text="$OUTPUT" --width=480
+  else
+    printf '%s\n' "$OUTPUT" >&2
+  fi
+  exit 1
+fi
