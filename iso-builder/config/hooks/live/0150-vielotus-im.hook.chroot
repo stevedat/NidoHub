@@ -1,72 +1,53 @@
 #!/usr/bin/env bash
-# Hook 0150: Configure Sen Viet (VieLotusIM / fcitx5-lotus) out-of-the-box for GNOME Wayland & X11
+# Hook 0150: Install and configure first-party Sen Viet (VieLotusIM v2.0.4) for GNOME Wayland & X11
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 
 APT_LOCK_TIMEOUT="${APT_LOCK_TIMEOUT:-600}"
 APT_GET=(apt-get -o "DPkg::Lock::Timeout=${APT_LOCK_TIMEOUT}")
+VIELOTUS_VERSION="2.0.4"
+ARCH="$(dpkg --print-architecture)"
 
 if dpkg -s vielotus >/dev/null 2>&1; then
-  echo "[Ubuntu-Nido] Vendor package 'vielotus' already installed."
+  echo "[Ubuntu-Nido] Package 'vielotus' already installed."
 else
-  echo "[Ubuntu-Nido] Installing fcitx5-lotus from upstream APT repo..."
-  CODENAME="${UBUNTU_CODENAME:-noble}"
-  if ! curl -fsI "https://fcitx5-lotus.pages.dev/apt/${CODENAME}/dists/${CODENAME}/Release" >/dev/null 2>&1; then
-    CODENAME="noble"
+  echo "[Ubuntu-Nido] Installing Sen Viet (vielotus ${VIELOTUS_VERSION} / ${ARCH}) from signed APT repository..."
+  "${APT_GET[@]}" update -qq || true
+  if ! "${APT_GET[@]}" install -y --no-install-recommends vielotus; then
+    echo "[Ubuntu-Nido] APT install fell back to verified release asset..."
+    DL_DIR="/tmp/vielotus-dl"
+    DEB_NAME="vielotus_${VIELOTUS_VERSION}_${ARCH}.deb"
+    BASE_URL="https://github.com/stevedat/VieLotus-IM/releases/download/v${VIELOTUS_VERSION}"
+    rm -rf "$DL_DIR"
+    mkdir -p "$DL_DIR"
+    curl -fsSL "${BASE_URL}/${DEB_NAME}" -o "${DL_DIR}/${DEB_NAME}"
+    curl -fsSL "${BASE_URL}/checksums.sha256" -o "${DL_DIR}/checksums.sha256"
+    (
+      cd "$DL_DIR"
+      grep "  ${DEB_NAME}\$" checksums.sha256 | sha256sum -c -
+    )
+    "${APT_GET[@]}" install -y --no-install-recommends "${DL_DIR}/${DEB_NAME}"
+    rm -rf "$DL_DIR"
   fi
-
-  mkdir -p /etc/apt/keyrings
-  if [ ! -f /etc/apt/keyrings/fcitx5-lotus.gpg ]; then
-    curl -fsSL https://fcitx5-lotus.pages.dev/pubkey.gpg | gpg --dearmor -o /etc/apt/keyrings/fcitx5-lotus.gpg
-  fi
-  printf 'deb [signed-by=/etc/apt/keyrings/fcitx5-lotus.gpg] https://fcitx5-lotus.pages.dev/apt/%s %s main\n' \
-    "$CODENAME" "$CODENAME" > /etc/apt/sources.list.d/fcitx5-lotus.list
-
-  "${APT_GET[@]}" update -qq
-  "${APT_GET[@]}" install -y --no-install-recommends \
-    fcitx5-lotus fcitx5-config-qt \
-    fcitx5-frontend-gtk2 fcitx5-frontend-gtk3 fcitx5-frontend-gtk4 \
-    fcitx5-frontend-qt5 fcitx5-frontend-qt6 im-config
 fi
 
-mkdir -p /etc/profile.d /etc/xdg/autostart /etc/skel/.config/fcitx5/conf /etc/skel/.config/environment.d
+mkdir -p /etc/skel/.config/fcitx5 /etc/skel/.config/vielotus
 
-cat > /etc/profile.d/ubuntu-nido-fcitx5.sh <<'ENV'
-#!/bin/sh
-export GTK_IM_MODULE=fcitx
-export QT_IM_MODULE=fcitx
-export XMODIFIERS=@im=fcitx
-export INPUT_METHOD=fcitx
-export SDL_IM_MODULE=fcitx
-export GLFW_IM_MODULE=ibus
-ENV
-chmod 644 /etc/profile.d/ubuntu-nido-fcitx5.sh
+cat > /etc/skel/.config/vielotus/config.env <<'VLCONF'
+INPUT_METHOD=telex
+GRAMMAR_PROFILE=classic
+SMART_BILINGUAL=true
+MODERN_ORTHOGRAPHY=true
+VLCONF
 
-cat > /etc/skel/.config/environment.d/90-fcitx5-lotus.conf <<'ENVCONF'
-GTK_IM_MODULE=fcitx
-QT_IM_MODULE=fcitx
-XMODIFIERS=@im=fcitx
-SDL_IM_MODULE=fcitx
-GLFW_IM_MODULE=ibus
-ENVCONF
-
-cat > /etc/skel/.xinputrc <<'XINPUT'
-run_im fcitx5
-XINPUT
-
-DEFAULT_IM="lotus"
-if dpkg -s vielotus >/dev/null 2>&1; then
-  DEFAULT_IM="vielotus"
-fi
-
-cat > /etc/skel/.config/fcitx5/profile <<PROFILE
+cat > /etc/skel/.config/fcitx5/profile <<'PROFILE'
 [Groups/0]
 Name=Default
 Default Layout=us
-DefaultIM=${DEFAULT_IM}
+DefaultIM=vielotus-telex
 
 [Groups/0/Items/0]
-Name=${DEFAULT_IM}
+Name=vielotus-telex
 Layout=
 
 [Groups/0/Items/1]
@@ -77,73 +58,11 @@ Layout=
 0=Default
 PROFILE
 
-cat > /etc/skel/.config/fcitx5/conf/lotus.conf <<'LOTUSCONF'
-InputMethod="Telex"
-Mode="Preedit"
-OutputCharset="Unicode"
-ModeMenuKey="grave"
-ShowModePreedit=True
-LOTUSCONF
+# Ensure GNOME native IBus integration remains intact (do not override globally with Fcitx IM modules)
+rm -f /etc/profile.d/ubuntu-nido-fcitx5.sh /etc/xdg/autostart/ubuntu-nido-im-enable.desktop
 
-cat > /etc/xdg/autostart/org.fcitx.Fcitx5.desktop <<'DESKTOP'
-[Desktop Entry]
-Type=Application
-Name=Fcitx 5
-Name[vi]=Fcitx 5
-Comment=Start Fcitx 5 Vietnamese Input Method
-Comment[vi]=Khoi dong bo go tieng Viet Fcitx 5
-Exec=fcitx5 -d --replace
-Icon=org.fcitx.Fcitx5
-Terminal=false
-Categories=System;Utility;
-NoDisplay=true
-X-GNOME-Autostart-enabled=true
-X-GNOME-Autostart-Phase=InputMethods
-X-GNOME-Provides=inputmethod
-X-GNOME-Autostart-Notify=false
-OnlyShowIn=GNOME;X-Cinnamon;MATE;XFCE;LXQt;KDE;
-DESKTOP
-
-for ibus_file in /etc/xdg/autostart/ibus.desktop /etc/xdg/autostart/ibus-daemon.desktop; do
-  if [ -f "$ibus_file" ]; then
-    mkdir -p /etc/xdg/autostart-disabled
-    mv -f "$ibus_file" "/etc/xdg/autostart-disabled/$(basename "$ibus_file")"
-  fi
-done
-
-cat > /usr/local/bin/ubuntu-nido-im-enable <<'HELPER'
-#!/bin/sh
-set -eu
-
-USER_NAME="${USER:-$(id -un)}"
-if command -v systemctl >/dev/null 2>&1; then
-  systemctl enable --now "fcitx5-lotus-server@${USER_NAME}.service" >/dev/null 2>&1 || true
+if command -v ibus >/dev/null 2>&1; then
+  ibus write-cache --system >/dev/null 2>&1 || true
 fi
 
-killall ibus-daemon >/dev/null 2>&1 || ibus exit >/dev/null 2>&1 || true
-
-mkdir -p "${HOME}/.config/fcitx5/conf" "${HOME}/.config/environment.d"
-[ -f "${HOME}/.config/fcitx5/profile" ] || cp -f /etc/skel/.config/fcitx5/profile "${HOME}/.config/fcitx5/profile"
-[ -f "${HOME}/.config/fcitx5/conf/lotus.conf" ] || cp -f /etc/skel/.config/fcitx5/conf/lotus.conf "${HOME}/.config/fcitx5/conf/lotus.conf"
-[ -f "${HOME}/.config/environment.d/90-fcitx5-lotus.conf" ] || cp -f /etc/skel/.config/environment.d/90-fcitx5-lotus.conf "${HOME}/.config/environment.d/90-fcitx5-lotus.conf"
-
-if command -v fcitx5 >/dev/null 2>&1 && ! pgrep -u "$(id -u)" -x fcitx5 >/dev/null 2>&1; then
-  fcitx5 -d --replace >/dev/null 2>&1 || true
-fi
-HELPER
-chmod 755 /usr/local/bin/ubuntu-nido-im-enable
-
-cat > /etc/xdg/autostart/ubuntu-nido-im-enable.desktop <<'DESKTOP'
-[Desktop Entry]
-Type=Application
-Name=Enable Sen Viet Input Method
-Name[vi]=Kich hoat bo go Sen Viet
-Exec=/usr/local/bin/ubuntu-nido-im-enable
-Terminal=false
-NoDisplay=true
-X-GNOME-Autostart-enabled=true
-X-GNOME-Autostart-Phase=InputMethods
-OnlyShowIn=GNOME;
-DESKTOP
-
-echo "[Ubuntu-Nido] Sen Viet IM hook completed."
+echo "[Ubuntu-Nido] Sen Viet (VieLotusIM) hook completed."

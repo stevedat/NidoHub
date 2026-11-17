@@ -8,4 +8,5 @@ Exec=/usr/local/bin/nido-welcome --force
 Icon=preferences-system
 Terminal=false
 Categories=System;Settings;
+NoDisplay=true
 StartupNotify=true

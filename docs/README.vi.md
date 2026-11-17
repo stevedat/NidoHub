@@ -38,4 +38,4 @@ make check && make packages && make iso
 
 ## Giấy phép
 
-Phát hành theo giấy phép [GNU General Public License v3.0](https://github.com/stevedat/NidoHub/blob/main/LICENSE).
+Phát hành theo giấy phép [GNU General Public License v3.0](../LICENSE).

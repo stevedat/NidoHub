@@ -68,8 +68,10 @@ def _hashes(data: bytes) -> tuple[str, str, str]:
     )
 
 
-def build_apt_repo(dist_dir: Path, out_dir: Path) -> None:
+def build_apt_repo(dist_dir: Path, out_dir: Path, vendor_dir: Path | None = None) -> None:
     deb_files = sorted(dist_dir.glob("*.deb"))
+    if vendor_dir is not None and vendor_dir.is_dir():
+        deb_files.extend(sorted(vendor_dir.glob("*.deb")))
     if not deb_files:
         raise FileNotFoundError(f"No .deb files found in {dist_dir}")
 
@@ -164,9 +166,10 @@ def build_apt_repo(dist_dir: Path, out_dir: Path) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build static APT repository from .deb artifacts.")
     parser.add_argument("--dist-dir", type=Path, default=Path("packages/dist"))
+    parser.add_argument("--vendor-dir", type=Path, default=Path("packages/vendor"))
     parser.add_argument("--out-dir", type=Path, default=Path("apt-repo"))
     args = parser.parse_args()
-    build_apt_repo(args.dist_dir.resolve(), args.out_dir.resolve())
+    build_apt_repo(args.dist_dir.resolve(), args.out_dir.resolve(), args.vendor_dir.resolve())
 
 
 if __name__ == "__main__":

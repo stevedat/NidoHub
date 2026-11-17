@@ -3,11 +3,10 @@ Version: 0.1.0
 Section: office
 Priority: optional
 Architecture: all
-Depends: nodejs (>= 18)
-Recommends: nidoagent-cli
+Depends: python3
+Recommends: nidoagent-cli, nodejs
 Maintainer: Nido Holdings <support@nido-holdings.com>
 Homepage: https://nido-holdings.com
-Description: GenOffice CLI for Ubuntu-Nido document workflows
- Headless document engine for creating, converting, and editing DOCX, PPTX,
- and PDF files from the terminal or through NidoAgent. Powered by the
- GenOffice WASM pipeline (Apache-2.0).
+Description: Headless Office document CLI for Ubuntu-Nido
+ Lightweight OOXML CLI for reading and creating DOCX, XLSX, and PPTX
+ documents and reports from the terminal or via NidoAgent.

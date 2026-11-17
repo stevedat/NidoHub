@@ -22,7 +22,7 @@
       "id": "sen-viet",
       "name": "Bộ gõ Sen Việt (VieLotusIM)",
       "status": "available",
-      "packages": ["fcitx5-lotus"],
+      "packages": ["vielotus"],
       "description": "Bộ gõ tiếng Việt Telex & VNI tốc độ cao cho GNOME Wayland & X11."
     }
   ]

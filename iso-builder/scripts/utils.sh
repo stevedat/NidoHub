@@ -144,12 +144,27 @@ mount_chroot() {
   cp /etc/resolv.conf "$WORK_DIR/squashfs/etc/resolv.conf"
 }
 
+umount_layers() {
+  if [ -d "$WORK_DIR/layers" ]; then
+    if mountpoint -q "$WORK_DIR/layers/merged" 2>/dev/null; then
+      umount "$WORK_DIR/layers/merged" 2>/dev/null || umount -lf "$WORK_DIR/layers/merged" 2>/dev/null || true
+    fi
+    local mp
+    for mp in "$WORK_DIR/layers"/layer_*; do
+      if [ -d "$mp" ] && mountpoint -q "$mp" 2>/dev/null; then
+        umount "$mp" 2>/dev/null || umount -lf "$mp" 2>/dev/null || true
+      fi
+    done
+  fi
+}
+
 umount_chroot() {
   sync 2>/dev/null || true
   umount "$WORK_DIR/squashfs/proc"    2>/dev/null || umount -lf "$WORK_DIR/squashfs/proc"    2>/dev/null || true
   umount "$WORK_DIR/squashfs/sys"     2>/dev/null || umount -lf "$WORK_DIR/squashfs/sys"     2>/dev/null || true
   umount "$WORK_DIR/squashfs/dev/pts" 2>/dev/null || umount -lf "$WORK_DIR/squashfs/dev/pts" 2>/dev/null || true
   umount "$WORK_DIR/squashfs/dev"     2>/dev/null || umount -lf "$WORK_DIR/squashfs/dev"     2>/dev/null || true
+  umount_layers
 }
 
 safe_remove_work_dirs() {
@@ -157,11 +172,11 @@ safe_remove_work_dirs() {
   umount_chroot
   umount "$WORK_DIR/mnt" 2>/dev/null || true
 
-  if grep -q " $WORK_DIR/squashfs/" /proc/mounts 2>/dev/null; then
-    error "Active mounts remain under $WORK_DIR/squashfs. Run: sudo umount -Rlf $WORK_DIR/squashfs"
+  if grep -q " $WORK_DIR/squashfs/" /proc/mounts 2>/dev/null || grep -q " $WORK_DIR/layers/" /proc/mounts 2>/dev/null; then
+    error "Active mounts remain under $WORK_DIR. Run: sudo umount -Rlf $WORK_DIR/squashfs $WORK_DIR/layers"
   fi
 
-  rm -rf "${WORK_DIR:?}/squashfs" "${WORK_DIR:?}/custom" "${WORK_DIR:?}/mnt" 2>/dev/null || true
+  rm -rf "${WORK_DIR:?}/squashfs" "${WORK_DIR:?}/custom" "${WORK_DIR:?}/mnt" "${WORK_DIR:?}/layers" 2>/dev/null || true
 }
 
 print_dev_help() {

@@ -1,17 +1,28 @@
 #!/bin/sh
 set -e
 
-if [ -d /etc/dconf/db/local.d ] && command -v dconf >/dev/null 2>&1; then
-  dconf update >/dev/null 2>&1 || true
+rm -f /etc/apt/sources.list.d/ubuntu-nido.sources.disabled
+
+SRC_FILE="/etc/apt/sources.list.d/ubuntu-nido.sources"
+if [ -f "$SRC_FILE" ] && [ -f /etc/os-release ]; then
+  CODENAME="$(
+    # shellcheck disable=SC1091
+    . /etc/os-release
+    printf '%s' "${UBUNTU_CODENAME:-${VERSION_CODENAME:-noble}}"
+  )"
+  case "$CODENAME" in
+    resolute|noble)
+      SUITE="$CODENAME"
+      ;;
+    *)
+      SUITE="noble"
+      ;;
+  esac
+  sed -i "s|^Suites: .*|Suites: ${SUITE}|" "$SRC_FILE"
 fi
 
-# Install Ubuntu-Nido APT signing key if not present
-KEYRING_DIR="/etc/apt/keyrings"
-KEYRING_FILE="${KEYRING_DIR}/ubuntu-nido.gpg"
-if [ ! -f "$KEYRING_FILE" ] && command -v curl >/dev/null 2>&1; then
-  mkdir -p "$KEYRING_DIR"
-  curl -fsSL "https://ubuntu-nido-apt.pages.dev/ubuntu-nido.gpg" \
-    | gpg --dearmor -o "$KEYRING_FILE" 2>/dev/null || true
+if [ -d /etc/dconf/db/local.d ] && command -v dconf >/dev/null 2>&1; then
+  dconf update >/dev/null 2>&1 || true
 fi
 
 exit 0

@@ -21,7 +21,6 @@ SHELL_SCRIPTS=(
   "${ROOT_DIR}/packages/nido-desktop-settings/files/usr/local/bin/nidoagent-quicklaunch"
   "${ROOT_DIR}/packages/nido-desktop-settings/files/etc/skel/.local/share/nautilus/scripts/Giao-cho-NidoAgent"
   "${ROOT_DIR}/packages/nido-hub/files/usr/bin/nido-hub"
-  "${ROOT_DIR}/packages/nidooffice-cli/DEBIAN/postinst"
   "${ROOT_DIR}/packages/nidooffice-cli/files/usr/bin/nidooffice"
   "${ROOT_DIR}/iso-builder/build.sh"
   "${ROOT_DIR}/iso-builder/scripts/config.sh"
@@ -182,7 +181,12 @@ sandbox = Path(sys.argv[2])
 extract_root = sandbox / "rootfs"
 extract_root.mkdir(parents=True, exist_ok=True)
 
-for deb_name in ("nidoai-gateway_0.1.0_all.deb", "nidoagent-cli_0.1.0_all.deb"):
+for deb_name in (
+    "nidoai-gateway_0.1.0_all.deb",
+    "nidoagent-cli_0.1.0_all.deb",
+    "nido-hub_0.1.0_all.deb",
+    "nidooffice-cli_0.1.0_all.deb",
+):
     raw = (dist / deb_name).read_bytes()
     pos = 8
     while pos + 60 <= len(raw):
@@ -279,7 +283,59 @@ assert data["tokenConfigured"] is True, "Expected tokenConfigured=true"
 assert data["gateway"]["status"] == "ok", f"Unexpected gateway payload: {data}"
 print("Verified nidoagent status output against live nidoai-gateway.")
 PY
-pass "Live nidoai-gateway <-> nidoagent-cli smoke test passed"
+
+NIDOHUB_APP_ENTRY="${SANDBOX}/rootfs/usr/lib/nido-hub/app.py" \
+  "${SANDBOX}/rootfs/usr/bin/nido-hub" --self-test
+
+python3 - "${SANDBOX}" <<'PY'
+import os, subprocess, sys
+from pathlib import Path
+
+sandbox = Path(sys.argv[1])
+nidooffice_bin = str(sandbox / "rootfs/usr/bin/nidooffice")
+env = dict(os.environ)
+env["NIDOOFFICE_PY_ENTRY"] = str(sandbox / "rootfs/usr/lib/nidooffice-cli/engine.py")
+
+docx_path = sandbox / "report.docx"
+md_in = "# Báo cáo kiểm thử\n\nNội dung: Báo cáo Ubuntu-Nido — Tiếng Việt chuẩn\n\n| Hạng mục | Giá trị |\n| --- | --- |\n| GPU | 100 |\n"
+subprocess.run(
+    [nidooffice_bin, "create", "--type", "docx", "--out", str(docx_path), "--from", "-"],
+    input=md_in,
+    text=True,
+    check=True,
+    env=env,
+    capture_output=True,
+)
+docx_out = subprocess.run(
+    [nidooffice_bin, "read", str(docx_path)],
+    text=True,
+    check=True,
+    env=env,
+    capture_output=True,
+).stdout
+assert "Báo cáo Ubuntu-Nido — Tiếng Việt chuẩn" in docx_out, f"DOCX round-trip mismatch: {docx_out}"
+
+xlsx_path = sandbox / "summary.xlsx"
+table_in = "| Thành phần | Trạng thái |\n| --- | --- |\n| NidoAgent | 200 |\n| Sen Việt | =TEST |\n"
+subprocess.run(
+    [nidooffice_bin, "create", "--type", "xlsx", "--out", str(xlsx_path), "--from", "-"],
+    input=table_in,
+    text=True,
+    check=True,
+    env=env,
+    capture_output=True,
+)
+xlsx_out = subprocess.run(
+    [nidooffice_bin, "read", str(xlsx_path)],
+    text=True,
+    check=True,
+    env=env,
+    capture_output=True,
+).stdout
+assert "NidoAgent" in xlsx_out and "200" in xlsx_out and "=TEST" in xlsx_out, f"XLSX round-trip mismatch: {xlsx_out}"
+print("Verified nido-hub --self-test and nidooffice DOCX/XLSX round-trip.")
+PY
+pass "Live nidoai-gateway <-> nidoagent-cli, nido-hub, and nidooffice smoke tests passed"
 
 echo "=== 6. Layered Casper install-sources.yaml Updater Unit Test ==="
 python3 - "${ROOT_DIR}/iso-builder/scripts/update_install_sources.py" <<'PY'

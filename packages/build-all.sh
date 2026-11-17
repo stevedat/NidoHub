@@ -54,8 +54,9 @@ chmod 755 \
   "${SCRIPT_DIR}/nido-desktop-settings/files/usr/local/bin/nidoagent-quicklaunch" \
   "${SCRIPT_DIR}/nido-desktop-settings/files/etc/skel/.local/share/nautilus/scripts/Giao-cho-NidoAgent" \
   "${SCRIPT_DIR}/nido-hub/files/usr/bin/nido-hub" \
-  "${SCRIPT_DIR}/nidooffice-cli/DEBIAN/postinst" \
-  "${SCRIPT_DIR}/nidooffice-cli/files/usr/bin/nidooffice"
+  "${SCRIPT_DIR}/nido-hub/files/usr/lib/nido-hub/app.py" \
+  "${SCRIPT_DIR}/nidooffice-cli/files/usr/bin/nidooffice" \
+  "${SCRIPT_DIR}/nidooffice-cli/files/usr/lib/nidooffice-cli/engine.py"
 
 python3 "$DEB_BUILDER" \
   --source-dir "${SCRIPT_DIR}/nidoai-gateway" \

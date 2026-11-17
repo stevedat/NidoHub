@@ -106,12 +106,19 @@ class NidoHubBackend:
         )
 
         if restart_service and shutil.which("systemctl"):
-            subprocess.run(
+            res = subprocess.run(
                 ["systemctl", "--user", "restart", "nidoai-gateway.service"],
                 check=False,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
+            if res.returncode != 0:
+                subprocess.run(
+                    ["systemctl", "--user", "enable", "--now", "nidoai-gateway.service"],
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
 
     def probe_gateway_health(self) -> tuple[bool, str]:
         env = self.load_env()
@@ -170,11 +177,10 @@ class NidoHubBackend:
             return False, "Cần pkexec và apt-get trên hệ thống Ubuntu để cài đặt gói."
         cmd = [
             pkexec,
-            "env",
-            "DEBIAN_FRONTEND=noninteractive",
-            apt_get,
-            "install",
-            "-y",
+            "sh",
+            "-c",
+            'export DEBIAN_FRONTEND=noninteractive; apt-get update && apt-get install -y "$@"',
+            "nido-hub-apt",
             *safe_pkgs,
         ]
         res = subprocess.run(cmd, check=False, capture_output=True, text=True)

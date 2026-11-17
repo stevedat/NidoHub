@@ -3,6 +3,7 @@
  * NidoAgent CLI (Ubuntu-Nido)
  * Zero-dependency ESM client talking to the local NidoAI Gateway.
  */
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -10,6 +11,7 @@ import readline from 'node:readline';
 
 const VERSION = '0.1.0';
 const MAX_ATTACH_BYTES = 65_536;
+const OFFICE_EXTS = new Set(['.docx', '.xlsx', '.pptx']);
 
 function stateDirCandidates() {
   const dirs = [];
@@ -76,10 +78,10 @@ function printHelp() {
   console.log(`NidoAgent CLI v${VERSION} (Ubuntu-Nido)
 
 Usage:
-  nidoagent status | doctor                 Kiem tra ket noi NidoAI Gateway
-  nidoagent ask [--file <path>] <prompt>    Gui cau hoi / tep cho NidoAI Gateway
-  nidoagent chat                            Mo phien hoi thoai tuong tac
-  nidoagent --version | --help              Hien thong tin phien ban / tro giup
+  nidoagent status | doctor                                 Kiem tra ket noi NidoAI Gateway
+  nidoagent ask [--file <path>] [--out <path>] <prompt>     Gui cau hoi / tep va tuy chon xuat bao cao
+  nidoagent chat                                            Mo phien hoi thoai tuong tac
+  nidoagent --version | --help                              Hien thong tin phien ban / tro giup
 `);
 }
 
@@ -127,6 +129,26 @@ async function cmdStatus() {
 function readAttachedFile(filePath) {
   const resolved = path.resolve(filePath);
   const stat = fs.statSync(resolved);
+  if (!stat.isFile()) {
+    throw new Error(`Tep dinh kem khong hop le (khong phai tep thong thuong): ${resolved}`);
+  }
+  const ext = path.extname(resolved).toLowerCase();
+  if (OFFICE_EXTS.has(ext)) {
+    const officeBin = process.env.NIDOOFFICE_BIN || 'nidooffice';
+    const extracted = execFileSync(officeBin, ['read', resolved], {
+      encoding: 'utf8',
+      maxBuffer: 4 * 1024 * 1024,
+      env: process.env,
+    });
+    const rawBuf = Buffer.from(extracted, 'utf8');
+    const truncated = rawBuf.length > MAX_ATTACH_BYTES;
+    const text = rawBuf.subarray(0, MAX_ATTACH_BYTES).toString('utf8');
+    return [
+      `--- File: ${resolved} (extracted via nidooffice${truncated ? ', truncated to 64 KiB' : ''}) ---`,
+      text,
+      '--- End of file ---',
+    ].join('\n');
+  }
   const raw = fs.readFileSync(resolved);
   const truncated = raw.length > MAX_ATTACH_BYTES;
   const text = raw.subarray(0, MAX_ATTACH_BYTES).toString('utf8');
@@ -171,6 +193,7 @@ async function sendChatCompletion(conn, messages) {
 async function cmdAsk(args) {
   const files = [];
   const promptParts = [];
+  let outPath = '';
 
   for (let i = 0; i < args.length; i += 1) {
     if (args[i] === '--file' || args[i] === '-f') {
@@ -180,6 +203,13 @@ async function cmdAsk(args) {
         process.exit(2);
       }
       files.push(args[i]);
+    } else if (args[i] === '--out' || args[i] === '-o') {
+      i += 1;
+      if (!args[i]) {
+        console.error('nidoagent ask: thieu duong dan sau --out');
+        process.exit(2);
+      }
+      outPath = args[i];
     } else {
       promptParts.push(args[i]);
     }
@@ -187,7 +217,7 @@ async function cmdAsk(args) {
 
   const prompt = promptParts.join(' ').trim();
   if (!prompt && files.length === 0) {
-    console.error('Usage: nidoagent ask [--file <path>] <prompt>');
+    console.error('Usage: nidoagent ask [--file <path>] [--out <path>] <prompt>');
     process.exit(2);
   }
 
@@ -197,15 +227,41 @@ async function cmdAsk(args) {
   }
   sections.push(prompt || 'Hay tom tat va phan tich noi dung cac tep dinh kem.');
 
+  const outExt = outPath ? path.extname(outPath).toLowerCase() : '';
+  let systemPrompt =
+    'Ban la NidoAgent — tro ly dieu phoi cong viec mac dinh tren he dieu hanh Ubuntu-Nido. Tra loi ngan gon, chinh xac, uu tien tieng Viet khi nguoi dung hoi bang tieng Viet.';
+  if (outExt === '.xlsx') {
+    systemPrompt +=
+      ' Khi xuat bao cao bang tinh (.xlsx), hay trinh bay du lieu chinh duoi dang bang Markdown (| Cot | Gia tri |) de he thong trich xuat sang Excel chinh xac.';
+  }
+
   const conn = resolveGatewayConnection();
   const reply = await sendChatCompletion(conn, [
     {
       role: 'system',
-      content:
-        'Ban la NidoAgent — tro ly dieu phoi cong viec mac dinh tren he dieu hanh Ubuntu-Nido. Tra loi ngan gon, chinh xac, uu tien tieng Viet khi nguoi dung hoi bang tieng Viet.',
+      content: systemPrompt,
     },
     { role: 'user', content: sections.join('\n\n') },
   ]);
+
+  if (outPath) {
+    const resolvedOut = path.resolve(outPath);
+    fs.mkdirSync(path.dirname(resolvedOut), { recursive: true });
+    if (outExt === '.docx' || outExt === '.xlsx') {
+      const officeBin = process.env.NIDOOFFICE_BIN || 'nidooffice';
+      execFileSync(officeBin, ['create', '--type', outExt.slice(1), '--out', resolvedOut, '--from', '-'], {
+        input: reply,
+        encoding: 'utf8',
+        env: process.env,
+      });
+    } else {
+      fs.writeFileSync(resolvedOut, `${reply}\n`, 'utf8');
+    }
+    console.log(reply);
+    console.log(`\n[Đã xuất báo cáo: ${resolvedOut}]`);
+    return;
+  }
+
   console.log(reply);
 }
 

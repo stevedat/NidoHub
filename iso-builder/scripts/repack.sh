@@ -65,6 +65,11 @@ step_repack_squashfs() {
       fi
     done
   fi
+
+  if [ "${CLEAN_OUTPUT:-false}" = "true" ]; then
+    rm -rf "${WORK_DIR:?}/squashfs"
+    info "Removed unpacked squashfs tree to free disk space before ISO mastering."
+  fi
 }
 
 step_repack_iso() {
@@ -80,12 +85,16 @@ step_repack_iso() {
 
   info "  → Building hybrid bootable ISO ($TARGET_ARCH)..."
 
-  local xorriso_args=()
-  if [ -n "$source_iso" ] && [ -f "$source_iso" ]; then
-    local eltorito_dump
+  local eltorito_dump=""
+  if [ -s "$WORK_DIR/eltorito.args" ]; then
+    eltorito_dump="$(cat "$WORK_DIR/eltorito.args")"
+  elif [ -n "$source_iso" ] && [ -f "$source_iso" ]; then
     eltorito_dump="$(xorriso -indev "$source_iso" -report_el_torito as_mkisofs 2>/dev/null || true)"
-    if [ -n "$eltorito_dump" ]; then
-      mapfile -d '' -t xorriso_args < <(python3 -c '
+  fi
+
+  local xorriso_args=()
+  if [ -n "$eltorito_dump" ]; then
+    mapfile -d '' -t xorriso_args < <(python3 -c '
 import shlex, sys
 tokens = shlex.split(sys.stdin.read())
 out = []
@@ -100,7 +109,6 @@ while i < len(tokens):
     i += 1
 sys.stdout.buffer.write(b"\0".join(t.encode() for t in out) + b"\0")
 ' <<< "$eltorito_dump")
-    fi
   fi
 
   if [ "${#xorriso_args[@]}" -eq 0 ]; then

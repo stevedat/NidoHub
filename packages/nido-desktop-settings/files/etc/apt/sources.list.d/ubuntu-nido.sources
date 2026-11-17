@@ -1,0 +1,6 @@
+Types: deb
+URIs: https://ubuntu-nido-apt.pages.dev
+Suites: resolute
+Components: main
+Signed-By: /etc/apt/keyrings/ubuntu-nido.asc
+Enabled: yes

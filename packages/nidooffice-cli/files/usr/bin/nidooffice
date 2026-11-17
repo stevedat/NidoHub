@@ -1,15 +1,14 @@
 #!/bin/sh
 set -eu
 
-# nidooffice — headless GenOffice document CLI for Ubuntu-Nido
-# Locates genoffice.cjs from install dir or NIDOOFFICE_CLI_ENTRY env.
+# nidooffice — headless document CLI for Ubuntu-Nido
+# Uses GenOffice engine when present, otherwise built-in standalone OOXML engine.
 
 CLI_ENTRY="${NIDOOFFICE_CLI_ENTRY:-/usr/lib/nidooffice-cli/genoffice.cjs}"
+PY_ENTRY="${NIDOOFFICE_PY_ENTRY:-/usr/lib/nidooffice-cli/engine.py}"
 
-if [ ! -f "$CLI_ENTRY" ]; then
-  echo "Error: genoffice CLI engine not found at $CLI_ENTRY" >&2
-  echo "Install the nidooffice-cli-engine package or set NIDOOFFICE_CLI_ENTRY." >&2
-  exit 1
+if [ -f "$CLI_ENTRY" ] && command -v node >/dev/null 2>&1; then
+  exec node "$CLI_ENTRY" "$@"
 fi
 
-exec node "$CLI_ENTRY" "$@"
+exec python3 "$PY_ENTRY" "$@"
