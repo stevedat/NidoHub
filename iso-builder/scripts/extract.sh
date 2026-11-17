@@ -70,7 +70,9 @@ step_extract() {
   sync 2>/dev/null || true
   umount_chroot
   umount "$WORK_DIR/mnt" 2>/dev/null || true
-  rm -rf "${WORK_DIR:?}/squashfs" "${WORK_DIR:?}/custom" "${WORK_DIR:?}/layers"
+  rm -rf "${WORK_DIR:?}/squashfs" "${WORK_DIR:?}/custom" "${WORK_DIR:?}/layers" \
+    "${WORK_DIR:?}/live_delta" "${WORK_DIR:?}/live_work" "${WORK_DIR:?}/live_merged" \
+    "${WORK_DIR:?}/empty_standard" "$WORK_DIR/orig_live.squashfs"
   mkdir -p "$WORK_DIR/mnt" "$WORK_DIR/custom"
 
   local use_cache=1
@@ -87,11 +89,14 @@ step_extract() {
     info "  → Copying cached rootfs to active work tree..."
     cp -a "$cache_dir" "$WORK_DIR/squashfs"
     cp -a "$WORK_DIR/cache_iso/." "$WORK_DIR/custom/"
+    if [ -f "$WORK_DIR/cache_live.squashfs" ]; then
+      cp -a "$WORK_DIR/cache_live.squashfs" "$WORK_DIR/orig_live.squashfs"
+    fi
     ok "Ready for customization."
     return 0
   fi
 
-  rm -rf "${cache_dir:?}" "${WORK_DIR:?}/cache_iso"
+  rm -rf "${cache_dir:?}" "${WORK_DIR:?}/cache_iso" "$WORK_DIR/cache_live.squashfs"
   info "[2/7] Extracting base Ubuntu ISO..."
   xorriso -indev "$BASE_ISO" -report_el_torito as_mkisofs > "$WORK_DIR/eltorito.args" 2>/dev/null || true
 
@@ -112,25 +117,39 @@ step_extract() {
   fi
 
   rsync -a \
-    --exclude='casper/filesystem.squashfs' \
-    --exclude='casper/minimal.squashfs' \
-    --exclude='casper/minimal.standard.squashfs' \
-    --exclude='casper/minimal.standard.en.squashfs' \
+    --include='casper/minimal.manifest' \
+    --include='casper/minimal.standard.live.manifest' \
+    --include='casper/filesystem.manifest' \
+    --exclude='casper/*.squashfs' \
+    --exclude='casper/*.size' \
+    --exclude='casper/*.manifest*' \
     "$WORK_DIR/mnt/" "$iso_target/"
   ok "Extracted ISO metadata and boot structure."
 
   info "[3/7] Unpacking SquashFS root filesystem..."
   if [ -f "$WORK_DIR/mnt/casper/minimal.squashfs" ]; then
     extract_layered_casper "$rootfs_target"
-    cat > "$layout_env" <<'LAYOUT'
+    local has_live_layer=0
+    if [ -f "$WORK_DIR/mnt/casper/minimal.standard.live.squashfs" ]; then
+      has_live_layer=1
+      if [ "$use_cache" -eq 1 ]; then
+        cp -a "$WORK_DIR/mnt/casper/minimal.standard.live.squashfs" "$WORK_DIR/cache_live.squashfs"
+        cp -a "$WORK_DIR/cache_live.squashfs" "$WORK_DIR/orig_live.squashfs"
+      else
+        cp -a "$WORK_DIR/mnt/casper/minimal.standard.live.squashfs" "$WORK_DIR/orig_live.squashfs"
+      fi
+    fi
+    cat > "$layout_env" <<LAYOUT
 CASPER_MODE=layered
 SQUASHFS_TARGET=minimal.squashfs
+HAS_LIVE_LAYER=${has_live_layer}
 LAYOUT
   elif [ -f "$WORK_DIR/mnt/casper/filesystem.squashfs" ]; then
     unsquashfs -d "$rootfs_target" "$WORK_DIR/mnt/casper/filesystem.squashfs"
     cat > "$layout_env" <<'LAYOUT'
 CASPER_MODE=classic
 SQUASHFS_TARGET=filesystem.squashfs
+HAS_LIVE_LAYER=0
 LAYOUT
   else
     [ "$mounted" -eq 1 ] && umount "$WORK_DIR/mnt" || true

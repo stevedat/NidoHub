@@ -4,6 +4,8 @@
 clean_virtual_dirs() {
   local sfs="$WORK_DIR/squashfs"
   rm -rf "$sfs/tmp"/* "$sfs/var/tmp"/* 2>/dev/null || true
+  # Restore systemd-resolved symlink so host CI DNS config never leaks into the ISO
+  ln -snf ../run/systemd/resolve/stub-resolv.conf "$sfs/etc/resolv.conf"
 
   local dir
   for dir in proc sys dev run; do
@@ -15,6 +17,68 @@ clean_virtual_dirs() {
   done
 }
 
+repack_layered_live_overlays() {
+  local casper_dir="$WORK_DIR/custom/casper"
+  info "  → Creating pass-through minimal.standard.squashfs layer..."
+  rm -rf "${WORK_DIR:?}/empty_standard" "${WORK_DIR:?}/live_delta" \
+    "${WORK_DIR:?}/live_work" "${WORK_DIR:?}/live_merged"
+  mkdir -p "$WORK_DIR/empty_standard" "$WORK_DIR/live_work" "$WORK_DIR/live_merged"
+
+  mksquashfs "$WORK_DIR/empty_standard" "$casper_dir/minimal.standard.squashfs" \
+    -comp "$SQUASHFS_COMP" "${SQUASHFS_OPTS[@]}"
+  printf '0' > "$casper_dir/minimal.standard.size"
+  rm -rf "${WORK_DIR:?}/empty_standard"
+
+  info "  → Reconciling minimal.standard.live.squashfs against customized rootfs..."
+  unsquashfs -d "$WORK_DIR/live_delta" "$WORK_DIR/orig_live.squashfs"
+  python3 "$SCRIPT_DIR/scripts/reconcile_live_layer.py" \
+    --base-rootfs "$WORK_DIR/squashfs" \
+    --live-delta "$WORK_DIR/live_delta"
+
+  mount -t overlay overlay \
+    -o "lowerdir=$WORK_DIR/squashfs,upperdir=$WORK_DIR/live_delta,workdir=$WORK_DIR/live_work" \
+    "$WORK_DIR/live_merged"
+  mount --bind /dev "$WORK_DIR/live_merged/dev"
+  mount --bind /dev/pts "$WORK_DIR/live_merged/dev/pts"
+  mount -t proc proc "$WORK_DIR/live_merged/proc"
+  mount -t sysfs sysfs "$WORK_DIR/live_merged/sys"
+
+  chroot "$WORK_DIR/live_merged" /bin/bash -c '
+    set -e
+    ldconfig
+    if [ -d /usr/share/glib-2.0/schemas ]; then
+      glib-compile-schemas /usr/share/glib-2.0/schemas/
+    fi
+    if [ -d /etc/dconf/db/local.d ]; then
+      dconf compile /etc/dconf/db/local /etc/dconf/db/local.d || dconf update || true
+    fi
+    apt-get check
+    test -x /sbin/init
+    test -x /usr/bin/nidoai
+    test -x /usr/bin/nidoagent
+    test -x /usr/bin/nido-hub
+    test -x /usr/bin/nidooffice
+    dpkg -s vielotus >/dev/null
+    dpkg -s casper >/dev/null
+  '
+
+  umount_layers
+  python3 "$SCRIPT_DIR/scripts/reconcile_live_layer.py" \
+    --strip-overlay-xattrs "$WORK_DIR/live_delta"
+
+  rm -rf "${WORK_DIR:?}/live_delta/tmp/"* "${WORK_DIR:?}/live_delta/var/tmp/"* 2>/dev/null || true
+
+  mksquashfs "$WORK_DIR/live_delta" "$casper_dir/minimal.standard.live.squashfs" \
+    -comp "$SQUASHFS_COMP" "${SQUASHFS_OPTS[@]}"
+  local live_bytes
+  live_bytes="$(du -sx --block-size=1 "$WORK_DIR/live_delta" | cut -f1)"
+  printf '%s' "$live_bytes" > "$casper_dir/minimal.standard.live.size"
+
+  rm -rf "${WORK_DIR:?}/live_delta" "${WORK_DIR:?}/live_work" \
+    "${WORK_DIR:?}/live_merged" "$WORK_DIR/orig_live.squashfs"
+  ok "Layered Casper stack packed and verified cleanly."
+}
+
 step_repack_squashfs() {
   ensure_work_tree
   umount_chroot
@@ -22,11 +86,13 @@ step_repack_squashfs() {
 
   local casper_mode="classic"
   local squashfs_target="filesystem.squashfs"
+  local has_live_layer=0
   if [ -f "$WORK_DIR/casper-layout.env" ]; then
     # shellcheck disable=SC1090
     source "$WORK_DIR/casper-layout.env"
     casper_mode="${CASPER_MODE:-classic}"
     squashfs_target="${SQUASHFS_TARGET:-filesystem.squashfs}"
+    has_live_layer="${HAS_LIVE_LAYER:-0}"
   fi
 
   local out_sfs="$WORK_DIR/custom/casper/${squashfs_target}"
@@ -38,6 +104,9 @@ step_repack_squashfs() {
   root_bytes="$(du -sx --block-size=1 "$WORK_DIR/squashfs" | cut -f1)"
   if [ "$casper_mode" = "layered" ]; then
     printf '%s' "$root_bytes" > "$WORK_DIR/custom/casper/minimal.size"
+    if [ "$has_live_layer" = "1" ] && [ -f "$WORK_DIR/orig_live.squashfs" ]; then
+      repack_layered_live_overlays
+    fi
     if [ -f "$WORK_DIR/custom/casper/install-sources.yaml" ]; then
       python3 "$SCRIPT_DIR/scripts/update_install_sources.py" \
         --yaml "$WORK_DIR/custom/casper/install-sources.yaml" \

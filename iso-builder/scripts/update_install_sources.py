@@ -71,12 +71,46 @@ def _set_top_field(block: list[str], key: str, value: str) -> list[str]:
     return out
 
 
+def _strip_nested_keys(
+    block: list[str], keys: tuple[str, ...] = ("preinstalled_langs", "variations")
+) -> list[str]:
+    """Remove specified 2-space keys and their nested child or list lines."""
+    out: list[str] = []
+    skipping = False
+    for idx, line in enumerate(block):
+        if idx == 0 and line.startswith("- "):
+            skipping = False
+            out.append(line)
+            continue
+        is_top_key = (
+            line.startswith("  ")
+            and not line.startswith("   ")
+            and not line.startswith("  - ")
+            and line.rstrip() != "  -"
+        )
+        if is_top_key:
+            key_name = line[2:].split(":", 1)[0].strip()
+            if key_name in keys:
+                skipping = True
+                continue
+            skipping = False
+            out.append(line)
+            continue
+        if skipping and (line.startswith("    ") or line.startswith("  - ") or not line.strip()):
+            continue
+        skipping = False
+        out.append(line)
+    return out
+
+
 def _set_name_en(block: list[str], new_name: str) -> list[str]:
     out: list[str] = []
     in_name = False
     for idx, line in enumerate(block):
         stripped = line[2:] if idx == 0 and line.startswith("- ") else line.lstrip()
-        is_top = idx == 0 or not line.startswith("    ")
+        is_top = idx == 0 or (
+            line.startswith("  ") and not line.startswith("   ") and not line.startswith("  - ")
+        )
         if is_top:
             in_name = stripped.startswith("name:")
             out.append(line)
@@ -100,6 +134,7 @@ def update_install_sources(
         return (
             f"- default: true\n"
             f"  id: ubuntu-nido-desktop\n"
+            f"  locale_support: locale-only\n"
             f"  name:\n"
             f"    en: {display_name}\n"
             f"  path: {squashfs_filename}\n"
@@ -119,10 +154,12 @@ def update_install_sources(
             continue
 
         if path_val == squashfs_filename or not updated_primary:
+            block = _strip_nested_keys(block, keys=("preinstalled_langs", "variations"))
             block = _set_top_field(block, "path", squashfs_filename)
             block = _set_top_field(block, "size", str(squashfs_size))
             block = _set_top_field(block, "type", "fsimage")
             block = _set_top_field(block, "default", "true")
+            block = _set_top_field(block, "locale_support", "locale-only")
             block = _set_name_en(block, display_name)
             updated_primary = True
         kept.append(block)

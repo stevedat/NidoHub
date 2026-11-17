@@ -23,35 +23,65 @@ step_boot_config() {
 
   local cfg
   while IFS= read -r -d '' cfg; do
-    sed -i \
-      -e "s/Try or Install Ubuntu/${brand_title}/g" \
-      -e "s/Ubuntu (safe graphics)/${brand_name} (safe graphics)/g" \
-      -e "s/Ubuntu/${brand_name}/g" \
-      "$cfg"
+    python3 - "$cfg" "$brand_name" "$brand_title" "$NIDO_VERSION" "${DEBUG_BOOT:-0}" <<'PY'
+import re
+import sys
+from pathlib import Path
 
-    if ! grep -q 'locale=vi_VN.UTF-8' "$cfg"; then
-      sed -i 's/boot=casper/boot=casper locale=vi_VN.UTF-8/g' "$cfg"
-    fi
+cfg_path = Path(sys.argv[1])
+brand_name, brand_title, nido_ver, debug_flag = sys.argv[2:6]
+is_debug = debug_flag == "1"
 
-    if $is_debug; then
-      sed -i '/^[[:space:]]*linux/s/\bquiet\b//g; /^[[:space:]]*linux/s/\bsplash\b//g' "$cfg"
-    fi
-    ok "  Updated GRUB config: $(basename "$cfg")"
-  done < <(find "$iso_dir" \( -path "*/grub/*.cfg" -o -path "*/EFI/boot/*.cfg" \) -type f -print0 2>/dev/null)
+raw = cfg_path.read_text(encoding="utf-8", errors="replace")
+out_lines: list[str] = []
 
-  while IFS= read -r -d '' cfg; do
-    sed -i \
-      -e "s/Try or Install Ubuntu/${brand_title}/g" \
-      -e "s/Ubuntu/${brand_name}/g" \
-      "$cfg"
-    if ! grep -q 'locale=vi_VN.UTF-8' "$cfg"; then
-      sed -i 's/boot=casper/boot=casper locale=vi_VN.UTF-8/g' "$cfg"
-    fi
-    if $is_debug; then
-      sed -i '/^[[:space:]]*append/Is/\bquiet\b//g; /^[[:space:]]*append/Is/\bsplash\b//g' "$cfg"
-    fi
-    ok "  Updated ISOLINUX config: $(basename "$cfg")"
-  done < <(find "$iso_dir" \( -path "*/isolinux/*.cfg" -o -path "*/syslinux/*.cfg" \) -type f -print0 2>/dev/null)
+for line in raw.splitlines():
+    stripped = line.lstrip()
+    low = stripped.lower()
+
+    if low.startswith(("menuentry ", "menuentry\t", "menu label ")):
+        # Normalize idempotently so repeated runs never produce Ubuntu-Nido-Nido
+        norm = re.sub(
+            rf"{re.escape(brand_name)}(?:-Nido)*\s+{re.escape(nido_ver)}\s+\([^)]+\)",
+            "Try or Install Ubuntu",
+            line,
+        )
+        norm = re.sub(rf"{re.escape(brand_name)}(?:-Nido)*", "Ubuntu", norm)
+        norm = re.sub(r"Ubuntu(?:-Nido)+", "Ubuntu", norm)
+
+        def _brand_repl(m: re.Match[str]) -> str:
+            tok = m.group(0)
+            if tok == "Try or Install Ubuntu":
+                return brand_title
+            if "safe graphics" in tok:
+                return f"{brand_name} (safe graphics)"
+            return brand_name
+
+        line = re.sub(
+            r"Try or Install Ubuntu|Ubuntu \(safe graphics\)|\bUbuntu\b",
+            _brand_repl,
+            norm,
+        )
+    elif low.startswith(("linux ", "linux\t", "linuxefi ", "linuxefi\t", "append ", "append\t")) and (
+        "/casper/vmlinuz" in line or "boot=casper" in line
+    ):
+        if is_debug:
+            indent = line[: len(line) - len(stripped)]
+            cleaned = re.sub(r"(?<!\S)(?:quiet|splash)(?!\S)", "", stripped)
+            cleaned = re.sub(r" {2,}", " ", cleaned).strip()
+            line = f"{indent}{cleaned}"
+        if not re.search(r"(?<!\S)locale=", line):
+            if re.search(r"(?<!\S)---(?=\s|$)", line):
+                line = re.sub(r"\s+---(?=\s|$)", " locale=vi_VN.UTF-8 ---", line, count=1)
+            else:
+                line = f"{line.rstrip()} locale=vi_VN.UTF-8"
+
+    out_lines.append(line)
+
+cfg_path.write_text("\n".join(out_lines) + ("\n" if raw.endswith("\n") else ""), encoding="utf-8")
+PY
+    ok "  Updated boot config: $(basename "$cfg")"
+  done < <(find "$iso_dir" \( -path "*/grub/*.cfg" -o -path "*/EFI/boot/*.cfg" -o -path "*/isolinux/*.cfg" -o -path "*/syslinux/*.cfg" \) -type f -print0 2>/dev/null)
 
   ok "[2.5/7] Boot config complete."
 }

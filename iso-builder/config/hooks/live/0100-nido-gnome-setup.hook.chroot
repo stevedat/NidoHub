@@ -4,14 +4,19 @@ set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 
 NIDO_VERSION="${NIDO_VERSION:-0.1.0}"
+BASE_UBUNTU_VERSION="${UBUNTU_VERSION:-}"
 UBUNTU_CODENAME="${UBUNTU_CODENAME:-resolute}"
 
-# Read upstream UBUNTU_CODENAME if present in base rootfs
+# Read upstream UBUNTU_CODENAME / VERSION_ID if present in base rootfs
 if [ -f /etc/os-release ]; then
   # shellcheck disable=SC1091
   . /etc/os-release || true
   UBUNTU_CODENAME="${UBUNTU_CODENAME:-resolute}"
+  if [ -z "$BASE_UBUNTU_VERSION" ] && [ -n "${VERSION_ID:-}" ]; then
+    BASE_UBUNTU_VERSION="$VERSION_ID"
+  fi
 fi
+UBUNTU_VERSION="${BASE_UBUNTU_VERSION:-26.04}"
 
 echo "[Ubuntu-Nido] Configuring Vietnamese locale & Asia/Ho_Chi_Minh timezone..."
 sed -i 's/^# *vi_VN.UTF-8 UTF-8/vi_VN.UTF-8 UTF-8/' /etc/locale.gen 2>/dev/null || true
@@ -56,13 +61,13 @@ NIDOREL
 
 mkdir -p /usr/lib
 cat > /usr/lib/os-release <<OSREL
-PRETTY_NAME="Ubuntu-Nido ${NIDO_VERSION} LTS"
+PRETTY_NAME="Ubuntu-Nido ${NIDO_VERSION} (Ubuntu ${UBUNTU_VERSION} LTS)"
 NAME="Ubuntu-Nido"
-VERSION_ID="${NIDO_VERSION}"
-VERSION="${NIDO_VERSION} (AI-Native Desktop)"
+VERSION_ID="${UBUNTU_VERSION}"
+VERSION="${UBUNTU_VERSION} LTS (Ubuntu-Nido ${NIDO_VERSION})"
 VERSION_CODENAME=${UBUNTU_CODENAME}
-ID=ubuntu-nido
-ID_LIKE="ubuntu debian"
+ID=ubuntu
+ID_LIKE=debian
 HOME_URL="https://nido-holdings.com"
 SUPPORT_URL="https://nido-holdings.com"
 BUG_REPORT_URL="https://github.com/stevedat/NidoHub/issues"

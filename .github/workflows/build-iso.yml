@@ -79,9 +79,11 @@ jobs:
       - name: Install ISO build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y squashfs-tools xorriso rsync wget curl dpkg-dev python3 p7zip-full
+          sudo apt-get install -y squashfs-tools xorriso rsync wget curl dpkg-dev python3 p7zip-full zstd
           if [ "${TARGET_ARCH}" = "amd64" ]; then
-            sudo apt-get install -y isolinux syslinux-utils grub-pc-bin
+            sudo apt-get install -y isolinux syslinux-utils grub-pc-bin qemu-system-x86
+          else
+            sudo apt-get install -y qemu-system-arm
           fi
 
       - name: Build assets, .deb packages & static APT repo
@@ -99,6 +101,150 @@ jobs:
           else
             sudo -E NIDO_VERSION="$NIDO_VERSION" ./build.sh
           fi
+
+      - name: Verify ISO Live Boot in QEMU
+        run: |
+          set -euo pipefail
+          ISO_PATH="iso-builder/Ubuntu-Nido-desktop-${{ matrix.arch }}.iso"
+          TMP_BOOT="$(mktemp -d)"
+          MNT_DIR="$TMP_BOOT/mnt"
+          BOOT_LOG="$TMP_BOOT/boot.log"
+          QEMU_PID=""
+          cleanup_qemu() {
+            if [ -n "$QEMU_PID" ] && kill -0 "$QEMU_PID" 2>/dev/null; then
+              kill -9 "$QEMU_PID" 2>/dev/null || true
+            fi
+            sudo umount "$MNT_DIR" 2>/dev/null || true
+            rm -rf "$TMP_BOOT"
+          }
+          trap cleanup_qemu EXIT
+
+          mkdir -p "$MNT_DIR"
+          sudo mount -o loop,ro "$ISO_PATH" "$MNT_DIR"
+
+          grep -q "Ubuntu-Nido" "$MNT_DIR/boot/grub/grub.cfg"
+          if grep -q "Ubuntu-Nido-Nido" "$MNT_DIR/boot/grub/grub.cfg"; then
+            echo "ERROR: Duplicate Ubuntu-Nido-Nido string found in grub.cfg" >&2
+            exit 1
+          fi
+          for req in \
+            casper/vmlinuz \
+            casper/initrd \
+            casper/minimal.squashfs \
+            casper/minimal.standard.squashfs \
+            casper/minimal.standard.live.squashfs \
+            casper/install-sources.yaml \
+            .disk/casper-uuid-generic; do
+            test -s "$MNT_DIR/$req" || { echo "ERROR: Missing or empty $req in ISO" >&2; exit 1; }
+          done
+          grep -q "locale_support: locale-only" "$MNT_DIR/casper/install-sources.yaml"
+          if grep -q "minimal.enhanced-secureboot.squashfs" "$MNT_DIR/casper/install-sources.yaml"; then
+            echo "ERROR: Stale minimal.enhanced-secureboot.squashfs remained in install-sources.yaml" >&2
+            exit 1
+          fi
+
+          cp "$MNT_DIR/casper/vmlinuz" "$TMP_BOOT/vmlinuz"
+          cp "$MNT_DIR/casper/initrd" "$TMP_BOOT/initrd"
+          sudo umount "$MNT_DIR"
+
+          if [ "${TARGET_ARCH}" = "arm64" ]; then
+            python3 - "$TMP_BOOT/vmlinuz" <<'PY'
+          import gzip, struct, subprocess, sys
+          from pathlib import Path
+
+          p = Path(sys.argv[1])
+          data = p.read_bytes()
+          # Unwrap Stubble PE wrapper (.linux section) if present
+          if data[:2] == b"MZ" and data[4:8] != b"zimg" and data[0x38:0x3c] != b"ARM\x64":
+              pe_off = struct.unpack_from("<I", data, 0x3c)[0]
+              if data[pe_off:pe_off+4] == b"PE\x00\x00":
+                  num_sec = struct.unpack_from("<H", data, pe_off + 6)[0]
+                  opt_sz = struct.unpack_from("<H", data, pe_off + 20)[0]
+                  sec_off = pe_off + 24 + opt_sz
+                  for i in range(num_sec):
+                      s = data[sec_off + i*40 : sec_off + (i+1)*40]
+                      if s[:8].rstrip(b"\x00") == b".linux":
+                          _, _, rsz, rptr = struct.unpack_from("<IIII", s, 8)
+                          data = data[rptr : rptr + rsz]
+                          break
+          if data[:2] == b"MZ" and data[4:8] == b"zimg":
+              off, sz = struct.unpack_from("<II", data, 8)
+              comp = data[24:28].rstrip(b"\x00").decode("ascii", "replace")
+              payload = data[off : off + sz]
+              if comp == "zstd":
+                  data = subprocess.check_output(["zstd", "-dc"], input=payload)
+              elif comp == "gzip":
+                  data = gzip.decompress(payload)
+              elif comp in ("xzkern", "xz"):
+                  data = subprocess.check_output(["xz", "-dc"], input=payload)
+              elif comp == "lz4":
+                  data = subprocess.check_output(["lz4", "-dc"], input=payload)
+              p.write_bytes(data)
+          PY
+          fi
+
+          ACCEL_ARGS=(-accel tcg -cpu max)
+          if [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
+            ACCEL_ARGS=(-accel kvm -cpu host)
+          fi
+
+          : > "$BOOT_LOG"
+          if [ "${TARGET_ARCH}" = "amd64" ]; then
+            qemu-system-x86_64 \
+              -machine q35 "${ACCEL_ARGS[@]}" \
+              -m 2560 -smp 2 -display none -monitor none \
+              -serial "file:${BOOT_LOG}" \
+              -cdrom "$ISO_PATH" \
+              -kernel "$TMP_BOOT/vmlinuz" \
+              -initrd "$TMP_BOOT/initrd" \
+              -append "console=ttyS0,115200 locale=vi_VN.UTF-8 systemd.unit=multi-user.target noplymouth nosplash" &
+          else
+            qemu-system-aarch64 \
+              -machine virt "${ACCEL_ARGS[@]}" \
+              -m 2560 -smp 2 -display none -monitor none \
+              -serial "file:${BOOT_LOG}" \
+              -drive "if=none,id=cd,file=${ISO_PATH},media=cdrom,readonly=on" \
+              -device virtio-scsi-pci,id=scsi0 \
+              -device scsi-cd,bus=scsi0.0,drive=cd \
+              -kernel "$TMP_BOOT/vmlinuz" \
+              -initrd "$TMP_BOOT/initrd" \
+              -append "console=ttyAMA0,115200 locale=vi_VN.UTF-8 systemd.unit=multi-user.target noplymouth nosplash" &
+          fi
+          QEMU_PID=$!
+
+          DEADLINE=$((SECONDS + 300))
+          BOOTED=0
+          while [ "$SECONDS" -lt "$DEADLINE" ]; do
+            if grep -qE "(File system layers are missing|Unable to find a medium|overlay mount failed|Kernel panic|Failed to start initrd-switch-root|Entering emergency mode|\(initramfs\))" "$BOOT_LOG" 2>/dev/null; then
+              echo "ERROR: Live boot failure detected in QEMU serial log:" >&2
+              tail -n 80 "$BOOT_LOG" >&2
+              exit 1
+            fi
+            if grep -iEq "(Reached target .*Multi-User System|login:)" "$BOOT_LOG" 2>/dev/null; then
+              BOOTED=1
+              break
+            fi
+            if ! kill -0 "$QEMU_PID" 2>/dev/null; then
+              echo "ERROR: QEMU exited unexpectedly before boot completed:" >&2
+              tail -n 80 "$BOOT_LOG" >&2
+              exit 1
+            fi
+            sleep 2
+          done
+
+          if [ "$BOOTED" -ne 1 ]; then
+            echo "ERROR: Timed out (300s) waiting for live boot completion in QEMU:" >&2
+            tail -n 80 "$BOOT_LOG" >&2
+            exit 1
+          fi
+
+          kill "$QEMU_PID" 2>/dev/null || true
+          QEMU_PID=""
+          echo "QEMU live boot verification succeeded for ${{ matrix.arch }}."
+          {
+            echo "### QEMU Live Boot Verification (${{ matrix.arch }})"
+            echo "- Result: Passed (default layered Casper stack -> Multi-User System)"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Record ISO checksum
         run: |

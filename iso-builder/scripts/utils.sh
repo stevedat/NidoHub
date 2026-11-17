@@ -145,6 +145,17 @@ mount_chroot() {
 }
 
 umount_layers() {
+  if [ -d "$WORK_DIR/live_merged" ]; then
+    local sub
+    for sub in proc sys dev/pts dev; do
+      if [ -d "$WORK_DIR/live_merged/$sub" ] && mountpoint -q "$WORK_DIR/live_merged/$sub" 2>/dev/null; then
+        umount "$WORK_DIR/live_merged/$sub" 2>/dev/null || umount -lf "$WORK_DIR/live_merged/$sub" 2>/dev/null || true
+      fi
+    done
+    if mountpoint -q "$WORK_DIR/live_merged" 2>/dev/null; then
+      umount "$WORK_DIR/live_merged" 2>/dev/null || umount -lf "$WORK_DIR/live_merged" 2>/dev/null || true
+    fi
+  fi
   if [ -d "$WORK_DIR/layers" ]; then
     if mountpoint -q "$WORK_DIR/layers/merged" 2>/dev/null; then
       umount "$WORK_DIR/layers/merged" 2>/dev/null || umount -lf "$WORK_DIR/layers/merged" 2>/dev/null || true
@@ -172,11 +183,22 @@ safe_remove_work_dirs() {
   umount_chroot
   umount "$WORK_DIR/mnt" 2>/dev/null || true
 
-  if grep -q " $WORK_DIR/squashfs/" /proc/mounts 2>/dev/null || grep -q " $WORK_DIR/layers/" /proc/mounts 2>/dev/null; then
-    error "Active mounts remain under $WORK_DIR. Run: sudo umount -Rlf $WORK_DIR/squashfs $WORK_DIR/layers"
+  if grep -q " $WORK_DIR/squashfs/" /proc/mounts 2>/dev/null \
+    || grep -q " $WORK_DIR/layers/" /proc/mounts 2>/dev/null \
+    || grep -q " $WORK_DIR/live_merged" /proc/mounts 2>/dev/null; then
+    error "Active mounts remain under $WORK_DIR. Run: sudo umount -Rlf $WORK_DIR/squashfs $WORK_DIR/layers $WORK_DIR/live_merged"
   fi
 
-  rm -rf "${WORK_DIR:?}/squashfs" "${WORK_DIR:?}/custom" "${WORK_DIR:?}/mnt" "${WORK_DIR:?}/layers" 2>/dev/null || true
+  rm -rf \
+    "${WORK_DIR:?}/squashfs" \
+    "${WORK_DIR:?}/custom" \
+    "${WORK_DIR:?}/mnt" \
+    "${WORK_DIR:?}/layers" \
+    "${WORK_DIR:?}/live_delta" \
+    "${WORK_DIR:?}/live_work" \
+    "${WORK_DIR:?}/live_merged" \
+    "${WORK_DIR:?}/empty_standard" \
+    "$WORK_DIR/orig_live.squashfs" 2>/dev/null || true
 }
 
 print_dev_help() {

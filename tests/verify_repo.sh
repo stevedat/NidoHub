@@ -337,16 +337,21 @@ print("Verified nido-hub --self-test and nidooffice DOCX/XLSX round-trip.")
 PY
 pass "Live nidoai-gateway <-> nidoagent-cli, nido-hub, and nidooffice smoke tests passed"
 
-echo "=== 6. Layered Casper install-sources.yaml Updater Unit Test ==="
-python3 - "${ROOT_DIR}/iso-builder/scripts/update_install_sources.py" <<'PY'
-import importlib.util, sys
+echo "=== 6. Layered Casper Updater & Live-Layer Reconciliation Unit Tests ==="
+python3 - "${ROOT_DIR}/iso-builder/scripts/update_install_sources.py" \
+           "${ROOT_DIR}/iso-builder/scripts/reconcile_live_layer.py" <<'PY'
+import importlib.util
+import subprocess
+import sys
+import tempfile
 from pathlib import Path
 
-spec = importlib.util.spec_from_file_location("upd", sys.argv[1])
-mod = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(mod)
+upd_spec = importlib.util.spec_from_file_location("upd", sys.argv[1])
+upd = importlib.util.module_from_spec(upd_spec)
+upd_spec.loader.exec_module(upd)
 
-fixture = """- default: true
+# Fixture 1: Ubuntu 24.04 style
+fixture_24 = """- default: true
   description:
     en: Minimal Ubuntu desktop
   id: ubuntu-desktop-minimal
@@ -365,13 +370,119 @@ fixture = """- default: true
   size: 2222222
   type: fsimage-layered
 """
-out = mod.update_install_sources(fixture, "minimal.squashfs", 987654321, "Ubuntu-Nido Desktop")
-assert "987654321" in out, "Updated size missing"
-assert "fsimage-layered" not in out, "Layered entry should be pruned"
-assert "Ubuntu-Nido Desktop" in out, "Display name not updated"
-print("Verified update_install_sources.py transforms layered Ubuntu install-sources.yaml cleanly.")
+out_24 = upd.update_install_sources(fixture_24, "minimal.squashfs", 987654321, "Ubuntu-Nido Desktop")
+assert "987654321" in out_24, "Updated size missing (24.04)"
+assert "fsimage-layered" not in out_24, "Layered entry should be pruned (24.04)"
+assert "Ubuntu-Nido Desktop" in out_24, "Display name not updated (24.04)"
+
+# Fixture 2: Ubuntu 26.04 style with kernel header, langpack, preinstalled_langs, and variations
+fixture_26 = """kernel:
+  default: linux-generic-hwe-24.04
+sources:
+- default: true
+  description:
+    en: A minimal but usable Ubuntu Desktop.
+  id: ubuntu-desktop-minimal
+  locale_support: langpack
+  name:
+    en: Ubuntu Desktop
+  path: minimal.squashfs
+  preinstalled_langs:
+  - de
+  - en
+  - ''
+  size: 1111111
+  type: fsimage
+  variant: desktop
+  variations:
+    minimal:
+      path: minimal.squashfs
+      size: 1111111
+    minimal-enhanced-secureboot:
+      path: minimal.enhanced-secureboot.squashfs
+      size: 1111111
+      snapd_system_label: enhanced-secureboot-desktop
+"""
+out_26 = upd.update_install_sources(fixture_26, "minimal.squashfs", 4080263168, "Ubuntu-Nido Desktop")
+assert out_26.startswith("kernel:\n"), f"Header lost in 26.04 output: {out_26}"
+assert "4080263168" in out_26, "Updated size missing (26.04)"
+assert "locale_support: locale-only" in out_26, "locale_support must switch to locale-only"
+assert "preinstalled_langs" not in out_26, "preinstalled_langs must be stripped"
+assert "variations" not in out_26, "variations must be stripped"
+assert "minimal.enhanced-secureboot.squashfs" not in out_26, "enhanced-secureboot variation must be stripped"
+assert "Ubuntu-Nido Desktop" in out_26, "Display name not updated (26.04)"
+
+# Unit test reconcile_live_layer.py without requiring root mknod
+rec_spec = importlib.util.spec_from_file_location("rec", sys.argv[2])
+rec = importlib.util.module_from_spec(rec_spec)
+rec_spec.loader.exec_module(rec)
+
+with tempfile.TemporaryDirectory() as td:
+    root = Path(td)
+    base_dir = root / "base"
+    live_dir = root / "live"
+    (base_dir / "var/lib/dpkg").mkdir(parents=True)
+    (live_dir / "var/lib/dpkg/info").mkdir(parents=True)
+    (live_dir / "etc").mkdir(parents=True)
+    (live_dir / "usr/share/glib-2.0/schemas").mkdir(parents=True)
+
+    (base_dir / "var/lib/dpkg/status").write_text(
+        "Package: libc6\nStatus: install ok installed\nVersion: 2.39-nido\n\n"
+        "Package: dracut\nStatus: install ok installed\nVersion: 110-11\n\n"
+        "Package: dracut-core\nStatus: install ok installed\nVersion: 110-11\n\n"
+        "Package: vielotus\nStatus: install ok installed\nVersion: 2.0.4\n\n"
+        "Package: nido-hub\nStatus: install ok installed\nVersion: 0.1.0\n",
+        encoding="utf-8",
+    )
+    (live_dir / "var/lib/dpkg/status").write_text(
+        "Package: libc6\nStatus: install ok installed\nVersion: 2.39-stale\n\n"
+        "Package: dracut\nStatus: install ok installed\nVersion: 110-11\n\n"
+        "Package: casper\nStatus: install ok installed\nVersion: 26.04.2\n\n"
+        "Package: libaio1t64\nStatus: install ok installed\nArchitecture: arm64\nVersion: 0.3.113\n",
+        encoding="utf-8",
+    )
+
+    # Regular .list files represent packages added by minimal.standard.live.squashfs
+    (live_dir / "var/lib/dpkg/info/casper.list").write_text("/usr/bin/casper\n", encoding="utf-8")
+    (live_dir / "var/lib/dpkg/info/libaio1t64:arm64.list").write_text("/usr/lib/libaio.so\n", encoding="utf-8")
+    # Simulate whiteout markers for dracut / dracut-core without needing root mknod
+    wo_dracut = live_dir / "var/lib/dpkg/info/dracut.list"
+    wo_dracut_core = live_dir / "var/lib/dpkg/info/dracut-core.list"
+    wo_dracut.write_text("", encoding="utf-8")
+    wo_dracut_core.write_text("", encoding="utf-8")
+
+    # Stale monolithic caches inside live_delta
+    stale_ld = live_dir / "etc/ld.so.cache"
+    stale_schemas = live_dir / "usr/share/glib-2.0/schemas/gschemas.compiled"
+    stale_ld.write_bytes(b"stale-ld")
+    stale_schemas.write_bytes(b"stale-schemas")
+
+    rem, add, unlinked = rec.reconcile_live_layer(
+        base_dir,
+        live_dir,
+        whiteout_predicate=lambda p: p.name in ("dracut.list", "dracut-core.list"),
+    )
+    assert rem == 2 and add == 2 and unlinked == 2, f"Unexpected counts: {(rem, add, unlinked)}"
+    assert not stale_ld.exists(), "Stale ld.so.cache was not unlinked"
+    assert not stale_schemas.exists(), "Stale gschemas.compiled was not unlinked"
+
+    merged = (live_dir / "var/lib/dpkg/status").read_text(encoding="utf-8")
+    assert "Version: 2.39-nido" in merged and "2.39-stale" not in merged, "Base libc6 should win"
+    assert "Package: vielotus" in merged and "Package: nido-hub" in merged, "Custom pkgs lost"
+    assert "Package: casper" in merged and "Package: libaio1t64" in merged, "Live pkgs missing"
+    assert "Package: dracut\n" not in merged and "Package: dracut-core\n" not in merged, "Whiteout pkgs not pruned"
+
+    # Verify CLI --strip-overlay-xattrs runs cleanly
+    subprocess.run(
+        [sys.executable, sys.argv[2], "--strip-overlay-xattrs", str(live_dir)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+print("Verified update_install_sources.py (24.04 & 26.04) and reconcile_live_layer.py cleanly.")
 PY
-pass "update_install_sources.py unit test passed"
+pass "update_install_sources.py and reconcile_live_layer.py unit tests passed"
 
 echo "=== 7. Public Repo Hygiene, Secret & Binary Leak Audit ==="
 python3 - "${ROOT_DIR}" <<'PY'
