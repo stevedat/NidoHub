@@ -145,6 +145,7 @@ jobs:
 
           cp "$MNT_DIR/casper/vmlinuz" "$TMP_BOOT/vmlinuz"
           cp "$MNT_DIR/casper/initrd" "$TMP_BOOT/initrd"
+          chmod 644 "$TMP_BOOT/vmlinuz" "$TMP_BOOT/initrd"
           sudo umount "$MNT_DIR"
 
           if [ "${TARGET_ARCH}" = "arm64" ]; then
@@ -179,20 +180,24 @@ jobs:
                   data = subprocess.check_output(["xz", "-dc"], input=payload)
               elif comp == "lz4":
                   data = subprocess.check_output(["lz4", "-dc"], input=payload)
+              p.unlink()
               p.write_bytes(data)
           PY
           fi
 
-          ACCEL_ARGS=(-accel tcg -cpu max)
           if [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
             ACCEL_ARGS=(-accel kvm -cpu host)
+          elif [ "${TARGET_ARCH}" = "arm64" ]; then
+            ACCEL_ARGS=(-accel tcg -cpu max,pauth-impdef=on)
+          else
+            ACCEL_ARGS=(-accel tcg -cpu max)
           fi
 
           : > "$BOOT_LOG"
           if [ "${TARGET_ARCH}" = "amd64" ]; then
             qemu-system-x86_64 \
               -machine q35 "${ACCEL_ARGS[@]}" \
-              -m 2560 -smp 2 -display none -monitor none \
+              -m 2560 -smp 4 -display none -monitor none \
               -serial "file:${BOOT_LOG}" \
               -cdrom "$ISO_PATH" \
               -kernel "$TMP_BOOT/vmlinuz" \
@@ -201,7 +206,7 @@ jobs:
           else
             qemu-system-aarch64 \
               -machine virt "${ACCEL_ARGS[@]}" \
-              -m 2560 -smp 2 -display none -monitor none \
+              -m 2560 -smp 4 -display none -monitor none \
               -serial "file:${BOOT_LOG}" \
               -drive "if=none,id=cd,file=${ISO_PATH},media=cdrom,readonly=on" \
               -device virtio-scsi-pci,id=scsi0 \
@@ -212,7 +217,7 @@ jobs:
           fi
           QEMU_PID=$!
 
-          DEADLINE=$((SECONDS + 300))
+          DEADLINE=$((SECONDS + 420))
           BOOTED=0
           while [ "$SECONDS" -lt "$DEADLINE" ]; do
             if grep -qE "(File system layers are missing|Unable to find a medium|overlay mount failed|Kernel panic|Failed to start initrd-switch-root|Entering emergency mode|\(initramfs\))" "$BOOT_LOG" 2>/dev/null; then
@@ -233,7 +238,7 @@ jobs:
           done
 
           if [ "$BOOTED" -ne 1 ]; then
-            echo "ERROR: Timed out (300s) waiting for live boot completion in QEMU:" >&2
+            echo "ERROR: Timed out (420s) waiting for live boot completion in QEMU:" >&2
             tail -n 80 "$BOOT_LOG" >&2
             exit 1
           fi
