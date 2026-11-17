@@ -48,23 +48,17 @@ step_repack_squashfs() {
     printf '%s' "$root_bytes" > "$WORK_DIR/custom/casper/filesystem.size"
   fi
 
-  # Update live initrd so Plymouth theme changes take effect on boot
-  local latest_initrd=""
-  local cand
-  for cand in "$WORK_DIR"/squashfs/boot/initrd.img-*; do
-    if [ -f "$cand" ]; then
-      latest_initrd="$cand"
-    fi
-  done
-  if [ -n "$latest_initrd" ]; then
-    local target_initrd
-    for target_initrd in initrd initrd.lz initrd.gz; do
-      if [ -f "$WORK_DIR/custom/casper/$target_initrd" ]; then
-        cp "$latest_initrd" "$WORK_DIR/custom/casper/$target_initrd"
-        ok "Updated live initrd -> casper/$target_initrd"
-      fi
-    done
-  fi
+  # IMPORTANT: Do NOT overwrite casper/initrd with /boot/initrd.img-* from
+  # the squashfs rootfs. The original casper/initrd contains Casper live-boot
+  # hooks (casper/dracut-live modules) that know how to find, mount, and
+  # pivot-root into the SquashFS layers. The /boot/initrd.img-* is built for
+  # installed-system disk boot (dracut switch-root to UUID= partition) and
+  # completely breaks live boot if copied over casper/initrd.
+  #
+  # Plymouth theme changes are picked up from the rootfs at runtime; the
+  # early-boot splash in casper/initrd uses Ubuntu's default plymouth which
+  # is acceptable. The kernel+vmlinuz in casper/ are synced by customize.sh.
+  info "Preserving original Casper live-boot initrd (not overwriting)."
 
   if [ "${CLEAN_OUTPUT:-false}" = "true" ]; then
     rm -rf "${WORK_DIR:?}/squashfs"
