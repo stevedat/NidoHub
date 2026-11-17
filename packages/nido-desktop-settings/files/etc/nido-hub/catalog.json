@@ -13,17 +13,17 @@
     },
     {
       "id": "office-cli",
-      "name": "NidoOffice CLI (genoffice)",
+      "name": "NidoOffice (Bộ Văn phòng AI & CLI)",
       "status": "available",
       "packages": ["nidooffice-cli"],
-      "description": "Đọc, tạo và biên tập tài liệu Word (.docx), Excel (.xlsx), Slide (.pptx), PDF."
+      "description": "Bộ ứng dụng văn phòng mặc định cho Word (.docx), Excel (.xlsx), Slide (.pptx), PDF & Markdown."
     },
     {
       "id": "sen-viet",
-      "name": "Bộ gõ Sen Việt (VieLotusIM)",
+      "name": "Bộ gõ Sen Việt (VieLotusIM — IBus)",
       "status": "available",
       "packages": ["vielotus"],
-      "description": "Bộ gõ tiếng Việt Telex & VNI tốc độ cao cho GNOME Wayland & X11."
+      "description": "Bộ gõ tiếng Việt Telex & VNI tốc độ cao tích hợp trực tiếp qua GNOME IBus."
     },
     {
       "id": "nidobox",

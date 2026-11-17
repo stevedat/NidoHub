@@ -11,7 +11,20 @@ import readline from 'node:readline';
 
 const VERSION = '0.1.0';
 const MAX_ATTACH_BYTES = 65_536;
-const OFFICE_EXTS = new Set(['.docx', '.xlsx', '.pptx']);
+const OFFICE_EXTS = new Set([
+  '.docx',
+  '.xlsx',
+  '.pptx',
+  '.doc',
+  '.xls',
+  '.ppt',
+  '.odt',
+  '.ods',
+  '.odp',
+  '.pdf',
+  '.hwp',
+  '.hwpx',
+]);
 
 function stateDirCandidates() {
   const dirs = [];
@@ -135,11 +148,19 @@ function readAttachedFile(filePath) {
   const ext = path.extname(resolved).toLowerCase();
   if (OFFICE_EXTS.has(ext)) {
     const officeBin = process.env.NIDOOFFICE_BIN || 'nidooffice';
-    const extracted = execFileSync(officeBin, ['read', resolved], {
-      encoding: 'utf8',
-      maxBuffer: 4 * 1024 * 1024,
-      env: process.env,
-    });
+    let extracted;
+    try {
+      extracted = execFileSync(officeBin, ['read', resolved], {
+        encoding: 'utf8',
+        maxBuffer: 4 * 1024 * 1024,
+        env: process.env,
+      });
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      throw new Error(
+        `Không đọc được tệp ${ext} (${resolved}). Nếu tệp là PDF/ODF/Office cũ, hãy kiểm tra NidoOffice Suite. Chi tiết: ${detail}`
+      );
+    }
     const rawBuf = Buffer.from(extracted, 'utf8');
     const truncated = rawBuf.length > MAX_ATTACH_BYTES;
     const text = rawBuf.subarray(0, MAX_ATTACH_BYTES).toString('utf8');

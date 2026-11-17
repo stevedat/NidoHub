@@ -45,16 +45,23 @@ repack_layered_live_overlays() {
 
   chroot "$WORK_DIR/live_merged" /bin/bash -c '
     set -e
+    export DEBIAN_FRONTEND=noninteractive
+    mapfile -t LIVE_PURGE < <(
+      dpkg-query -W -f="\${db:Status-Abbrev}\t\${Package}\n" \
+        "libreoffice*" "python3-uno" "uno-libs-private" "ure" "ure-java" "liblibreoffice*" "mythes-*" "hyphen-*" \
+        "fcitx5" "fcitx5-*" 2>/dev/null \
+        | awk "\$1 ~ /^i/ && \$2 != \"vielotus\" { print \$2 }" \
+        | sort -u || true
+    )
+    if [ "${#LIVE_PURGE[@]}" -gt 0 ]; then
+      apt-get purge -y "${LIVE_PURGE[@]}" || true
+      apt-get autoremove -y --purge || true
+    fi
+    rm -rf /usr/lib/libreoffice /etc/libreoffice /usr/share/libreoffice \
+      /usr/share/applications/libreoffice*.desktop \
+      /usr/share/applications/*fcitx*.desktop \
+      /etc/xdg/autostart/*fcitx*.desktop
     ldconfig
-    for desktop_file in /usr/share/applications/*fcitx*.desktop; do
-      if [ -f "$desktop_file" ]; then
-        if grep -q "^NoDisplay=" "$desktop_file"; then
-          sed -i "s/^NoDisplay=.*/NoDisplay=true/" "$desktop_file"
-        else
-          printf "\nNoDisplay=true\n" >> "$desktop_file"
-        fi
-      fi
-    done
     if [ -f /var/lib/snapd/desktop/applications/ubuntu-desktop-bootstrap_ubuntu-desktop-bootstrap.desktop ]; then
       sed -i "s/^Name=Install RELEASE/Name=Cài đặt Ubuntu-Nido/" \
         /var/lib/snapd/desktop/applications/ubuntu-desktop-bootstrap_ubuntu-desktop-bootstrap.desktop || true
@@ -81,9 +88,13 @@ repack_layered_live_overlays() {
     test -x /usr/bin/nido-hub
     test -x /usr/bin/nidobox
     test -x /usr/bin/nidooffice
+    test -x /usr/bin/nidooffice-desktop
+    test -x /opt/NidoOffice/genoffice
     dpkg -s vielotus >/dev/null
     dpkg -s nidobox >/dev/null
     dpkg -s casper >/dev/null
+    ! dpkg -s fcitx5 >/dev/null 2>&1
+    ! dpkg -s libreoffice-core >/dev/null 2>&1
   '
 
   umount_layers

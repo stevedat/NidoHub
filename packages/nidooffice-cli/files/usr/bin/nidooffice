@@ -1,14 +1,26 @@
 #!/bin/sh
 set -eu
 
-# nidooffice — headless document CLI for Ubuntu-Nido
-# Uses GenOffice engine when present, otherwise built-in standalone OOXML engine.
+# UBUNTU_NIDO_NIDOOFFICE_WRAPPER=1
+# nidooffice — unified document CLI for Ubuntu-Nido
+# Delegates to the full NidoOffice desktop CLI when installed, otherwise runs
+# the bundled Node bundle or the standalone Python OOXML engine.
 
-CLI_ENTRY="${NIDOOFFICE_CLI_ENTRY:-/usr/lib/nidooffice-cli/genoffice.cjs}"
+DESKTOP_CLI="${NIDOOFFICE_DESKTOP_CLI:-/opt/NidoOffice/resources/cli/nidooffice}"
+CLI_ENTRY="${NIDOOFFICE_CLI_ENTRY:-/usr/lib/nidooffice-cli/nidooffice.cjs}"
+LEGACY_CLI_ENTRY="/usr/lib/nidooffice-cli/genoffice.cjs"
 PY_ENTRY="${NIDOOFFICE_PY_ENTRY:-/usr/lib/nidooffice-cli/engine.py}"
 
-if [ -f "$CLI_ENTRY" ] && command -v node >/dev/null 2>&1; then
-  exec node "$CLI_ENTRY" "$@"
+if [ "${NIDOOFFICE_FORCE_PYTHON:-0}" != "1" ]; then
+  if [ -x "$DESKTOP_CLI" ] && [ "$DESKTOP_CLI" != "$0" ]; then
+    exec "$DESKTOP_CLI" "$@"
+  fi
+  if [ -f "$CLI_ENTRY" ] && command -v node >/dev/null 2>&1; then
+    exec node "$CLI_ENTRY" "$@"
+  fi
+  if [ -f "$LEGACY_CLI_ENTRY" ] && command -v node >/dev/null 2>&1; then
+    exec node "$LEGACY_CLI_ENTRY" "$@"
+  fi
 fi
 
 exec python3 "$PY_ENTRY" "$@"

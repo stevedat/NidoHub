@@ -1,10 +1,7 @@
 # Base utilities required for Ubuntu-Nido
 ca-certificates
 curl
-fcitx5
-fcitx5-frontend-gtk3
-fcitx5-frontend-gtk4
-fcitx5-frontend-qt6
+desktop-file-utils
 file
 gir1.2-adw-1
 gir1.2-gtk-3.0
@@ -13,6 +10,9 @@ git
 gnome-terminal
 gpg
 ibus
+ibus-gtk
+ibus-gtk3
+ibus-gtk4
 im-config
 jq
 libnotify-bin
@@ -21,6 +21,7 @@ pkexec
 polkitd
 python3
 python3-gi
+shared-mime-info
 tesseract-ocr
 tesseract-ocr-eng
 tesseract-ocr-vie

@@ -206,8 +206,13 @@ step_customize() {
     test -x /usr/bin/nidoagent
     test -x /usr/bin/nido-hub
     test -x /usr/bin/nidooffice
+    test -x /usr/bin/nidooffice-desktop
+    test -x /opt/NidoOffice/genoffice
+    test -f /usr/share/applications/nidooffice.desktop
     dpkg -s vielotus >/dev/null 2>&1
     dpkg -s nidobox >/dev/null 2>&1
+    ! dpkg -s fcitx5 >/dev/null 2>&1
+    ! dpkg -s libreoffice-core >/dev/null 2>&1
     test -x /usr/bin/nidobox
     test -x /usr/lib/nidobox/nidobox-engine
     test -f /usr/share/plymouth/themes/ubuntu-nido/ubuntu-nido.plymouth

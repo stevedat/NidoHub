@@ -37,6 +37,7 @@ SHELL_SCRIPTS=(
   "${ROOT_DIR}/iso-builder/config/hooks/live/0100-nido-gnome-setup.hook.chroot"
   "${ROOT_DIR}/iso-builder/config/hooks/live/0150-vielotus-im.hook.chroot"
   "${ROOT_DIR}/iso-builder/config/hooks/live/0160-nidobox.hook.chroot"
+  "${ROOT_DIR}/iso-builder/config/hooks/live/0170-nidooffice-desktop.hook.chroot"
   "${ROOT_DIR}/iso-builder/config/hooks/live/0200-nido-ai-stack.hook.chroot"
   "${ROOT_DIR}/iso-builder/config/hooks/live/0900-nido-plymouth.hook.chroot"
   "${ROOT_DIR}/tests/verify_repo.sh"
@@ -308,6 +309,7 @@ sandbox = Path(sys.argv[1])
 nidooffice_bin = str(sandbox / "rootfs/usr/bin/nidooffice")
 env = dict(os.environ)
 env["NIDOOFFICE_PY_ENTRY"] = str(sandbox / "rootfs/usr/lib/nidooffice-cli/engine.py")
+env["NIDOOFFICE_DESKTOP_CLI"] = str(sandbox / "nonexistent-desktop-cli")
 
 docx_path = sandbox / "report.docx"
 md_in = "# Báo cáo kiểm thử\n\nNội dung: Báo cáo Ubuntu-Nido — Tiếng Việt chuẩn\n\n| Hạng mục | Giá trị |\n| --- | --- |\n| GPU | 100 |\n"
@@ -346,7 +348,21 @@ xlsx_out = subprocess.run(
     capture_output=True,
 ).stdout
 assert "NidoAgent" in xlsx_out and "200" in xlsx_out and "=TEST" in xlsx_out, f"XLSX round-trip mismatch: {xlsx_out}"
-print("Verified nido-hub --self-test and nidooffice DOCX/XLSX round-trip.")
+
+mock_desktop_cli = sandbox / "mock-nidooffice-desktop"
+mock_desktop_cli.write_text("#!/bin/sh\necho \"delegated:$*\"\n", encoding="utf-8")
+mock_desktop_cli.chmod(0o755)
+delegated_env = dict(env)
+delegated_env["NIDOOFFICE_DESKTOP_CLI"] = str(mock_desktop_cli)
+delegated_out = subprocess.run(
+    [nidooffice_bin, "read", str(docx_path)],
+    text=True,
+    check=True,
+    env=delegated_env,
+    capture_output=True,
+).stdout.strip()
+assert delegated_out == f"delegated:read {docx_path}", f"Expected desktop CLI delegation, got: {delegated_out}"
+print("Verified nido-hub --self-test, nidooffice DOCX/XLSX round-trip, and desktop CLI delegation.")
 PY
 pass "Live nidoai-gateway <-> nidoagent-cli, nido-hub, and nidooffice smoke tests passed"
 
