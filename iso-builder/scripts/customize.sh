@@ -207,8 +207,12 @@ step_customize() {
     test -x /usr/bin/nido-hub
     test -x /usr/bin/nidooffice
     test -x /usr/bin/nidooffice-desktop
+    test -x /usr/local/bin/genoffice
     test -x /opt/NidoOffice/genoffice
     test -f /usr/share/applications/nidooffice.desktop
+    grep -q "^StartupWMClass=nidooffice$" /usr/share/applications/nidooffice.desktop
+    grep -q "{nidooffice,genoffice}" /etc/apparmor.d/nidooffice
+    grep -q -- "--enable-wayland-ime" /usr/bin/nidooffice-desktop
     dpkg -s vielotus >/dev/null 2>&1
     dpkg -s nidobox >/dev/null 2>&1
     ! dpkg -s fcitx5 >/dev/null 2>&1

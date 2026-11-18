@@ -99,7 +99,12 @@ chmod -R a+rX /opt/NidoOffice
 if [ ! -x /opt/NidoOffice/genoffice ] && [ -x /opt/NidoOffice/nidooffice ]; then
   ln -sf nidooffice /opt/NidoOffice/genoffice
 fi
-test -x /opt/NidoOffice/genoffice
+if [ -x /opt/NidoOffice/nidooffice ]; then
+  NIDOOFFICE_BIN="/opt/NidoOffice/nidooffice"
+else
+  NIDOOFFICE_BIN="/opt/NidoOffice/genoffice"
+fi
+test -x "$NIDOOFFICE_BIN"
 
 if [ -f /opt/NidoOffice/chrome-sandbox ]; then
   chown root:root /opt/NidoOffice/chrome-sandbox
@@ -111,7 +116,7 @@ cat > /etc/apparmor.d/nidooffice <<'APPARMOR'
 abi <abi/4.0>,
 include <tunables/global>
 
-profile nidooffice /opt/{NidoOffice,GenOffice}/genoffice flags=(unconfined) {
+profile nidooffice /opt/{NidoOffice,GenOffice}/{nidooffice,genoffice} flags=(unconfined) {
   userns,
   include if exists <local/nidooffice>
 }
@@ -119,15 +124,48 @@ APPARMOR
 
 cat > /usr/bin/nidooffice-desktop <<'LAUNCHER'
 #!/usr/bin/env bash
+set -euo pipefail
+
+BIN="/opt/NidoOffice/nidooffice"
+if [ ! -x "$BIN" ]; then
+  BIN="/opt/NidoOffice/genoffice"
+fi
+
 export ELECTRON_OZONE_PLATFORM_HINT="${ELECTRON_OZONE_PLATFORM_HINT:-auto}"
-exec /opt/NidoOffice/genoffice "$@"
+EXTRA_ARGS=()
+
+if [ -n "${WAYLAND_DISPLAY:-}" ]; then
+  HAS_IME=0
+  HAS_TI_VER=0
+  for arg in "$@"; do
+    case "$arg" in
+      --enable-wayland-ime) HAS_IME=1 ;;
+      --wayland-text-input-version=*) HAS_TI_VER=1 ;;
+    esac
+  done
+  [ "$HAS_IME" -eq 0 ] && EXTRA_ARGS+=(--enable-wayland-ime)
+  [ "$HAS_TI_VER" -eq 0 ] && EXTRA_ARGS+=(--wayland-text-input-version=3)
+fi
+
+if [ "$(id -u)" -eq 0 ]; then
+  HAS_NO_SANDBOX=0
+  for arg in "$@"; do
+    if [ "$arg" = "--no-sandbox" ]; then
+      HAS_NO_SANDBOX=1
+      break
+    fi
+  done
+  [ "$HAS_NO_SANDBOX" -eq 0 ] && EXTRA_ARGS+=(--no-sandbox)
+fi
+
+exec "$BIN" "${EXTRA_ARGS[@]}" "$@"
 LAUNCHER
 chmod 755 /usr/bin/nidooffice-desktop
 
+if [ -x /opt/NidoOffice/resources/cli/nidooffice ] && [ ! -e /opt/NidoOffice/resources/cli/genoffice ]; then
+  ln -sf nidooffice /opt/NidoOffice/resources/cli/genoffice
+fi
 if [ -x /opt/NidoOffice/resources/cli/genoffice ]; then
-  if [ ! -e /opt/NidoOffice/resources/cli/nidooffice ]; then
-    ln -sf genoffice /opt/NidoOffice/resources/cli/nidooffice
-  fi
   mkdir -p /usr/local/bin
   ln -sfn /opt/NidoOffice/resources/cli/genoffice /usr/local/bin/genoffice
 fi
@@ -160,11 +198,11 @@ Comment=Local-First AI Office Suite for Word, Excel, PowerPoint, PDF & Markdown
 Comment[vi]=Bộ ứng dụng văn phòng AI mặc định cho Word (.docx), Excel (.xlsx), PowerPoint (.pptx), PDF & Markdown
 Exec=/usr/bin/nidooffice-desktop %U
 Icon=nidooffice
-StartupWMClass=genoffice
+StartupWMClass=nidooffice
 StartupNotify=true
 Terminal=false
 Categories=Office;WordProcessor;Spreadsheet;Presentation;Viewer;
-MimeType=application/vnd.openxmlformats-officedocument.wordprocessingml.document;application/vnd.ms-word.document.macroEnabled.12;application/msword;application/vnd.oasis.opendocument.text;application/vnd.oasis.opendocument.text-template;application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;application/vnd.ms-excel.sheet.macroEnabled.12;application/vnd.ms-excel;application/vnd.oasis.opendocument.spreadsheet;application/vnd.oasis.opendocument.spreadsheet-template;text/csv;text/tab-separated-values;application/vnd.openxmlformats-officedocument.presentationml.presentation;application/vnd.ms-powerpoint.presentation.macroEnabled.12;application/vnd.ms-powerpoint;application/vnd.oasis.opendocument.presentation;application/vnd.oasis.opendocument.presentation-template;application/pdf;text/markdown;text/x-markdown;
+MimeType=application/vnd.openxmlformats-officedocument.wordprocessingml.document;application/vnd.openxmlformats-officedocument.wordprocessingml.template;application/vnd.ms-word.document.macroEnabled.12;application/msword;application/vnd.oasis.opendocument.text;application/vnd.oasis.opendocument.text-template;application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;application/vnd.openxmlformats-officedocument.spreadsheetml.template;application/vnd.ms-excel.sheet.macroEnabled.12;application/vnd.ms-excel;application/vnd.oasis.opendocument.spreadsheet;application/vnd.oasis.opendocument.spreadsheet-template;text/csv;text/tab-separated-values;application/vnd.openxmlformats-officedocument.presentationml.presentation;application/vnd.openxmlformats-officedocument.presentationml.template;application/vnd.openxmlformats-officedocument.presentationml.slideshow;application/vnd.ms-powerpoint.presentation.macroEnabled.12;application/vnd.ms-powerpoint;application/vnd.oasis.opendocument.presentation;application/vnd.oasis.opendocument.presentation-template;application/pdf;text/markdown;text/x-markdown;application/hwp+zip;application/x-hwp;
 Keywords=Office;Word;Excel;PowerPoint;DOCX;XLSX;PPTX;PDF;Markdown;NidoOffice;GenOffice;
 DESKTOP
 
@@ -184,35 +222,97 @@ if [ -d /opt/NidoOffice/resources/shell-new ]; then
 fi
 
 mkdir -p /etc/xdg /etc/skel/.config
-MIME_DEFAULTS='[Default Applications]
-application/vnd.openxmlformats-officedocument.wordprocessingml.document=nidooffice.desktop
-application/vnd.ms-word.document.macroEnabled.12=nidooffice.desktop
-application/msword=nidooffice.desktop
-application/vnd.oasis.opendocument.text=nidooffice.desktop
-application/vnd.oasis.opendocument.text-template=nidooffice.desktop
-application/vnd.openxmlformats-officedocument.spreadsheetml.sheet=nidooffice.desktop
-application/vnd.ms-excel.sheet.macroEnabled.12=nidooffice.desktop
-application/vnd.ms-excel=nidooffice.desktop
-application/vnd.oasis.opendocument.spreadsheet=nidooffice.desktop
-application/vnd.oasis.opendocument.spreadsheet-template=nidooffice.desktop
-text/csv=nidooffice.desktop
-text/tab-separated-values=nidooffice.desktop
-application/vnd.openxmlformats-officedocument.presentationml.presentation=nidooffice.desktop
-application/vnd.ms-powerpoint.presentation.macroEnabled.12=nidooffice.desktop
-application/vnd.ms-powerpoint=nidooffice.desktop
-application/vnd.oasis.opendocument.presentation=nidooffice.desktop
-application/vnd.oasis.opendocument.presentation-template=nidooffice.desktop
-application/pdf=nidooffice.desktop
-text/markdown=nidooffice.desktop
-text/x-markdown=nidooffice.desktop
-'
-for mf in \
-  /etc/xdg/mimeapps.list \
-  /etc/xdg/gnome-mimeapps.list \
-  /etc/xdg/ubuntu-mimeapps.list \
-  /etc/skel/.config/mimeapps.list; do
-  printf '%s' "$MIME_DEFAULTS" > "$mf"
-done
+python3 - <<'PY'
+from pathlib import Path
+
+OFFICE_MIMES = [
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.template",
+    "application/vnd.ms-word.document.macroEnabled.12",
+    "application/msword",
+    "application/vnd.oasis.opendocument.text",
+    "application/vnd.oasis.opendocument.text-template",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.template",
+    "application/vnd.ms-excel.sheet.macroEnabled.12",
+    "application/vnd.ms-excel",
+    "application/vnd.oasis.opendocument.spreadsheet",
+    "application/vnd.oasis.opendocument.spreadsheet-template",
+    "text/csv",
+    "text/tab-separated-values",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "application/vnd.openxmlformats-officedocument.presentationml.template",
+    "application/vnd.openxmlformats-officedocument.presentationml.slideshow",
+    "application/vnd.ms-powerpoint.presentation.macroEnabled.12",
+    "application/vnd.ms-powerpoint",
+    "application/vnd.oasis.opendocument.presentation",
+    "application/vnd.oasis.opendocument.presentation-template",
+    "application/pdf",
+    "text/markdown",
+    "text/x-markdown",
+    "application/hwp+zip",
+    "application/x-hwp",
+]
+
+def update_mimeapps(path: Path, scrub_only: bool = False) -> None:
+    sections: dict[str, dict[str, str]] = {}
+    order: list[str] = []
+    cur = None
+    if path.is_file():
+        for raw in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            s = raw.strip()
+            if not s or s.startswith("#"):
+                continue
+            if s.startswith("[") and s.endswith("]"):
+                cur = s
+                if cur not in sections:
+                    sections[cur] = {}
+                    order.append(cur)
+                continue
+            if cur and "=" in s:
+                k, v = s.split("=", 1)
+                orig_vals = [x.strip() for x in v.split(";") if x.strip()]
+                vals = [x for x in orig_vals if not x.startswith("libreoffice-")]
+                if not vals and any(
+                    x.startswith(("libreoffice-writer", "libreoffice-calc", "libreoffice-impress"))
+                    for x in orig_vals
+                ):
+                    vals = ["nidooffice.desktop"]
+                if vals:
+                    sections[cur][k.strip()] = ";".join(vals) + (";" if v.rstrip().endswith(";") else "")
+    if not scrub_only:
+        sec = "[Default Applications]"
+        if sec not in sections:
+            sections[sec] = {}
+            order.insert(0, sec)
+        for m in OFFICE_MIMES:
+            sections[sec][m] = "nidooffice.desktop"
+    out = []
+    for sec in order:
+        if not sections[sec]:
+            continue
+        out.append(sec)
+        for k, v in sections[sec].items():
+            out.append(f"{k}={v}")
+        out.append("")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(out), encoding="utf-8")
+
+for mf in (
+    Path("/etc/xdg/mimeapps.list"),
+    Path("/etc/xdg/gnome-mimeapps.list"),
+    Path("/etc/xdg/ubuntu-mimeapps.list"),
+    Path("/etc/skel/.config/mimeapps.list"),
+):
+    update_mimeapps(mf, scrub_only=False)
+
+for sys_mf in (
+    Path("/usr/share/applications/ubuntu-mimeapps.list"),
+    Path("/usr/share/applications/gnome-mimeapps.list"),
+):
+    if sys_mf.is_file():
+        update_mimeapps(sys_mf, scrub_only=True)
+PY
 
 if command -v gtk-update-icon-cache >/dev/null 2>&1; then
   gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor || true

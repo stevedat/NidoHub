@@ -61,6 +61,16 @@ repack_layered_live_overlays() {
       /usr/share/applications/libreoffice*.desktop \
       /usr/share/applications/*fcitx*.desktop \
       /etc/xdg/autostart/*fcitx*.desktop
+    for sys_mf in /usr/share/applications/ubuntu-mimeapps.list /usr/share/applications/gnome-mimeapps.list; do
+      if [ -f "$sys_mf" ]; then
+        sed -i -E \
+          -e "s/libreoffice-(writer|calc|impress)\.desktop/nidooffice.desktop/g" \
+          -e "s/libreoffice-[A-Za-z0-9_.-]+\.desktop;?//g" \
+          -e "/^[^=[]+=$/d" \
+          "$sys_mf" || true
+        ! grep -q "libreoffice-" "$sys_mf"
+      fi
+    done
     ldconfig
     if [ -f /var/lib/snapd/desktop/applications/ubuntu-desktop-bootstrap_ubuntu-desktop-bootstrap.desktop ]; then
       sed -i "s/^Name=Install RELEASE/Name=Cài đặt Ubuntu-Nido/" \
@@ -89,7 +99,12 @@ repack_layered_live_overlays() {
     test -x /usr/bin/nidobox
     test -x /usr/bin/nidooffice
     test -x /usr/bin/nidooffice-desktop
+    test -x /usr/local/bin/genoffice
     test -x /opt/NidoOffice/genoffice
+    grep -q "^StartupWMClass=nidooffice$" /usr/share/applications/nidooffice.desktop
+    grep -q "{nidooffice,genoffice}" /etc/apparmor.d/nidooffice
+    grep -q -- "--enable-wayland-ime" /usr/bin/nidooffice-desktop
+    ! grep -q "libreoffice-" /etc/xdg/ubuntu-mimeapps.list
     dpkg -s vielotus >/dev/null
     dpkg -s nidobox >/dev/null
     dpkg -s casper >/dev/null
