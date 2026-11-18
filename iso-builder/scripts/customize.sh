@@ -148,13 +148,22 @@ step_customize() {
     bash "$SCRIPT_DIR/../packages/build-all.sh"
   fi
 
-  mkdir -p "$WORK_DIR/squashfs/tmp/nido-debs"
+  mkdir -p "$WORK_DIR/squashfs/tmp/nido-debs" "$WORK_DIR/squashfs/tmp/nido-meta-debs"
   local deb_count=0
+  local meta_count=0
   local deb
   for deb in "$pkg_dist"/*.deb; do
     if [ -f "$deb" ]; then
-      cp "$deb" "$WORK_DIR/squashfs/tmp/nido-debs/"
-      deb_count=$((deb_count + 1))
+      case "$(basename "$deb")" in
+        nido-desktop_*.deb)
+          cp "$deb" "$WORK_DIR/squashfs/tmp/nido-meta-debs/"
+          meta_count=$((meta_count + 1))
+          ;;
+        *)
+          cp "$deb" "$WORK_DIR/squashfs/tmp/nido-debs/"
+          deb_count=$((deb_count + 1))
+          ;;
+      esac
     fi
   done
   if [ -d "$pkg_vendor" ]; then
@@ -167,7 +176,7 @@ step_customize() {
   fi
 
   if [ "$deb_count" -gt 0 ]; then
-    info "  → Installing $deb_count Ubuntu-Nido .deb package(s) into chroot..."
+    info "  → Installing $deb_count base Ubuntu-Nido .deb package(s) into chroot..."
     chroot "$WORK_DIR/squashfs" /bin/bash -c '
       set -e
       export DEBIAN_FRONTEND=noninteractive
@@ -175,7 +184,9 @@ step_customize() {
       apt-get -o DPkg::Lock::Timeout="$APT_LOCK_TIMEOUT" install -y --no-install-recommends /tmp/nido-debs/*.deb
       rm -rf /tmp/nido-debs
     '
-    ok "Ubuntu-Nido packages installed."
+    ok "Base Ubuntu-Nido packages installed."
+  else
+    rm -rf "$WORK_DIR/squashfs/tmp/nido-debs"
   fi
 
   step_overlay
@@ -197,6 +208,21 @@ step_customize() {
       ok "Hook $hook_name completed."
     fi
   done
+
+  if [ "$meta_count" -gt 0 ]; then
+    info "  → Installing $meta_count Nido Minimal Desktop metapackage(s) into chroot..."
+    chroot "$WORK_DIR/squashfs" /bin/bash -c '
+      set -e
+      export DEBIAN_FRONTEND=noninteractive
+      APT_LOCK_TIMEOUT="${APT_LOCK_TIMEOUT:-600}"
+      apt-get -o DPkg::Lock::Timeout="$APT_LOCK_TIMEOUT" install -y --no-install-recommends /tmp/nido-meta-debs/*.deb
+      apt-mark manual nido-desktop >/dev/null 2>&1 || true
+      rm -rf /tmp/nido-meta-debs
+    '
+    ok "Nido Minimal Desktop metapackage installed."
+  else
+    rm -rf "$WORK_DIR/squashfs/tmp/nido-meta-debs"
+  fi
 
   info "[6/7] Verifying customized rootfs and cleaning apt cache..."
   chroot "$WORK_DIR/squashfs" /bin/bash -c '

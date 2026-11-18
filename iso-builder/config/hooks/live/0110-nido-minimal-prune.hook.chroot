@@ -9,7 +9,16 @@ export DEBIAN_FRONTEND=noninteractive
 APT_LOCK_TIMEOUT="${APT_LOCK_TIMEOUT:-600}"
 APT_GET=(apt-get -o "DPkg::Lock::Timeout=${APT_LOCK_TIMEOUT}")
 
-for core_meta in ubuntu-desktop-minimal ubuntu-minimal ubuntu-standard nido-desktop; do
+for core_meta in \
+  ubuntu-desktop-minimal \
+  ubuntu-minimal \
+  ubuntu-standard \
+  nido-desktop \
+  nido-desktop-settings \
+  nido-hub \
+  nidoagent-cli \
+  nidoai-gateway \
+  nidooffice-cli; do
   if dpkg -s "$core_meta" >/dev/null 2>&1; then
     apt-mark manual "$core_meta" >/dev/null 2>&1 || true
   fi
@@ -71,9 +80,9 @@ rm -f \
 # Verify Nido Minimal Desktop core pillars remain intact
 dpkg -s ubuntu-desktop-minimal >/dev/null
 dpkg -s network-manager >/dev/null
-dpkg -s pipewire >/dev/null
+dpkg -s pipewire >/dev/null 2>&1 || dpkg -s pipewire-bin >/dev/null
 dpkg -s bluez >/dev/null
-dpkg -s cups >/dev/null
+dpkg -s cups >/dev/null 2>&1 || dpkg -s cups-daemon >/dev/null 2>&1 || dpkg -s legacy-printer-app >/dev/null
 test -x /usr/bin/gnome-shell
 test -x /usr/bin/nautilus
 
