@@ -38,11 +38,29 @@ else
 fi
 
 OUTPUT_ISO="Ubuntu-Nido-desktop-${TARGET_ARCH}.iso"
+OUTPUT_DIR="${OUTPUT_DIR:-$SCRIPT_DIR}"
+BASE_ISO_CACHE_DIR="${BASE_ISO_CACHE_DIR:-$SCRIPT_DIR}"
 WORK_DIR="${WORK_DIR:-$SCRIPT_DIR/build}"
+FAST_ISO="${FAST_ISO:-0}"
 
-# Dev builds favor fast compression; --release switches to xz
+# Dev builds favor fast compression; FAST_ISO=1 uses zstd -1; --release switches to xz
 SQUASHFS_COMP="${SQUASHFS_COMP:-zstd}"
-# shellcheck disable=SC2034
-SQUASHFS_OPTS=(-Xcompression-level 6 -noappend)
+if [ "$FAST_ISO" = "1" ]; then
+  if [ "$SQUASHFS_COMP" = "zstd" ]; then
+    # shellcheck disable=SC2034
+    SQUASHFS_OPTS=(-Xcompression-level 1 -noappend)
+  else
+    # shellcheck disable=SC2034
+    SQUASHFS_OPTS=(-noappend)
+  fi
+else
+  if [ "$SQUASHFS_COMP" = "zstd" ]; then
+    # shellcheck disable=SC2034
+    SQUASHFS_OPTS=(-Xcompression-level 6 -noappend)
+  else
+    # shellcheck disable=SC2034
+    SQUASHFS_OPTS=(-noappend)
+  fi
+fi
 
-export NIDO_VERSION UBUNTU_VERSION UBUNTU_CODENAME TARGET_ARCH UBUNTU_ISO_NAME UBUNTU_ISO_URL OUTPUT_ISO WORK_DIR USE_VN_MIRROR
+export NIDO_VERSION UBUNTU_VERSION UBUNTU_CODENAME TARGET_ARCH UBUNTU_ISO_NAME UBUNTU_ISO_URL OUTPUT_ISO OUTPUT_DIR BASE_ISO_CACHE_DIR WORK_DIR USE_VN_MIRROR FAST_ISO SQUASHFS_COMP

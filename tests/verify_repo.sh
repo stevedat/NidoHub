@@ -35,6 +35,7 @@ SHELL_SCRIPTS=(
   "${ROOT_DIR}/iso-builder/scripts/customize.sh"
   "${ROOT_DIR}/iso-builder/scripts/chroot_shell.sh"
   "${ROOT_DIR}/iso-builder/scripts/repack.sh"
+  "${ROOT_DIR}/iso-builder/scripts/local-arm64.sh"
   "${ROOT_DIR}/iso-builder/config/hooks/live/0100-nido-gnome-setup.hook.chroot"
   "${ROOT_DIR}/iso-builder/config/hooks/live/0110-nido-minimal-prune.hook.chroot"
   "${ROOT_DIR}/iso-builder/config/hooks/live/0150-vielotus-im.hook.chroot"
@@ -541,6 +542,32 @@ with tempfile.TemporaryDirectory() as td:
 print("Verified update_install_sources.py (24.04 & 26.04) and reconcile_live_layer.py cleanly.")
 PY
 pass "update_install_sources.py and reconcile_live_layer.py unit tests passed"
+
+# Verify FAST_ISO=1, OUTPUT_DIR, BASE_ISO_CACHE_DIR, and local-arm64.sh --dry-run
+bash -c '
+  set -e
+  SCRIPT_DIR="${1}/iso-builder"
+  export TARGET_ARCH=arm64 UBUNTU_VERSION=26.04 FAST_ISO=1
+  unset SQUASHFS_COMP
+  # shellcheck disable=SC1091
+  source "$SCRIPT_DIR/scripts/config.sh"
+  [ "$SQUASHFS_COMP" = "zstd" ]
+  [[ "${SQUASHFS_OPTS[*]}" == *"-Xcompression-level 1"* ]]
+  FAST_ISO=0
+  unset SQUASHFS_COMP
+  # shellcheck disable=SC1091
+  source "$SCRIPT_DIR/scripts/config.sh"
+  [[ "${SQUASHFS_OPTS[*]}" == *"-Xcompression-level 6"* ]]
+' _ "${ROOT_DIR}"
+
+LOCAL_TEST_EXT="$(mktemp -d)"
+trap 'rm -rf "$LOCAL_TEST_EXT"' EXIT
+bash "${ROOT_DIR}/iso-builder/scripts/local-arm64.sh" --help >/dev/null
+DRY_OUT="$(bash "${ROOT_DIR}/iso-builder/scripts/local-arm64.sh" --ext-dir "$LOCAL_TEST_EXT" --dry-run)"
+grep -q "FAST_ISO / Comp : 1 / zstd" <<< "$DRY_OUT"
+rm -rf "$LOCAL_TEST_EXT"
+trap - EXIT
+pass "FAST_ISO=1 config and local-arm64.sh dry-run verification passed"
 
 echo "=== 7. Public Repo Hygiene, Secret & Binary Leak Audit ==="
 python3 - "${ROOT_DIR}" <<'PY'

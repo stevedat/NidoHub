@@ -36,6 +36,8 @@ sha256sum -c SHA256SUMS.txt
 
 ```sh
 make check && make packages && make iso
+# Build nhanh ARM64 tại máy (lưu cache ISO gốc + ext4 workspace + zstd cấp 1)
+EXT_DIR=/duong/dan/o-ngoai make iso-arm64-fast
 ```
 
 ## Giấy phép

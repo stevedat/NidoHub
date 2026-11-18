@@ -36,6 +36,8 @@ sha256sum -c SHA256SUMS.txt
 
 ```sh
 make check && make packages && make iso
+# Fast local ARM64 build (cached base ISO + ext4 workspace + zstd level 1)
+EXT_DIR=/path/to/external-workspace make iso-arm64-fast
 ```
 
 ## License

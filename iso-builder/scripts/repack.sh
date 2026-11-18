@@ -255,7 +255,8 @@ sys.stdout.buffer.write(b"\0".join(t.encode() for t in out) + b"\0")
     xorriso_args=(-as mkisofs "${xorriso_args[@]}")
   fi
 
-  xorriso "${xorriso_args[@]}" -output "$SCRIPT_DIR/$OUTPUT_ISO" .
+  mkdir -p "$OUTPUT_DIR"
+  xorriso "${xorriso_args[@]}" -output "$OUTPUT_DIR/$OUTPUT_ISO" .
   cd "$SCRIPT_DIR" || return 1
 
   if [ "${CI:-}" = "true" ] && [ "${KEEP_BASE_ISO:-0}" != "1" ] && [ -n "$source_iso" ] && [ -f "$source_iso" ]; then

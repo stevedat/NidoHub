@@ -4,6 +4,7 @@ dist/
 .build/
 Binaries/
 iso-builder/build/
+iso-builder/local-arm64/
 packages/dist/
 packages/vendor/
 packages/*/stage/
@@ -13,6 +14,7 @@ apt-repo/
 *.app/
 *.dSYM/
 *.dmg
+*.img
 *.zip
 *.tar.gz
 *.pkg

@@ -7,9 +7,11 @@ ENV DEBIAN_FRONTEND=noninteractive \
 RUN apt-get update && apt-get upgrade -y && \
     apt-get install -y --no-install-recommends \
         apt-transport-https \
+        aria2 \
         ca-certificates \
         curl \
         dpkg-dev \
+        e2fsprogs \
         file \
         fontconfig \
         git \
@@ -22,6 +24,7 @@ RUN apt-get update && apt-get upgrade -y && \
         squashfs-tools \
         sudo \
         unzip \
+        util-linux \
         wget \
         xorriso && \
     if [ "$(dpkg --print-architecture)" = "amd64" ]; then \

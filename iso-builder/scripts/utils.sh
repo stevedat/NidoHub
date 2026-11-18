@@ -58,20 +58,23 @@ print_header() {
   echo -e "  ${CYAN}Ubuntu-Nido ${NIDO_VERSION}${NC} (Ubuntu ${UBUNTU_VERSION} ${UBUNTU_CODENAME} / ${TARGET_ARCH})"
   echo "========================================================"
   echo "  Input ISO : $BASE_ISO"
-  echo "  Output ISO: $OUTPUT_ISO"
+  echo "  Work Dir  : $WORK_DIR"
+  echo "  Output ISO: $OUTPUT_DIR/$OUTPUT_ISO"
+  echo "  SquashFS  : $SQUASHFS_COMP (${SQUASHFS_OPTS[*]})"
   echo ""
 }
 
 print_result() {
+  local iso_path="$OUTPUT_DIR/$OUTPUT_ISO"
   local size
-  size="$(du -h "$SCRIPT_DIR/$OUTPUT_ISO" | cut -f1)"
+  size="$(du -h "$iso_path" | cut -f1)"
   echo ""
   echo "========================================================"
   echo -e "  ${GREEN}Build succeeded!${NC}"
-  echo "  ISO : $SCRIPT_DIR/$OUTPUT_ISO"
+  echo "  ISO : $iso_path"
   echo "  Size: $size"
   echo "  SHA256:"
-  sha256sum "$SCRIPT_DIR/$OUTPUT_ISO" 2>/dev/null || shasum -a 256 "$SCRIPT_DIR/$OUTPUT_ISO"
+  sha256sum "$iso_path" 2>/dev/null || shasum -a 256 "$iso_path"
   echo "========================================================"
 }
 
@@ -111,13 +114,21 @@ resolve_iso() {
   if [ -n "$provided" ] && [ -f "$provided" ]; then
     BASE_ISO="$(cd "$(dirname "$provided")" && pwd)/$(basename "$provided")"
     info "Using local ISO: $BASE_ISO"
+  elif [ -f "$BASE_ISO_CACHE_DIR/$UBUNTU_ISO_NAME" ]; then
+    BASE_ISO="$BASE_ISO_CACHE_DIR/$UBUNTU_ISO_NAME"
+    info "Found cached ISO: $BASE_ISO"
   elif [ -f "$SCRIPT_DIR/$UBUNTU_ISO_NAME" ]; then
     BASE_ISO="$SCRIPT_DIR/$UBUNTU_ISO_NAME"
     info "Found cached ISO: $BASE_ISO"
   else
+    mkdir -p "$BASE_ISO_CACHE_DIR"
     info "Downloading ${UBUNTU_ISO_NAME} from ${UBUNTU_ISO_URL}..."
-    wget --progress=bar:force -c "$UBUNTU_ISO_URL" -O "$SCRIPT_DIR/$UBUNTU_ISO_NAME"
-    BASE_ISO="$SCRIPT_DIR/$UBUNTU_ISO_NAME"
+    if command -v aria2c >/dev/null 2>&1; then
+      aria2c -x 4 -s 4 -c -d "$BASE_ISO_CACHE_DIR" -o "$UBUNTU_ISO_NAME" "$UBUNTU_ISO_URL"
+    else
+      wget --progress=bar:force -c "$UBUNTU_ISO_URL" -O "$BASE_ISO_CACHE_DIR/$UBUNTU_ISO_NAME"
+    fi
+    BASE_ISO="$BASE_ISO_CACHE_DIR/$UBUNTU_ISO_NAME"
     ok "Downloaded: $BASE_ISO"
   fi
   mkdir -p "$WORK_DIR"
@@ -205,6 +216,7 @@ print_dev_help() {
   cat <<EOF
 Ubuntu-Nido ISO Builder (${TARGET_ARCH}, Ubuntu ${UBUNTU_VERSION}):
   sudo ./build.sh                  Full dev build (${SQUASHFS_COMP})
+  sudo ./build.sh --fast           Fast local build (zstd level 1; or FAST_ISO=1)
   sudo ./build.sh --release        Full release build (xz)
   sudo ./build.sh --prepare        Extract ISO + squashfs layers into build/
   sudo ./build.sh --boot-only      Update GRUB/ISOLINUX config

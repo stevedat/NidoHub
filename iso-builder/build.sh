@@ -40,9 +40,22 @@ BUILD_OK=0
 for arg in "$@"; do
   case "$arg" in
     --release)
+      FAST_ISO=0
       SQUASHFS_COMP="xz"
       SQUASHFS_OPTS=(-b 1M -Xdict-size 100% -noappend)
+      export FAST_ISO SQUASHFS_COMP
       info "Release mode: xz compression (smaller ISO)"
+      ;;
+    --fast)
+      FAST_ISO=1
+      SQUASHFS_COMP="${SQUASHFS_COMP:-zstd}"
+      if [ "$SQUASHFS_COMP" = "zstd" ]; then
+        SQUASHFS_OPTS=(-Xcompression-level 1 -noappend)
+      else
+        SQUASHFS_OPTS=(-noappend)
+      fi
+      export FAST_ISO SQUASHFS_COMP
+      info "Fast local mode: ${SQUASHFS_COMP} (${SQUASHFS_OPTS[*]})"
       ;;
     --debug-boot)
       DEBUG_BOOT=1
@@ -66,7 +79,7 @@ case "$MODE" in
   clean)
     info "Cleaning Ubuntu-Nido build artifacts..."
     safe_remove_work_dirs
-    rm -rf "$WORK_DIR/cache" "$WORK_DIR/cache_iso" "$WORK_DIR/casper-layout.env" "$WORK_DIR/source-iso.path" Ubuntu-Nido-*.iso ./*.log
+    rm -rf "$WORK_DIR/cache" "$WORK_DIR/cache_iso" "$WORK_DIR/casper-layout.env" "$WORK_DIR/source-iso.path" Ubuntu-Nido-*.iso "$OUTPUT_DIR"/Ubuntu-Nido-*.iso ./*.log
     ok "Clean completed."
     exit 0
     ;;
