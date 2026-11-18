@@ -15,7 +15,7 @@ rm -rf "$DIST_DIR" "$STAGE_DIR" "$NIDOHUB_STAGE_DIR"
 mkdir -p "$DIST_DIR" "${STAGE_DIR}/usr/lib/nidoai" "${NIDOHUB_STAGE_DIR}/usr/share/icons/hicolor"
 python3 "${ROOT_DIR}/branding/generate-assets.py" --hub-icon-dir "${NIDOHUB_STAGE_DIR}/usr/share/icons/hicolor"
 
-if [[ -n "$NIDOAI_SRC_DIR" && -f "${NIDOAI_SRC_DIR}/src/cli.ts" ]]; then
+if [[ -n "$NIDOAI_SRC_DIR" && ( -f "${NIDOAI_SRC_DIR}/src/cli.mjs" || -f "${NIDOAI_SRC_DIR}/src/cli.ts" ) ]]; then
   echo "==> Staging external NidoAI source from ${NIDOAI_SRC_DIR} (strict secret exclusion)"
   cp "${NIDOAI_SRC_DIR}/package.json" "${STAGE_DIR}/usr/lib/nidoai/package.json"
   [[ -f "${NIDOAI_SRC_DIR}/README.md" ]] && cp "${NIDOAI_SRC_DIR}/README.md" "${STAGE_DIR}/usr/lib/nidoai/README.md"
@@ -27,7 +27,7 @@ if [[ -n "$NIDOAI_SRC_DIR" && -f "${NIDOAI_SRC_DIR}/src/cli.ts" ]]; then
 else
   echo "==> Staging built-in open-source NidoAI Gateway (packages/nidoai-gateway/src)"
   mkdir -p "${STAGE_DIR}/usr/lib/nidoai/src"
-  cp "${SCRIPT_DIR}/nidoai-gateway/src/cli.ts" "${STAGE_DIR}/usr/lib/nidoai/src/cli.ts"
+  cp "${SCRIPT_DIR}/nidoai-gateway/src/cli.mjs" "${STAGE_DIR}/usr/lib/nidoai/src/cli.mjs"
   cat > "${STAGE_DIR}/usr/lib/nidoai/package.json" <<'PKG'
 {
   "name": "nidoai-gateway",

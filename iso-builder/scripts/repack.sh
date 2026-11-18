@@ -209,8 +209,16 @@ step_repack_iso() {
   [ -f "$WORK_DIR/source-iso.path" ] && source_iso="$(cat "$WORK_DIR/source-iso.path")"
 
   cd "${WORK_DIR:?}/custom" || return 1
+  if [ -f ".disk/info" ]; then
+    grep -Eq '^Ubuntu-Nido [0-9]+\.[0-9]+(\.[0-9]+)? LTS "[^"]+" - Release (amd64|arm64) \([0-9]{8}\)$' ".disk/info" || {
+      err "Invalid .disk/info format (breaks ubuntu-desktop-bootstrap): $(cat .disk/info)"
+      return 1
+    }
+  fi
   find . -type f ! -name 'md5sum.txt' \
-    ! -path './isolinux/isolinux.bin' ! -path './isolinux/boot.cat' -print0 \
+    ! -path './isolinux/isolinux.bin' ! -path './isolinux/boot.cat' \
+    ! -path './boot/boot.cat' ! -path './boot.catalog' \
+    ! -path './boot/grub/i386-pc/eltorito.img' -print0 \
     | sort -z | xargs -0 md5sum > md5sum.txt 2>/dev/null || true
 
   info "  → Building hybrid bootable ISO ($TARGET_ARCH)..."

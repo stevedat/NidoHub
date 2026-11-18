@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-NIDOAI_BIN="${NIDOAI_ENTRY:-/usr/lib/nidoai/src/cli.ts}"
+NIDOAI_BIN="${NIDOAI_ENTRY:-/usr/lib/nidoai/src/cli.mjs}"
 STATE_DIR="${NIDOAI_HOME:-${HOME}/.nidoai}"
 
 mkdir -p "$STATE_DIR"
@@ -9,14 +9,17 @@ chmod 700 "$STATE_DIR" 2>/dev/null || true
 cd "$STATE_DIR"
 
 if ! command -v node >/dev/null 2>&1; then
-  echo "nidoai: Node.js (>= 22.6.0) is required." >&2
+  echo "nidoai: Node.js (>= 20.0.0) is required." >&2
   exit 1
 fi
 
 NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
-if [ "$NODE_MAJOR" -lt 22 ]; then
-  echo "nidoai: Node.js >= 22.6.0 is required (found $(node -v))." >&2
+if [ "$NODE_MAJOR" -lt 20 ]; then
+  echo "nidoai: Node.js >= 20.0.0 is required (found $(node -v))." >&2
   exit 1
 fi
 
-exec node --no-warnings=ExperimentalWarning --experimental-strip-types "$NIDOAI_BIN" "$@"
+case "$NIDOAI_BIN" in
+  *.ts) exec node --no-warnings=ExperimentalWarning --experimental-strip-types "$NIDOAI_BIN" "$@" ;;
+  *) exec node "$NIDOAI_BIN" "$@" ;;
+esac

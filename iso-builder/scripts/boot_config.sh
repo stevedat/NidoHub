@@ -22,8 +22,25 @@ step_boot_config() {
   fi
 
   if [ -f "$iso_dir/.disk/info" ]; then
-    printf 'Ubuntu-Nido %s LTS - Release %s\n' "$NIDO_VERSION" "$TARGET_ARCH" > "$iso_dir/.disk/info"
-    ok "  Updated .disk/info release label"
+    # Ubuntu Desktop's ubuntu-desktop-bootstrap (ProductInfo) expects canonical
+    # "<Name> <UbuntuVersion> LTS \"<Codename>\" - Release <Arch> (<YYYYMMDD>)" format.
+    local release_codename=""
+    release_codename="$(sed -n 's/.*"\([^"]*\)".*/\1/p' "$iso_dir/.disk/info" | head -n1)"
+    if [ -z "$release_codename" ]; then
+      case "${UBUNTU_CODENAME:-}" in
+        resolute) release_codename="Resolute Raccoon" ;;
+        noble)    release_codename="Noble Numbat" ;;
+        plucky)   release_codename="Plucky Puffin" ;;
+        oracular) release_codename="Oracular Oriole" ;;
+        questing) release_codename="Questing Quokka" ;;
+        *)        release_codename="${UBUNTU_CODENAME:-Ubuntu}" ;;
+      esac
+    fi
+    local build_stamp
+    build_stamp="$(date -u +%Y%m%d)"
+    printf 'Ubuntu-Nido %s LTS "%s" - Release %s (%s)\n' \
+      "${UBUNTU_VERSION:-26.04}" "$release_codename" "$TARGET_ARCH" "$build_stamp" > "$iso_dir/.disk/info"
+    ok "  Updated .disk/info release label ($(cat "$iso_dir/.disk/info"))"
   fi
 
   local cfg

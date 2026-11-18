@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import html
 import json
 import os
 import secrets
@@ -23,6 +24,11 @@ PROVIDERS = [
     ("openai", "OpenAI API (BYOK)"),
     ("local", "Local Ollama (127.0.0.1:11434)"),
 ]
+
+
+def escape_markup(text: str) -> str:
+    """Escape text for GTK/Libadwaita widgets whose labels parse Pango markup."""
+    return html.escape(text, quote=False)
 
 
 class NidoHubBackend:
@@ -290,6 +296,10 @@ def run_self_test() -> int:
         assert backend.welcome_done_file.is_file()
         items = backend.load_catalog_items()
         assert len(items) == 1 and items[0]["id"] == "core"
+        import xml.etree.ElementTree as ET
+        sample = "Thành phần & Ứng dụng <Ubuntu-Nido>"
+        parsed = ET.fromstring(f"<markup>{escape_markup(sample)}</markup>")
+        assert parsed.text == sample, f"Markup round-trip mismatch: {parsed.text!r}"
     print("nido-hub self-test passed.")
     return 0
 
@@ -315,6 +325,30 @@ def run_gtk_app(backend: NidoHubBackend, initial_page: str) -> int:
     gi.require_version("Gtk", "4.0")
     gi.require_version("Adw", "1")
     from gi.repository import Adw, Gio, GLib, Gtk  # type: ignore
+
+    def _make_plain_row(row: Any, title: str, subtitle: str | None = None) -> Any:
+        if hasattr(row, "set_use_markup"):
+            row.set_use_markup(False)
+        row.set_title(title)
+        if subtitle is not None and hasattr(row, "set_subtitle"):
+            row.set_subtitle(subtitle)
+        return row
+
+    def _make_group(title: str = "", description: str = "") -> Any:
+        kwargs: dict[str, str] = {}
+        if title:
+            kwargs["title"] = escape_markup(title)
+        if description:
+            kwargs["description"] = escape_markup(description)
+        return Adw.PreferencesGroup(**kwargs)
+
+    def _add_toast(overlay: Any, message: str) -> None:
+        toast = Adw.Toast.new(message)
+        if hasattr(toast, "set_use_markup"):
+            toast.set_use_markup(False)
+        else:
+            toast.set_title(escape_markup(message))
+        overlay.add_toast(toast)
 
     class NidoHubApp(Adw.Application):
         def __init__(self) -> None:
@@ -349,34 +383,36 @@ def run_gtk_app(backend: NidoHubBackend, initial_page: str) -> int:
             ai_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
             backend.ensure_gateway_ready(start_service=True)
             banner = Adw.Banner()
+            if hasattr(banner, "set_use_markup"):
+                banner.set_use_markup(False)
             ok_gw, gw_msg = backend.probe_gateway_health()
-            banner.set_title(gw_msg)
+            banner.set_title(gw_msg if hasattr(banner, "set_use_markup") else escape_markup(gw_msg))
             banner.set_revealed(True)
             ai_box.append(banner)
 
             ai_page = Adw.PreferencesPage()
             env = backend.load_env()
 
-            prov_group = Adw.PreferencesGroup(
+            prov_group = _make_group(
                 title="Cấu hình NidoAI Gateway",
                 description="Khóa API được lưu cục bộ tại ~/.nidoai/.env.local (quyền 0600).",
             )
             model_list = Gtk.StringList.new([label for _, label in PROVIDERS])
-            prov_row = Adw.ComboRow(title="Nguồn AI mặc định", model=model_list)
+            prov_row = _make_plain_row(Adw.ComboRow(model=model_list), "Nguồn AI mặc định")
             cur_prov = env.get("NIDOAI_PRIMARY_BACKEND", "gemini")
             prov_idx = next((i for i, (k, _) in enumerate(PROVIDERS) if k == cur_prov), 0)
             prov_row.set_selected(prov_idx)
             prov_group.add(prov_row)
 
-            gemini_row = Adw.PasswordEntryRow(title="Google Gemini API Key")
+            gemini_row = _make_plain_row(Adw.PasswordEntryRow(), "Google Gemini API Key")
             gemini_row.set_text(env.get("GEMINI_API_KEY", ""))
             prov_group.add(gemini_row)
 
-            openai_row = Adw.PasswordEntryRow(title="OpenAI API Key")
+            openai_row = _make_plain_row(Adw.PasswordEntryRow(), "OpenAI API Key")
             openai_row.set_text(env.get("OPENAI_API_KEY", ""))
             prov_group.add(openai_row)
 
-            ollama_row = Adw.EntryRow(title="Local Ollama Endpoint")
+            ollama_row = _make_plain_row(Adw.EntryRow(), "Local Ollama Endpoint")
             ollama_row.set_text(env.get("NIDOAI_LOCAL_BASE_URL", "http://127.0.0.1:11434/v1"))
             prov_group.add(ollama_row)
 
@@ -397,8 +433,8 @@ def run_gtk_app(backend: NidoHubBackend, initial_page: str) -> int:
                     restart_service=True,
                 )
                 _, msg = backend.probe_gateway_health()
-                banner.set_title(msg)
-                toast_overlay.add_toast(Adw.Toast.new("Đã lưu cấu hình NidoAI!"))
+                banner.set_title(msg if hasattr(banner, "set_use_markup") else escape_markup(msg))
+                _add_toast(toast_overlay, "Đã lưu cấu hình NidoAI!")
 
             btn_group = Adw.PreferencesGroup()
             btn_group.add(save_btn)
@@ -411,18 +447,18 @@ def run_gtk_app(backend: NidoHubBackend, initial_page: str) -> int:
 
             # --- Page 2: Ecosystem App Manager ---
             apps_page = Adw.PreferencesPage()
-            apps_group = Adw.PreferencesGroup(
+            apps_group = _make_group(
                 title="Thành phần & Ứng dụng Ubuntu-Nido",
                 description="Quản lý cài đặt và cập nhật trực tiếp qua hệ thống gói APT.",
             )
 
             def populate_apps() -> None:
                 for item in backend.load_catalog_items():
-                    row = Adw.ActionRow(
-                        title=item["name"],
-                        subtitle=f"{item['description']} ({'Đã cài đặt' if item['installed'] else 'Chưa cài đặt'})",
+                    row = _make_plain_row(
+                        Adw.ActionRow(),
+                        item["name"],
+                        f"{item['description']} ({'Đã cài đặt' if item['installed'] else 'Chưa cài đặt'})",
                     )
-                    row.set_use_markup(False)
                     act_btn = Gtk.Button(
                         label="Cập nhật" if item["installed"] else "Cài đặt",
                         valign=Gtk.Align.CENTER,
@@ -437,7 +473,7 @@ def run_gtk_app(backend: NidoHubBackend, initial_page: str) -> int:
                             GLib.idle_add(
                                 lambda: (
                                     _b.set_sensitive(True),
-                                    toast_overlay.add_toast(Adw.Toast.new(msg_res[:120])),
+                                    _add_toast(toast_overlay, msg_res[:120]),
                                 )
                             )
 
@@ -458,16 +494,15 @@ def run_gtk_app(backend: NidoHubBackend, initial_page: str) -> int:
             agent_box.set_margin_start(20)
             agent_box.set_margin_end(20)
 
-            ctrl_group = Adw.PreferencesGroup(
+            ctrl_group = _make_group(
                 title="Trợ lý Điều phối NidoAgent",
                 description="Đính kèm hợp đồng / tài liệu (.docx, .xlsx, .pdf, .md) và xuất báo cáo tự động.",
             )
-            prompt_row = Adw.EntryRow(title="Yêu cầu công việc")
+            prompt_row = _make_plain_row(Adw.EntryRow(), "Yêu cầu công việc")
             prompt_row.set_text("Tổng hợp các thông tin và giá trị chính từ tài liệu đính kèm.")
             ctrl_group.add(prompt_row)
 
-            files_row = Adw.ActionRow(title="Tệp đính kèm", subtitle="Chưa chọn tệp nào")
-            files_row.set_use_markup(False)
+            files_row = _make_plain_row(Adw.ActionRow(), "Tệp đính kèm", "Chưa chọn tệp nào")
             pick_btn = Gtk.Button(label="Chọn tệp...", valign=Gtk.Align.CENTER)
             clear_btn = Gtk.Button(label="Xóa", valign=Gtk.Align.CENTER)
             files_row.add_suffix(pick_btn)
@@ -479,9 +514,9 @@ def run_gtk_app(backend: NidoHubBackend, initial_page: str) -> int:
                 (".docx", "Xuất báo cáo Word (.docx)"),
                 (".xlsx", "Xuất bảng tổng hợp Excel (.xlsx)"),
             ]
-            export_row = Adw.ComboRow(
-                title="Định dạng kết quả",
-                model=Gtk.StringList.new([m[1] for m in export_modes]),
+            export_row = _make_plain_row(
+                Adw.ComboRow(model=Gtk.StringList.new([m[1] for m in export_modes])),
+                "Định dạng kết quả",
             )
             ctrl_group.add(export_row)
             agent_box.append(ctrl_group)

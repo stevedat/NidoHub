@@ -139,7 +139,10 @@ for fname in expected:
         names = [m.name for m in tf.getmembers()]
         leaked = [n for n in names if n.endswith("/.env") or n.endswith("/.env.local") or n == "./.env" or n == "./.env.local"]
         assert not leaked, f"{fname}: SECRET LEAKED: {leaked}"
-        if fname == "nido-hub_0.1.0_all.deb":
+        if fname == "nidoai-gateway_0.1.0_all.deb":
+            assert "./usr/lib/nidoai/src/cli.mjs" in names, f"{fname}: missing pure JS cli.mjs entry"
+            assert "./usr/lib/nidoai/src/cli.ts" not in names, f"{fname}: stale cli.ts found (breaks stock Ubuntu nodejs)"
+        elif fname == "nido-hub_0.1.0_all.deb":
             assert "./usr/share/icons/hicolor/scalable/apps/com.nidoholdings.NidoHub.svg" in names, (
                 f"{fname}: missing scalable NidoHub SVG icon"
             )
@@ -247,12 +250,20 @@ chmod 700 "${SANDBOX}/home/.nidoai"
 TEST_PORT=18991
 TEST_TOKEN="ubuntu_nido_smoke_test_token_0123456789abcdef"
 
+node --check "${ROOT_DIR}/packages/nidoai-gateway/src/cli.mjs"
+
+env \
+  HOME="${SANDBOX}/home" \
+  NIDOAI_HOME="${SANDBOX}/home/.nidoai" \
+  NIDOAI_ENTRY="${SANDBOX}/rootfs/usr/lib/nidoai/src/cli.mjs" \
+  "${SANDBOX}/rootfs/usr/bin/nidoai" doctor >/dev/null
+
 env \
   HOME="${SANDBOX}/home" \
   NIDOAI_HOME="${SANDBOX}/home/.nidoai" \
   NIDOAI_PORT="${TEST_PORT}" \
   NIDOAI_CLIENT_TOKEN="${TEST_TOKEN}" \
-  NIDOAI_ENTRY="${SANDBOX}/rootfs/usr/lib/nidoai/src/cli.ts" \
+  NIDOAI_ENTRY="${SANDBOX}/rootfs/usr/lib/nidoai/src/cli.mjs" \
   "${SANDBOX}/rootfs/usr/bin/nidoai" serve > "${SANDBOX}/gateway.log" 2>&1 &
 GW_PID=$!
 
@@ -286,7 +297,7 @@ PY
 NIDOAI_STATUS_OUT="$(env \
   HOME="${SANDBOX}/home" \
   NIDOAI_HOME="${SANDBOX}/home/.nidoai" \
-  NIDOAI_ENTRY="${SANDBOX}/rootfs/usr/lib/nidoai/src/cli.ts" \
+  NIDOAI_ENTRY="${SANDBOX}/rootfs/usr/lib/nidoai/src/cli.mjs" \
   "${SANDBOX}/rootfs/usr/bin/nidoai" status)"
 
 python3 - "$NIDOAI_STATUS_OUT" "$TEST_TOKEN" <<'PY'
@@ -319,6 +330,28 @@ PY
 
 NIDOHUB_APP_ENTRY="${SANDBOX}/rootfs/usr/lib/nido-hub/app.py" \
   "${SANDBOX}/rootfs/usr/bin/nido-hub" --self-test
+
+# Verify boot_config.sh generates canonical ProductInfo-compatible .disk/info and repack.sh skips boot/boot.cat
+BOOT_TMP="$(mktemp -d "${TMPDIR:-/tmp}/nido-bootcfg.XXXXXX")"
+mkdir -p "${BOOT_TMP}/custom/.disk" "${BOOT_TMP}/custom/boot/grub"
+printf 'Ubuntu 26.04 LTS "Resolute Raccoon" - Release arm64 (20260420)\n' > "${BOOT_TMP}/custom/.disk/info"
+bash -c '
+  set -euo pipefail
+  SCRIPT_DIR="$1" WORK_DIR="$4" TARGET_ARCH=arm64 UBUNTU_VERSION=26.04 UBUNTU_CODENAME=resolute NIDO_VERSION=0.1.0
+  source "$2"
+  source "$3"
+  step_boot_config >/dev/null
+' _ "${ROOT_DIR}/iso-builder" "${ROOT_DIR}/iso-builder/scripts/utils.sh" "${ROOT_DIR}/iso-builder/scripts/boot_config.sh" "${BOOT_TMP}"
+grep -Eq '^Ubuntu-Nido 26\.04 LTS "Resolute Raccoon" - Release arm64 \([0-9]{8}\)$' "${BOOT_TMP}/custom/.disk/info" || {
+  echo "ERROR: boot_config.sh produced invalid .disk/info: $(cat "${BOOT_TMP}/custom/.disk/info")" >&2
+  rm -rf "${BOOT_TMP}"
+  exit 1
+}
+rm -rf "${BOOT_TMP}"
+grep -Fq "! -path './boot/boot.cat'" "${ROOT_DIR}/iso-builder/scripts/repack.sh" || {
+  echo "ERROR: repack.sh must exclude ./boot/boot.cat from md5sum.txt" >&2
+  exit 1
+}
 
 python3 - "${SANDBOX}" <<'PY'
 import os, subprocess, sys

@@ -134,9 +134,18 @@ jobs:
             casper/minimal.standard.squashfs \
             casper/minimal.standard.live.squashfs \
             casper/install-sources.yaml \
+            .disk/info \
             .disk/casper-uuid-generic; do
             test -s "$MNT_DIR/$req" || { echo "ERROR: Missing or empty $req in ISO" >&2; exit 1; }
           done
+          grep -Eq "^Ubuntu-Nido [0-9]+\.[0-9]+(\.[0-9]+)? LTS \"[^\"]+\" - Release ${TARGET_ARCH} \([0-9]{8}\)\$" "$MNT_DIR/.disk/info" || {
+            echo "ERROR: Invalid .disk/info format: $(cat "$MNT_DIR/.disk/info")" >&2
+            exit 1
+          }
+          (cd "$MNT_DIR" && md5sum -c --quiet md5sum.txt) || {
+            echo "ERROR: ISO md5sum.txt verification failed" >&2
+            exit 1
+          }
           grep -q "locale_support: locale-only" "$MNT_DIR/casper/install-sources.yaml"
           if grep -q "^sources:" "$MNT_DIR/casper/install-sources.yaml"; then
             grep -q "^version: 2" "$MNT_DIR/casper/install-sources.yaml"

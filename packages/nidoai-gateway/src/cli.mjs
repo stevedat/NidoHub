@@ -16,39 +16,21 @@ const PKG_VERSION = '0.1.0';
 const MAX_BODY_BYTES = 1_048_576; // 1 MiB
 const MIN_TOKEN_LENGTH = 16;
 
-type BackendKind = 'gemini' | 'openai' | 'local';
-
-interface BackendConfig {
-  kind: BackendKind;
-  baseUrl: string;
-  apiKey: string;
-  defaultModel: string;
-  configured: boolean;
-}
-
-interface GatewayConfig {
-  host: '127.0.0.1';
-  port: number;
-  clientToken: string;
-  primaryBackend: BackendKind;
-  backends: Record<BackendKind, BackendConfig>;
-}
-
-const SECURITY_HEADERS: Record<string, string> = {
+const SECURITY_HEADERS = {
   'X-Content-Type-Options': 'nosniff',
   'X-Frame-Options': 'DENY',
   'Cache-Control': 'no-store',
 };
 
-function maskSecret(secret: string): string {
+function maskSecret(secret) {
   if (!secret) return '';
   if (secret.length <= 10) return '••••••••';
   return `${secret.slice(0, 6)}••••${secret.slice(-4)}`;
 }
 
-function readEnvFile(filePath: string): Record<string, string> {
+function readEnvFile(filePath) {
   if (!fs.existsSync(filePath)) return {};
-  const out: Record<string, string> = {};
+  const out = {};
   for (const raw of fs.readFileSync(filePath, 'utf8').split(/\r?\n/)) {
     const line = raw.trim();
     if (!line || line.startsWith('#')) continue;
@@ -60,7 +42,7 @@ function readEnvFile(filePath: string): Record<string, string> {
   return out;
 }
 
-function isAllowedUpstreamUrl(rawUrl: string): boolean {
+function isAllowedUpstreamUrl(rawUrl) {
   try {
     const u = new URL(rawUrl);
     if (u.protocol === 'https:') return true;
@@ -76,15 +58,15 @@ function isAllowedUpstreamUrl(rawUrl: string): boolean {
   }
 }
 
-function stateDir(): string {
+function stateDir() {
   return process.env.NIDOAI_HOME || path.join(os.homedir(), '.nidoai');
 }
 
-function runtimePath(): string {
+function runtimePath() {
   return path.join(stateDir(), 'runtime.json');
 }
 
-function ensureClientToken(dir: string, existingToken: string): string {
+function ensureClientToken(dir, existingToken) {
   if (existingToken.length >= MIN_TOKEN_LENGTH) return existingToken;
   const generated = `nidoai_${crypto.randomBytes(24).toString('hex')}`;
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -102,14 +84,14 @@ function ensureClientToken(dir: string, existingToken: string): string {
   return generated;
 }
 
-function loadGatewayConfig(bootstrapToken: boolean): GatewayConfig {
+function loadGatewayConfig(bootstrapToken) {
   const dir = stateDir();
   const fileEnv = {
     ...readEnvFile(path.join(process.cwd(), '.env')),
     ...readEnvFile(path.join(process.cwd(), '.env.local')),
     ...readEnvFile(path.join(dir, '.env.local')),
   };
-  const get = (k: string, fb = '') => (process.env[k] ?? fileEnv[k] ?? fb).trim();
+  const get = (k, fb = '') => (process.env[k] ?? fileEnv[k] ?? fb).trim();
 
   const port = Number.parseInt(get('NIDOAI_PORT', '18090'), 10) || 18090;
   let token = get('NIDOAI_CLIENT_TOKEN');
@@ -118,7 +100,7 @@ function loadGatewayConfig(bootstrapToken: boolean): GatewayConfig {
   }
 
   const rawPrimary = get('NIDOAI_PRIMARY_BACKEND', 'gemini');
-  const primaryBackend: BackendKind =
+  const primaryBackend =
     rawPrimary === 'gemini' || rawPrimary === 'openai' || rawPrimary === 'local'
       ? rawPrimary
       : 'gemini';
@@ -131,7 +113,7 @@ function loadGatewayConfig(bootstrapToken: boolean): GatewayConfig {
   const geminiUrl = get('NIDOAI_GEMINI_BASE_URL', 'https://generativelanguage.googleapis.com/v1beta/openai').replace(/\/+$/, '');
   const openaiUrl = get('NIDOAI_OPENAI_BASE_URL', 'https://api.openai.com/v1').replace(/\/+$/, '');
 
-  const backends: Record<BackendKind, BackendConfig> = {
+  const backends = {
     gemini: {
       kind: 'gemini',
       baseUrl: geminiUrl,
@@ -164,7 +146,7 @@ function loadGatewayConfig(bootstrapToken: boolean): GatewayConfig {
   };
 }
 
-function timingSafeBearerMatch(authHeader: string | undefined, expectedToken: string): boolean {
+function timingSafeBearerMatch(authHeader, expectedToken) {
   if (!authHeader || !expectedToken) return false;
   const prefix = 'Bearer ';
   if (!authHeader.startsWith(prefix)) return false;
@@ -174,12 +156,7 @@ function timingSafeBearerMatch(authHeader: string | undefined, expectedToken: st
   return crypto.timingSafeEqual(presented, expected);
 }
 
-function sendJson(
-  res: http.ServerResponse,
-  status: number,
-  payload: unknown,
-  isHead = false
-): void {
+function sendJson(res, status, payload, isHead = false) {
   const body = JSON.stringify(payload);
   res.writeHead(status, {
     ...SECURITY_HEADERS,
@@ -189,11 +166,11 @@ function sendJson(
   res.end(isHead ? undefined : body);
 }
 
-async function readJsonBody(req: http.IncomingMessage): Promise<Record<string, unknown>> {
+async function readJsonBody(req) {
   return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = [];
+    const chunks = [];
     let total = 0;
-    req.on('data', (chunk: Buffer) => {
+    req.on('data', (chunk) => {
       total += chunk.length;
       if (total > MAX_BODY_BYTES) {
         req.destroy();
@@ -209,7 +186,7 @@ async function readJsonBody(req: http.IncomingMessage): Promise<Record<string, u
           reject(Object.assign(new Error('JSON object body required'), { statusCode: 400 }));
           return;
         }
-        resolve(parsed as Record<string, unknown>);
+        resolve(parsed);
       } catch {
         reject(Object.assign(new Error('Invalid JSON payload'), { statusCode: 400 }));
       }
@@ -218,7 +195,7 @@ async function readJsonBody(req: http.IncomingMessage): Promise<Record<string, u
   });
 }
 
-function resolveBackend(requestedModel: unknown, cfg: GatewayConfig): { backend: BackendConfig; model: string } {
+function resolveBackend(requestedModel, cfg) {
   if (typeof requestedModel === 'string' && requestedModel.includes('/')) {
     const [prefix, rest] = requestedModel.split('/', 2);
     if ((prefix === 'gemini' || prefix === 'openai' || prefix === 'local') && rest) {
@@ -236,7 +213,7 @@ function resolveBackend(requestedModel: unknown, cfg: GatewayConfig): { backend:
   return { backend, model };
 }
 
-async function main(): Promise<void> {
+async function main() {
   const cmd = process.argv[2] ?? 'doctor';
 
   if (cmd === 'doctor') {
@@ -247,7 +224,7 @@ async function main(): Promise<void> {
         cfg.clientToken.length >= MIN_TOKEN_LENGTH ? maskSecret(cfg.clientToken) : 'not yet bootstrapped'
       }`
     );
-    for (const kind of ['gemini', 'openai', 'local'] as const) {
+    for (const kind of ['gemini', 'openai', 'local']) {
       const b = cfg.backends[kind];
       console.log(
         `[${b.configured ? 'ok          ' : 'unconfigured'}] ${kind.padEnd(24)} -> ${
@@ -264,12 +241,7 @@ async function main(): Promise<void> {
       console.error(`NidoAI Gateway: NOT ACTIVATED (${rp} not found)`);
       process.exit(1);
     }
-    const parsed = JSON.parse(fs.readFileSync(rp, 'utf8')) as {
-      baseUrl?: string;
-      clientToken?: string;
-      pid?: number;
-      updatedAt?: string;
-    };
+    const parsed = JSON.parse(fs.readFileSync(rp, 'utf8'));
     let alive = false;
     if (typeof parsed.pid === 'number' && parsed.pid > 0) {
       try {
@@ -301,7 +273,7 @@ async function main(): Promise<void> {
     const rp = runtimePath();
     if (fs.existsSync(rp)) {
       try {
-        const parsed = JSON.parse(fs.readFileSync(rp, 'utf8')) as { pid?: number };
+        const parsed = JSON.parse(fs.readFileSync(rp, 'utf8'));
         if (typeof parsed.pid === 'number' && parsed.pid > 0) {
           process.kill(parsed.pid, 'SIGTERM');
         }
@@ -368,11 +340,11 @@ async function main(): Promise<void> {
           sendJson(res, 401, { error: { message: 'Unauthorized', type: 'auth_error' } });
           return;
         }
-        let body: Record<string, unknown>;
+        let body;
         try {
           body = await readJsonBody(req);
         } catch (err) {
-          const code = (err as { statusCode?: number })?.statusCode ?? 400;
+          const code = typeof err === 'object' && err !== null && typeof err.statusCode === 'number' ? err.statusCode : 400;
           sendJson(res, code, {
             error: { message: err instanceof Error ? err.message : 'Bad Request', type: 'invalid_request_error' },
           });
@@ -429,7 +401,7 @@ async function main(): Promise<void> {
       sendJson(res, 404, { error: { message: 'Not Found', type: 'not_found' } }, isHead);
     });
 
-    await new Promise<void>((resolve) => server.listen(cfg.port, cfg.host, resolve));
+    await new Promise((resolve) => server.listen(cfg.port, cfg.host, resolve));
     const dir = stateDir();
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
     fs.chmodSync(dir, 0o700);
