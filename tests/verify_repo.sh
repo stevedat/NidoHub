@@ -194,6 +194,27 @@ for suite in ("resolute", "noble"):
         assert digest in rel_text, f"SHA256 mismatch for {pkg_gz} in Release"
 print("Verified static APT repo Release & Packages.gz checksums for resolute & noble (amd64/arm64).")
 PY
+
+DEV_TEST_DIR="$(mktemp -d "${TMPDIR:-/tmp}/nidohub-devver.XXXXXX")"
+python3 "${ROOT_DIR}/scripts/build_deb_portable.py" \
+  --source-dir "${ROOT_DIR}/packages/nido-hub" \
+  --extra-files "${ROOT_DIR}/packages/nido-hub/stage" \
+  --version-suffix "+dev1" \
+  --output "${DEV_TEST_DIR}/nido-hub_0.1.0+dev1_all.deb"
+python3 "${ROOT_DIR}/scripts/build_apt_repo.py" \
+  --dist-dir "${DEV_TEST_DIR}" \
+  --out-dir "${DEV_TEST_DIR}/apt" >/dev/null
+python3 - "${DEV_TEST_DIR}" "${ROOT_DIR}/packages/nido-hub/DEBIAN/control" <<'PY'
+import gzip, sys
+from pathlib import Path
+tmp = Path(sys.argv[1])
+ctrl = Path(sys.argv[2]).read_text(encoding="utf-8")
+assert "Version: 0.1.0\n" in ctrl, "Source DEBIAN/control must stay untouched at 0.1.0"
+pkg_txt = gzip.decompress((tmp / "apt/dists/resolute/main/binary-arm64/Packages.gz").read_bytes()).decode("utf-8")
+assert "Version: 0.1.0+dev1\n" in pkg_txt, f"Expected dev suffix in APT metadata: {pkg_txt}"
+print("Verified --version-suffix +dev1 non-mutating dev APT build.")
+PY
+rm -rf "${DEV_TEST_DIR}"
 pass "Static APT repository generated and verified"
 
 echo "=== 5. Live Loopback Smoke Test (nidoai serve <-> nidoagent status) ==="

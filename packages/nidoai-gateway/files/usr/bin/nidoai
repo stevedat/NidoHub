@@ -9,13 +9,13 @@ chmod 700 "$STATE_DIR" 2>/dev/null || true
 cd "$STATE_DIR"
 
 if ! command -v node >/dev/null 2>&1; then
-  echo "nidoai: Node.js (>= 20.0.0) is required." >&2
+  echo "nidoai: Node.js (>= 18.0.0) is required." >&2
   exit 1
 fi
 
 NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
-if [ "$NODE_MAJOR" -lt 20 ]; then
-  echo "nidoai: Node.js >= 20.0.0 is required (found $(node -v))." >&2
+if [ "$NODE_MAJOR" -lt 18 ]; then
+  echo "nidoai: Node.js >= 18.0.0 is required (found $(node -v))." >&2
   exit 1
 fi
 

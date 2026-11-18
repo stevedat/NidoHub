@@ -11,6 +11,7 @@ import argparse
 import gzip
 import io
 import os
+import re
 import shutil
 import subprocess
 import tarfile
@@ -163,7 +164,35 @@ def _ar_member(name: str, payload: bytes) -> bytes:
     return header + payload + pad
 
 
-def build_deb(source_dir: Path, output_path: Path, extra_files_dir: Path | None = None) -> None:
+def _apply_version_suffix(control_path: Path, version_suffix: str) -> None:
+    if not version_suffix:
+        return
+    if not re.fullmatch(r"\+[A-Za-z0-9.+~-]+", version_suffix):
+        raise ValueError(
+            f"Invalid --version-suffix {version_suffix!r}: must start with '+' (e.g. +dev20261118) "
+            "so it sorts higher than base 0.1.0 and preserves (>= 0.1.0) dependencies."
+        )
+    lines = control_path.read_text(encoding="utf-8").splitlines()
+    updated: list[str] = []
+    replaced = False
+    for line in lines:
+        if not replaced and line.startswith("Version:"):
+            base_ver = line.split(":", 1)[1].strip()
+            updated.append(f"Version: {base_ver}{version_suffix}")
+            replaced = True
+        else:
+            updated.append(line)
+    if not replaced:
+        raise ValueError(f"Missing Version field in {control_path}")
+    control_path.write_text("\n".join(updated) + "\n", encoding="utf-8")
+
+
+def build_deb(
+    source_dir: Path,
+    output_path: Path,
+    extra_files_dir: Path | None = None,
+    version_suffix: str = "",
+) -> None:
     debian_src = source_dir / "DEBIAN"
     files_src = source_dir / "files"
     validate_control(debian_src)
@@ -172,6 +201,7 @@ def build_deb(source_dir: Path, output_path: Path, extra_files_dir: Path | None 
         stage = Path(tmp) / "pkg"
         (stage / "DEBIAN").mkdir(parents=True, exist_ok=True)
         _copy_tree_filtered(debian_src, stage / "DEBIAN")
+        _apply_version_suffix(stage / "DEBIAN" / "control", version_suffix)
         _copy_tree_filtered(files_src, stage)
         if extra_files_dir is not None:
             _copy_tree_filtered(extra_files_dir, stage)
@@ -215,9 +245,15 @@ def main() -> None:
     parser.add_argument("--source-dir", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--extra-files", type=Path, default=None)
+    parser.add_argument("--version-suffix", default="", help="Optional '+' suffix appended to Version during dev builds")
     args = parser.parse_args()
 
-    build_deb(args.source_dir.resolve(), args.output.resolve(), args.extra_files.resolve() if args.extra_files else None)
+    build_deb(
+        args.source_dir.resolve(),
+        args.output.resolve(),
+        args.extra_files.resolve() if args.extra_files else None,
+        version_suffix=args.version_suffix,
+    )
     print(f"Built {args.output} ({args.output.stat().st_size} bytes)")
 
 

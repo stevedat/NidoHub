@@ -9,6 +9,7 @@ NIDOHUB_STAGE_DIR="${SCRIPT_DIR}/nido-hub/stage"
 NIDOAI_SRC_DIR="${NIDOAI_SRC_DIR:-}"
 VIELOTUS_BIN_DIR="${VIELOTUS_BIN_DIR:-}"
 NIDOBOX_BIN_DIR="${NIDOBOX_BIN_DIR:-}"
+DEB_VERSION_SUFFIX="${DEB_VERSION_SUFFIX:-}"
 DEB_BUILDER="${ROOT_DIR}/scripts/build_deb_portable.py"
 
 rm -rf "$DIST_DIR" "$STAGE_DIR" "$NIDOHUB_STAGE_DIR"
@@ -65,31 +66,43 @@ chmod 755 \
   "${SCRIPT_DIR}/nidooffice-cli/files/usr/lib/nidooffice-cli/engine.py" \
   "${SCRIPT_DIR}/nido-desktop/DEBIAN/postinst"
 
+VER_ARGS=()
+if [[ -n "$DEB_VERSION_SUFFIX" ]]; then
+  VER_ARGS=(--version-suffix "$DEB_VERSION_SUFFIX")
+  echo "==> Building dev packages with version suffix: ${DEB_VERSION_SUFFIX}"
+fi
+
 python3 "$DEB_BUILDER" \
   --source-dir "${SCRIPT_DIR}/nidoai-gateway" \
   --extra-files "$STAGE_DIR" \
-  --output "${DIST_DIR}/nidoai-gateway_0.1.0_all.deb"
+  ${VER_ARGS[@]+"${VER_ARGS[@]}"} \
+  --output "${DIST_DIR}/nidoai-gateway_0.1.0${DEB_VERSION_SUFFIX}_all.deb"
 
 python3 "$DEB_BUILDER" \
   --source-dir "${SCRIPT_DIR}/nidoagent-cli" \
-  --output "${DIST_DIR}/nidoagent-cli_0.1.0_all.deb"
+  ${VER_ARGS[@]+"${VER_ARGS[@]}"} \
+  --output "${DIST_DIR}/nidoagent-cli_0.1.0${DEB_VERSION_SUFFIX}_all.deb"
 
 python3 "$DEB_BUILDER" \
   --source-dir "${SCRIPT_DIR}/nido-desktop-settings" \
-  --output "${DIST_DIR}/nido-desktop-settings_0.1.0_all.deb"
+  ${VER_ARGS[@]+"${VER_ARGS[@]}"} \
+  --output "${DIST_DIR}/nido-desktop-settings_0.1.0${DEB_VERSION_SUFFIX}_all.deb"
 
 python3 "$DEB_BUILDER" \
   --source-dir "${SCRIPT_DIR}/nido-hub" \
   --extra-files "$NIDOHUB_STAGE_DIR" \
-  --output "${DIST_DIR}/nido-hub_0.1.0_all.deb"
+  ${VER_ARGS[@]+"${VER_ARGS[@]}"} \
+  --output "${DIST_DIR}/nido-hub_0.1.0${DEB_VERSION_SUFFIX}_all.deb"
 
 python3 "$DEB_BUILDER" \
   --source-dir "${SCRIPT_DIR}/nidooffice-cli" \
-  --output "${DIST_DIR}/nidooffice-cli_0.1.0_all.deb"
+  ${VER_ARGS[@]+"${VER_ARGS[@]}"} \
+  --output "${DIST_DIR}/nidooffice-cli_0.1.0${DEB_VERSION_SUFFIX}_all.deb"
 
 python3 "$DEB_BUILDER" \
   --source-dir "${SCRIPT_DIR}/nido-desktop" \
-  --output "${DIST_DIR}/nido-desktop_0.1.0_all.deb"
+  ${VER_ARGS[@]+"${VER_ARGS[@]}"} \
+  --output "${DIST_DIR}/nido-desktop_0.1.0${DEB_VERSION_SUFFIX}_all.deb"
 
 if [[ -n "$VIELOTUS_BIN_DIR" && -d "$VIELOTUS_BIN_DIR" ]]; then
   mkdir -p "${SCRIPT_DIR}/vendor"
