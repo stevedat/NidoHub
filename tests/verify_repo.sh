@@ -195,7 +195,7 @@ for suite in ("resolute", "noble"):
         pkg_text = gzip.decompress(pkg_gz.read_bytes()).decode("utf-8")
         for pkg in ("nidoai-gateway", "nidoagent-cli", "nido-desktop-settings", "nido-hub", "nidooffice-cli", "nido-desktop"):
             assert f"Package: {pkg}" in pkg_text, f"{pkg} missing in {suite}/{arch}"
-        if (repo.parent / "packages" / "vendor" / f"nidobox_1.4.0_{arch}.deb").is_file():
+        if any((repo.parent / "packages" / "vendor").glob(f"nidobox_*_{arch}.deb")):
             assert "Package: nidobox" in pkg_text, f"nidobox missing in {suite}/{arch}"
         digest = hashlib.sha256(pkg_gz.read_bytes()).hexdigest()
         assert digest in rel_text, f"SHA256 mismatch for {pkg_gz} in Release"
