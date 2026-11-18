@@ -142,6 +142,13 @@ for fname in expected:
         if fname == "nidoai-gateway_0.1.0_all.deb":
             assert "./usr/lib/nidoai/src/cli.mjs" in names, f"{fname}: missing pure JS cli.mjs entry"
             assert "./usr/lib/nidoai/src/cli.ts" not in names, f"{fname}: stale cli.ts found (breaks stock Ubuntu nodejs)"
+        elif fname == "nido-desktop-settings_0.1.0_all.deb":
+            for req_cfg in (
+                "./etc/dconf/profile/user",
+                "./etc/dconf/db/local.d/00-ubuntu-nido-settings",
+                "./usr/share/backgrounds/ubuntu-nido/wallpaper.png",
+            ):
+                assert req_cfg in names, f"{fname}: missing {req_cfg}"
         elif fname == "nido-hub_0.1.0_all.deb":
             assert "./usr/share/icons/hicolor/scalable/apps/com.nidoholdings.NidoHub.svg" in names, (
                 f"{fname}: missing scalable NidoHub SVG icon"

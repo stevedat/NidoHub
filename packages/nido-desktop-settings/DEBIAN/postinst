@@ -22,7 +22,7 @@ if [ -f "$SRC_FILE" ] && [ -f /etc/os-release ]; then
 fi
 
 if [ -d /etc/dconf/db/local.d ] && command -v dconf >/dev/null 2>&1; then
-  dconf update >/dev/null 2>&1 || true
+  dconf compile /etc/dconf/db/local /etc/dconf/db/local.d >/dev/null 2>&1 || dconf update >/dev/null 2>&1 || true
 fi
 
 exit 0
