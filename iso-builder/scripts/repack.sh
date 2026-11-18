@@ -49,7 +49,10 @@ repack_layered_live_overlays() {
     mapfile -t LIVE_PURGE < <(
       dpkg-query -W -f="\${db:Status-Abbrev}\t\${Package}\n" \
         "libreoffice*" "python3-uno" "uno-libs-private" "ure" "ure-java" "liblibreoffice*" "mythes-*" "hyphen-*" \
-        "fcitx5" "fcitx5-*" 2>/dev/null \
+        "fcitx5" "fcitx5-*" \
+        "aisleriot" "gnome-mahjongg" "gnome-mines" "gnome-sudoku" "quadrapassel" \
+        "transmission-gtk" "transmission-common" "rhythmbox" "rhythmbox-data" "rhythmbox-plugins" \
+        "shotwell" "shotwell-common" "remmina" "remmina-common" "remmina-plugin-*" "deja-dup" "thunderbird" 2>/dev/null \
         | awk "\$1 ~ /^i/ && \$2 != \"vielotus\" { print \$2 }" \
         | sort -u || true
     )
@@ -60,7 +63,14 @@ repack_layered_live_overlays() {
     rm -rf /usr/lib/libreoffice /etc/libreoffice /usr/share/libreoffice \
       /usr/share/applications/libreoffice*.desktop \
       /usr/share/applications/*fcitx*.desktop \
-      /etc/xdg/autostart/*fcitx*.desktop
+      /etc/xdg/autostart/*fcitx*.desktop \
+      /usr/share/applications/thunderbird*.desktop \
+      /usr/share/applications/transmission*.desktop \
+      /usr/share/applications/org.gnome.Rhythmbox3*.desktop \
+      /usr/share/applications/org.gnome.Shotwell*.desktop \
+      /usr/share/applications/org.remmina.Remmina*.desktop \
+      /usr/share/applications/org.gnome.DejaDup*.desktop \
+      /etc/xdg/autostart/org.gnome.DejaDup*.desktop
     for sys_mf in /usr/share/applications/ubuntu-mimeapps.list /usr/share/applications/gnome-mimeapps.list; do
       if [ -f "$sys_mf" ]; then
         sed -i -E \
@@ -105,11 +115,16 @@ repack_layered_live_overlays() {
     grep -q "{nidooffice,genoffice}" /etc/apparmor.d/nidooffice
     grep -q -- "--enable-wayland-ime" /usr/bin/nidooffice-desktop
     ! grep -q "libreoffice-" /etc/xdg/ubuntu-mimeapps.list
+    dpkg -s nido-desktop >/dev/null
+    dpkg -s ubuntu-desktop-minimal >/dev/null
     dpkg -s vielotus >/dev/null
     dpkg -s nidobox >/dev/null
     dpkg -s casper >/dev/null
     ! dpkg -s fcitx5 >/dev/null 2>&1
     ! dpkg -s libreoffice-core >/dev/null 2>&1
+    ! dpkg -s rhythmbox >/dev/null 2>&1
+    ! dpkg -s transmission-gtk >/dev/null 2>&1
+    ! dpkg -s shotwell >/dev/null 2>&1
   '
 
   umount_layers

@@ -213,10 +213,15 @@ step_customize() {
     grep -q "^StartupWMClass=nidooffice$" /usr/share/applications/nidooffice.desktop
     grep -q "{nidooffice,genoffice}" /etc/apparmor.d/nidooffice
     grep -q -- "--enable-wayland-ime" /usr/bin/nidooffice-desktop
+    dpkg -s nido-desktop >/dev/null 2>&1
+    dpkg -s ubuntu-desktop-minimal >/dev/null 2>&1
     dpkg -s vielotus >/dev/null 2>&1
     dpkg -s nidobox >/dev/null 2>&1
     ! dpkg -s fcitx5 >/dev/null 2>&1
     ! dpkg -s libreoffice-core >/dev/null 2>&1
+    ! dpkg -s rhythmbox >/dev/null 2>&1
+    ! dpkg -s transmission-gtk >/dev/null 2>&1
+    ! dpkg -s shotwell >/dev/null 2>&1
     test -x /usr/bin/nidobox
     test -x /usr/lib/nidobox/nidobox-engine
     test -f /usr/share/plymouth/themes/ubuntu-nido/ubuntu-nido.plymouth

@@ -1,0 +1,14 @@
+Package: nido-desktop
+Version: 0.1.0
+Section: metapackages
+Priority: optional
+Architecture: all
+Depends: nido-desktop-settings (>= 0.1.0), nido-hub (>= 0.1.0), nidoagent-cli (>= 0.1.0), nidoai-gateway (>= 0.1.0), nidooffice-cli (>= 0.1.0), vielotus (>= 2.0.4), nidobox (>= 1.4.0)
+Recommends: nautilus, gnome-terminal, zenity
+Maintainer: Nido Holdings <support@nido-holdings.com>
+Homepage: https://nido-holdings.com
+Description: Nido Minimal Desktop metapackage for Ubuntu LTS
+ Installs the complete Nido Minimal Desktop experience on top of an official
+ Ubuntu 26.04 / 24.04 GNOME Minimal desktop (GDM, Wayland, Nautilus, PipeWire):
+ NidoAgent CLI, NidoAI Gateway, NidoHub Control Center, NidoOffice CLI, NidoBox
+ utilities, and Sen Viet (VieLotusIM) Vietnamese input over native IBus.

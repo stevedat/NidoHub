@@ -1,7 +1,7 @@
 [Desktop Entry]
 Type=Application
-Name=NidoHub
-Name[vi]=Trung tâm NidoHub
+Name=NidoHub & NidoAgent
+Name[vi]=NidoHub — Trợ lý NidoAgent
 Comment=AI Setup, App Manager, and NidoAgent Workspace
 Comment[vi]=Thiết lập AI, Quản lý ứng dụng và Trợ lý NidoAgent
 Exec=/usr/bin/nido-hub

@@ -25,11 +25,11 @@ sha256sum -c SHA256SUMS.txt
 
 ## Highlights
 
-- **Ubuntu LTS + GNOME:** Official Ubuntu hardware support, packages, and security updates.
+- **Nido Minimal Desktop (Ubuntu 26.04 LTS + GNOME Minimal):** Clean GNOME Wayland desktop (GDM, Nautilus, Settings, PipeWire) without preinstalled games or bloat — installable as an ISO or directly on official Ubuntu LTS via the `nido-desktop` APT metapackage.
 - **Sen Việt Input (IBus):** Ready-to-type Vietnamese Telex & VNI over native GNOME IBus across Wayland and X11.
 - **NidoOffice Suite:** Pre-installed default AI-native office suite for Word (`.docx`), Excel (`.xlsx`), PowerPoint (`.pptx`), PDF, and Markdown — replacing LibreOffice out of the box.
 - **NidoBox Suite:** Native GTK4/Libadwaita & Rust utilities (`Super+Shift+S` Capture Studio + offline Vietnamese OCR, NidoDrop LAN QR transfer, Batch Image, Vietnamese/CJK-safe Archive, and 1-click NTFS dirty-bit unlock).
-- **NidoAgent:** Trigger AI-assisted tasks from keyboard (`Super+Space`), terminal (`nidoagent`), or Files.
+- **NidoAgent:** Trigger AI-assisted tasks from keyboard (`Super+Space`), terminal (`nidoagent`), dock/hub, or Files.
 - **On-Device Control:** Bring your own API keys or connect local models.
 
 ## Build

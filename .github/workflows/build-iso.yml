@@ -145,6 +145,11 @@ jobs:
             echo "ERROR: Stale minimal.enhanced-secureboot.squashfs remained in install-sources.yaml" >&2
             exit 1
           fi
+          SFS_BYTES="$(stat -c%s "$MNT_DIR/casper/minimal.squashfs")"
+          grep -q "size: ${SFS_BYTES}\$" "$MNT_DIR/casper/install-sources.yaml" || {
+            echo "ERROR: install-sources.yaml size mismatch for minimal.squashfs ($SFS_BYTES bytes)" >&2
+            exit 1
+          }
 
           cp "$MNT_DIR/casper/vmlinuz" "$TMP_BOOT/vmlinuz"
           cp "$MNT_DIR/casper/initrd" "$TMP_BOOT/initrd"

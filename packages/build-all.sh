@@ -62,7 +62,8 @@ chmod 755 \
   "${SCRIPT_DIR}/nido-hub/files/usr/bin/nido-hub" \
   "${SCRIPT_DIR}/nido-hub/files/usr/lib/nido-hub/app.py" \
   "${SCRIPT_DIR}/nidooffice-cli/files/usr/bin/nidooffice" \
-  "${SCRIPT_DIR}/nidooffice-cli/files/usr/lib/nidooffice-cli/engine.py"
+  "${SCRIPT_DIR}/nidooffice-cli/files/usr/lib/nidooffice-cli/engine.py" \
+  "${SCRIPT_DIR}/nido-desktop/DEBIAN/postinst"
 
 python3 "$DEB_BUILDER" \
   --source-dir "${SCRIPT_DIR}/nidoai-gateway" \
@@ -85,6 +86,10 @@ python3 "$DEB_BUILDER" \
 python3 "$DEB_BUILDER" \
   --source-dir "${SCRIPT_DIR}/nidooffice-cli" \
   --output "${DIST_DIR}/nidooffice-cli_0.1.0_all.deb"
+
+python3 "$DEB_BUILDER" \
+  --source-dir "${SCRIPT_DIR}/nido-desktop" \
+  --output "${DIST_DIR}/nido-desktop_0.1.0_all.deb"
 
 if [[ -n "$VIELOTUS_BIN_DIR" && -d "$VIELOTUS_BIN_DIR" ]]; then
   mkdir -p "${SCRIPT_DIR}/vendor"

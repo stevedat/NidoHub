@@ -6,10 +6,10 @@
   "editions": [
     {
       "id": "core",
-      "name": "Ubuntu-Nido Core",
+      "name": "Nido Minimal Desktop",
       "status": "available",
-      "packages": ["nidoai-gateway", "nidoagent-cli", "nido-hub", "nido-desktop-settings"],
-      "description": "Cổng AI cục bộ, công cụ điều phối NidoAgent và Trung tâm NidoHub."
+      "packages": ["nido-desktop", "nidoai-gateway", "nidoagent-cli", "nido-hub", "nido-desktop-settings"],
+      "description": "Gói tổng hợp Nido Minimal Desktop (NidoAI Gateway, NidoAgent và Trung tâm NidoHub)."
     },
     {
       "id": "office-cli",

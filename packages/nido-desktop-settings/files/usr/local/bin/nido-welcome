@@ -42,10 +42,11 @@ fix_live_installer_shortcuts() {
     for f in "$d"/ubuntu-desktop-bootstrap*.desktop; do
       [[ -f "$f" ]] || continue
       rewrite_installer_desktop_name "$f"
-      chmod +x "$f" 2>/dev/null || true
+      chmod 0755 "$f" 2>/dev/null || true
       if command -v gio >/dev/null 2>&1; then
         gio set "$f" metadata::trusted true >/dev/null 2>&1 || true
       fi
+      touch "$f" 2>/dev/null || true
     done
   done
 

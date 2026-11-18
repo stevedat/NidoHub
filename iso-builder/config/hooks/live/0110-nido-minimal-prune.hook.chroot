@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+# Hook 0110: Enforce Nido Minimal Desktop profile on Ubuntu LTS
+# Keeps Ubuntu core, GDM, GNOME Shell, Mutter, Nautilus, Settings, PipeWire,
+# NetworkManager, Polkit, Portals, BlueZ, CUPS, firmware, and snapd intact while
+# pruning preinstalled games and non-essential consumer apps.
+set -euo pipefail
+export DEBIAN_FRONTEND=noninteractive
+
+APT_LOCK_TIMEOUT="${APT_LOCK_TIMEOUT:-600}"
+APT_GET=(apt-get -o "DPkg::Lock::Timeout=${APT_LOCK_TIMEOUT}")
+
+for core_meta in ubuntu-desktop-minimal ubuntu-minimal ubuntu-standard nido-desktop; do
+  if dpkg -s "$core_meta" >/dev/null 2>&1; then
+    apt-mark manual "$core_meta" >/dev/null 2>&1 || true
+  fi
+done
+
+PRUNE_PATTERNS=(
+  'aisleriot'
+  'gnome-mahjongg'
+  'gnome-mines'
+  'gnome-sudoku'
+  'quadrapassel'
+  'five-or-more'
+  'four-in-a-row'
+  'gnome-chess'
+  'gnome-klotski'
+  'gnome-nibbles'
+  'gnome-robots'
+  'gnome-tetravex'
+  'hitori'
+  'iagno'
+  'lightsoff'
+  'swell-foop'
+  'tali'
+  'transmission-gtk'
+  'transmission-common'
+  'rhythmbox'
+  'rhythmbox-data'
+  'rhythmbox-plugins'
+  'shotwell'
+  'shotwell-common'
+  'remmina'
+  'remmina-common'
+  'remmina-plugin-*'
+  'deja-dup'
+  'thunderbird'
+)
+
+mapfile -t PRUNE_PKGS < <(
+  dpkg-query -W -f='${db:Status-Abbrev}\t${Package}\n' "${PRUNE_PATTERNS[@]}" 2>/dev/null \
+    | awk '$1 ~ /^i/ { print $2 }' \
+    | sort -u || true
+)
+
+if [ "${#PRUNE_PKGS[@]}" -gt 0 ]; then
+  echo "[Ubuntu-Nido] Pruning non-minimal desktop apps (${#PRUNE_PKGS[@]}): ${PRUNE_PKGS[*]}"
+  "${APT_GET[@]}" purge -y "${PRUNE_PKGS[@]}" || true
+  "${APT_GET[@]}" autoremove -y --purge || true
+fi
+
+rm -f \
+  /usr/share/applications/thunderbird*.desktop \
+  /usr/share/applications/transmission*.desktop \
+  /usr/share/applications/org.gnome.Rhythmbox3*.desktop \
+  /usr/share/applications/org.gnome.Shotwell*.desktop \
+  /usr/share/applications/org.remmina.Remmina*.desktop \
+  /usr/share/applications/org.gnome.DejaDup*.desktop \
+  /etc/xdg/autostart/org.gnome.DejaDup*.desktop
+
+# Verify Nido Minimal Desktop core pillars remain intact
+dpkg -s ubuntu-desktop-minimal >/dev/null
+dpkg -s network-manager >/dev/null
+dpkg -s pipewire >/dev/null
+dpkg -s bluez >/dev/null
+dpkg -s cups >/dev/null
+test -x /usr/bin/gnome-shell
+test -x /usr/bin/nautilus
+
+echo "[Ubuntu-Nido] Nido Minimal Desktop profile hook completed."

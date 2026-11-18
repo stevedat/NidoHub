@@ -40,5 +40,7 @@ jobs:
           sudo apt-get update
           apt-cache policy vielotus | grep -q "ubuntu-nido-apt"
           apt-cache policy nidobox | grep -q "ubuntu-nido-apt"
-          sudo apt-get install -y --no-install-recommends nidobox
+          apt-cache policy nido-desktop | grep -q "ubuntu-nido-apt"
+          sudo apt-get install -y --no-install-recommends ./packages/dist/nido-desktop_0.1.0_all.deb
           nidobox --self-test
+          dpkg -s nido-desktop >/dev/null

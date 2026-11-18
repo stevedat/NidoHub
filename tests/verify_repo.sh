@@ -25,6 +25,7 @@ SHELL_SCRIPTS=(
   "${ROOT_DIR}/packages/nido-hub/DEBIAN/postinst"
   "${ROOT_DIR}/packages/nido-hub/files/usr/bin/nido-hub"
   "${ROOT_DIR}/packages/nidooffice-cli/files/usr/bin/nidooffice"
+  "${ROOT_DIR}/packages/nido-desktop/DEBIAN/postinst"
   "${ROOT_DIR}/iso-builder/build.sh"
   "${ROOT_DIR}/iso-builder/scripts/config.sh"
   "${ROOT_DIR}/iso-builder/scripts/utils.sh"
@@ -35,6 +36,7 @@ SHELL_SCRIPTS=(
   "${ROOT_DIR}/iso-builder/scripts/chroot_shell.sh"
   "${ROOT_DIR}/iso-builder/scripts/repack.sh"
   "${ROOT_DIR}/iso-builder/config/hooks/live/0100-nido-gnome-setup.hook.chroot"
+  "${ROOT_DIR}/iso-builder/config/hooks/live/0110-nido-minimal-prune.hook.chroot"
   "${ROOT_DIR}/iso-builder/config/hooks/live/0150-vielotus-im.hook.chroot"
   "${ROOT_DIR}/iso-builder/config/hooks/live/0160-nidobox.hook.chroot"
   "${ROOT_DIR}/iso-builder/config/hooks/live/0170-nidooffice-desktop.hook.chroot"
@@ -97,6 +99,7 @@ expected = [
     "nido-desktop-settings_0.1.0_all.deb",
     "nido-hub_0.1.0_all.deb",
     "nidooffice-cli_0.1.0_all.deb",
+    "nido-desktop_0.1.0_all.deb",
 ]
 
 def parse_ar(raw: bytes) -> dict[str, bytes]:
@@ -142,9 +145,24 @@ for fname in expected:
             assert "./usr/share/icons/hicolor/256x256/apps/com.nidoholdings.NidoHub.png" in names, (
                 f"{fname}: missing 256x256 NidoHub PNG icon"
             )
-print("Audited all 5 .deb archives: valid ar format, zero secret files.")
+        elif fname == "nido-desktop_0.1.0_all.deb":
+            ctrl_key = next((k for k in members if k.startswith("control.tar")), None)
+            ctrl_raw = members[ctrl_key]
+            if ctrl_key.endswith(".gz"):
+                ctrl_tar = gzip.decompress(ctrl_raw)
+            elif ctrl_key.endswith(".xz"):
+                ctrl_tar = lzma.decompress(ctrl_raw)
+            elif ctrl_key.endswith(".zst"):
+                ctrl_tar = subprocess.run(["zstd", "-dc"], input=ctrl_raw, check=True, capture_output=True).stdout
+            else:
+                ctrl_tar = ctrl_raw
+            with tarfile.open(fileobj=io.BytesIO(ctrl_tar), mode="r:") as ctf:
+                ctrl_txt = ctf.extractfile("./control").read().decode("utf-8")
+                for dep in ("nido-desktop-settings", "nido-hub", "nidoagent-cli", "nidoai-gateway", "nidooffice-cli", "vielotus", "nidobox"):
+                    assert dep in ctrl_txt, f"{fname}: missing dependency {dep}"
+print(f"Audited all {len(expected)} .deb archives: valid ar format, zero secret files.")
 PY
-pass "Built and audited 5 .deb packages (zero secrets)"
+pass "Built and audited 6 .deb packages (zero secrets)"
 
 echo "=== 4. Static APT Repository Verification ==="
 python3 "${ROOT_DIR}/scripts/build_apt_repo.py" \
@@ -164,7 +182,7 @@ for suite in ("resolute", "noble"):
         pkg_gz = repo / "dists" / suite / "main" / f"binary-{arch}" / "Packages.gz"
         assert pkg_gz.is_file(), f"Missing {pkg_gz}"
         pkg_text = gzip.decompress(pkg_gz.read_bytes()).decode("utf-8")
-        for pkg in ("nidoai-gateway", "nidoagent-cli", "nido-desktop-settings", "nido-hub", "nidooffice-cli"):
+        for pkg in ("nidoai-gateway", "nidoagent-cli", "nido-desktop-settings", "nido-hub", "nidooffice-cli", "nido-desktop"):
             assert f"Package: {pkg}" in pkg_text, f"{pkg} missing in {suite}/{arch}"
         if (repo.parent / "packages" / "vendor" / f"nidobox_1.4.0_{arch}.deb").is_file():
             assert "Package: nidobox" in pkg_text, f"nidobox missing in {suite}/{arch}"
