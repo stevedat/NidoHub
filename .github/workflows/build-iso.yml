@@ -287,7 +287,6 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload ISO to S3 CDN (if secrets configured)
-        if: ${{ secrets.CDN_ACCESS_KEY_ID != '' && secrets.CDN_SECRET_ACCESS_KEY != '' && secrets.CDN_S3_ENDPOINT != '' }}
         env:
           CDN_BUCKET: ${{ vars.CDN_BUCKET || 'nidoos-releases' }}
           CDN_PUBLIC_URL: ${{ vars.CDN_PUBLIC_URL }}
@@ -301,8 +300,16 @@ jobs:
           RCLONE_CONFIG_CDN_NO_CHECK_BUCKET: "true"
         run: |
           set -euo pipefail
+          if [ -z "${RCLONE_CONFIG_CDN_ACCESS_KEY_ID:-}" ] || [ -z "${RCLONE_CONFIG_CDN_SECRET_ACCESS_KEY:-}" ] || [ -z "${RCLONE_CONFIG_CDN_ENDPOINT:-}" ]; then
+            echo "CDN credentials not configured; skipping S3 CDN upload."
+            exit 0
+          fi
+          if ! command -v rclone >/dev/null 2>&1; then
+            sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends rclone
+          fi
           ISO_NAME="NidoOS-desktop-${{ matrix.arch }}.iso"
           ISO_PATH="iso-builder/${ISO_NAME}"
+          SHA_PATH="iso-builder/checksums/NidoOS-desktop-${{ matrix.arch }}.sha256"
           PUB_BASE="${CDN_PUBLIC_URL%/}"
           TARGETS=("latest")
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
@@ -318,6 +325,10 @@ jobs:
               --header-upload "Cache-Control: public, max-age=3600" \
               --stats 10s \
               --stats-one-line
+            rclone copyto "$SHA_PATH" "cdn:${CDN_BUCKET}/${prefix}/NidoOS-desktop-${{ matrix.arch }}.sha256" \
+              --s3-no-check-bucket \
+              --header-upload "Content-Type: text/plain; charset=utf-8" \
+              --header-upload "Cache-Control: no-cache"
             if [ -n "$PUB_BASE" ]; then
               echo "- Fast CDN (${prefix}): [${ISO_NAME}](${PUB_BASE}/${prefix}/${ISO_NAME})" >> "$GITHUB_STEP_SUMMARY"
             fi
