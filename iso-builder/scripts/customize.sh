@@ -199,6 +199,7 @@ step_customize() {
       info "  → Running hook: $hook_name"
       cp "$hook" "$WORK_DIR/squashfs/tmp/$hook_name"
       chmod 755 "$WORK_DIR/squashfs/tmp/$hook_name"
+      HOME=/root \
       NIDO_VERSION="$NIDO_VERSION" \
       UBUNTU_VERSION="$UBUNTU_VERSION" \
       UBUNTU_CODENAME="$UBUNTU_CODENAME" \
@@ -211,7 +212,7 @@ step_customize() {
 
   if [ "$meta_count" -gt 0 ]; then
     info "  → Installing $meta_count Nido Minimal Desktop metapackage(s) into chroot..."
-    chroot "$WORK_DIR/squashfs" /bin/bash -c '
+    HOME=/root chroot "$WORK_DIR/squashfs" /bin/bash -c '
       set -e
       export DEBIAN_FRONTEND=noninteractive
       APT_LOCK_TIMEOUT="${APT_LOCK_TIMEOUT:-600}"
@@ -225,7 +226,7 @@ step_customize() {
   fi
 
   info "[6/7] Verifying customized rootfs and cleaning apt cache..."
-  chroot "$WORK_DIR/squashfs" /bin/bash -c '
+  HOME=/root chroot "$WORK_DIR/squashfs" /bin/bash -c '
     set -e
     test -f /etc/dconf/db/local
     test -x /usr/bin/nidoai

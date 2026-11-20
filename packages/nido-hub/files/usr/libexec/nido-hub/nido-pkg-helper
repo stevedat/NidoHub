@@ -134,12 +134,14 @@ def extract_gpg_fingerprints(key_bytes: bytes) -> list[str]:
     gpg = shutil.which("gpg")
     if not gpg:
         raise RuntimeError("gpg is required to verify vendor signing keys.")
-    res = subprocess.run(
-        [gpg, "--show-keys", "--with-colons"],
-        input=key_bytes,
-        capture_output=True,
-        check=False,
-    )
+    with tempfile.TemporaryDirectory(prefix="nido-gpg-") as gpghome:
+        os.chmod(gpghome, 0o700)
+        res = subprocess.run(
+            [gpg, "--batch", "--no-tty", "--homedir", gpghome, "--show-keys", "--with-colons"],
+            input=key_bytes,
+            capture_output=True,
+            check=False,
+        )
     if res.returncode != 0:
         raise RuntimeError(f"Failed to inspect GPG key: {res.stderr.decode(errors='replace').strip()}")
     fprs: list[str] = []
@@ -162,12 +164,14 @@ def verify_and_dearmor_key(key_bytes: bytes, expected_fingerprints: list[str]) -
     if not gpg:
         raise RuntimeError("gpg is required to dearmor vendor signing keys.")
     if b"-----BEGIN PGP PUBLIC KEY BLOCK-----" in key_bytes:
-        res = subprocess.run(
-            [gpg, "--dearmor"],
-            input=key_bytes,
-            capture_output=True,
-            check=False,
-        )
+        with tempfile.TemporaryDirectory(prefix="nido-gpg-") as gpghome:
+            os.chmod(gpghome, 0o700)
+            res = subprocess.run(
+                [gpg, "--batch", "--no-tty", "--homedir", gpghome, "--dearmor"],
+                input=key_bytes,
+                capture_output=True,
+                check=False,
+            )
         if res.returncode != 0 or not res.stdout:
             raise RuntimeError(f"gpg --dearmor failed: {res.stderr.decode(errors='replace').strip()}")
         return res.stdout

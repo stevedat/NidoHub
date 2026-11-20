@@ -685,6 +685,7 @@ test_vendors.write_text(json.dumps({
 env = dict(os.environ)
 env["NIDO_PKG_ARCH"] = "arm64"
 env["NIDO_UBUNTU_CODENAME"] = "resolute"
+env["HOME"] = "/nonexistent-nido-chroot-home"
 
 # Wrong GPG fingerprint MUST fail hard
 bad_r = subprocess.run(
