@@ -1,0 +1,531 @@
+#!/usr/bin/env python3
+"""Portable Linux PKCS#11 helper for NidoOffice USB Token / SmartCard signing.
+
+Implements the exact CLI & JSON protocol expected by NidoOffice's
+`LINUX_PKCS11_HELPER_CMD` (`pkcs11-list` and `pkcs11-sign`) using Python's
+standard-library `ctypes` against any native Linux PKCS#11 `.so` module
+(OpenSC, YubiKey PIV, SoftHSM2, Viettel-CA, VNPT-CA, BKAV-CA, FPT-CA, etc.)
+with zero external compiler or library dependencies.
+"""
+
+from __future__ import annotations
+
+import base64
+import ctypes
+import hashlib
+import json
+import os
+import sys
+
+CK_BYTE = ctypes.c_ubyte
+CK_CHAR = ctypes.c_ubyte
+CK_UTF8CHAR = ctypes.c_ubyte
+CK_BBOOL = ctypes.c_ubyte
+CK_ULONG = ctypes.c_ulong
+CK_FLAGS = ctypes.c_ulong
+CK_VOID_PTR = ctypes.c_void_p
+
+CK_SLOT_ID = CK_ULONG
+CK_SESSION_HANDLE = CK_ULONG
+CK_OBJECT_HANDLE = CK_ULONG
+CK_OBJECT_CLASS = CK_ULONG
+CK_ATTRIBUTE_TYPE = CK_ULONG
+CK_MECHANISM_TYPE = CK_ULONG
+CK_USER_TYPE = CK_ULONG
+CK_RV = CK_ULONG
+
+CK_FALSE = 0
+CK_TRUE = 1
+
+CKR_OK = 0x00000000
+CKR_PIN_INCORRECT = 0x000000A0
+CKR_PIN_LOCKED = 0x000000A4
+CKR_USER_ALREADY_LOGGED_IN = 0x00000100
+CKR_USER_NOT_LOGGED_IN = 0x00000101
+CKR_CRYPTOKI_ALREADY_INITIALIZED = 0x00000191
+CK_UNAVAILABLE_INFORMATION = ctypes.c_ulong(-1).value
+
+CKF_LOGIN_REQUIRED = 0x00000004
+CKF_SERIAL_SESSION = 0x00000004
+CKU_USER = 1
+
+CKO_CERTIFICATE = 0x00000001
+CKO_PRIVATE_KEY = 0x00000003
+
+CKA_CLASS = 0x00000000
+CKA_LABEL = 0x00000003
+CKA_VALUE = 0x00000011
+CKA_ID = 0x00000102
+
+CKM_RSA_PKCS = 0x00000001
+
+
+class CK_VERSION(ctypes.Structure):
+    _fields_ = [
+        ("major", CK_BYTE),
+        ("minor", CK_BYTE),
+    ]
+
+
+class CK_TOKEN_INFO(ctypes.Structure):
+    _fields_ = [
+        ("label", CK_UTF8CHAR * 32),
+        ("manufacturerID", CK_UTF8CHAR * 32),
+        ("model", CK_UTF8CHAR * 16),
+        ("serialNumber", CK_CHAR * 16),
+        ("flags", CK_FLAGS),
+        ("ulMaxSessionCount", CK_ULONG),
+        ("ulSessionCount", CK_ULONG),
+        ("ulMaxRwSessionCount", CK_ULONG),
+        ("ulRwSessionCount", CK_ULONG),
+        ("ulMaxPinLen", CK_ULONG),
+        ("ulMinPinLen", CK_ULONG),
+        ("ulTotalPublicMemory", CK_ULONG),
+        ("ulFreePublicMemory", CK_ULONG),
+        ("ulTotalPrivateMemory", CK_ULONG),
+        ("ulFreePrivateMemory", CK_ULONG),
+        ("hardwareVersion", CK_VERSION),
+        ("firmwareVersion", CK_VERSION),
+        ("utcTime", CK_CHAR * 16),
+    ]
+
+
+class CK_ATTRIBUTE(ctypes.Structure):
+    _fields_ = [
+        ("type", CK_ATTRIBUTE_TYPE),
+        ("pValue", CK_VOID_PTR),
+        ("ulValueLen", CK_ULONG),
+    ]
+
+
+class CK_MECHANISM(ctypes.Structure):
+    _fields_ = [
+        ("mechanism", CK_MECHANISM_TYPE),
+        ("pParameter", CK_VOID_PTR),
+        ("ulParameterLen", CK_ULONG),
+    ]
+
+
+FN_INIT = ctypes.CFUNCTYPE(CK_RV, CK_VOID_PTR)
+FN_FINALIZE = ctypes.CFUNCTYPE(CK_RV, CK_VOID_PTR)
+FN_GET_SLOT_LIST = ctypes.CFUNCTYPE(
+    CK_RV, CK_BBOOL, ctypes.POINTER(CK_SLOT_ID), ctypes.POINTER(CK_ULONG)
+)
+FN_GET_TOKEN_INFO = ctypes.CFUNCTYPE(CK_RV, CK_SLOT_ID, ctypes.POINTER(CK_TOKEN_INFO))
+FN_OPEN_SESSION = ctypes.CFUNCTYPE(
+    CK_RV, CK_SLOT_ID, CK_FLAGS, CK_VOID_PTR, CK_VOID_PTR, ctypes.POINTER(CK_SESSION_HANDLE)
+)
+FN_CLOSE_SESSION = ctypes.CFUNCTYPE(CK_RV, CK_SESSION_HANDLE)
+FN_LOGIN = ctypes.CFUNCTYPE(CK_RV, CK_SESSION_HANDLE, CK_USER_TYPE, CK_VOID_PTR, CK_ULONG)
+FN_LOGOUT = ctypes.CFUNCTYPE(CK_RV, CK_SESSION_HANDLE)
+FN_GET_ATTR = ctypes.CFUNCTYPE(
+    CK_RV, CK_SESSION_HANDLE, CK_OBJECT_HANDLE, ctypes.POINTER(CK_ATTRIBUTE), CK_ULONG
+)
+FN_FIND_INIT = ctypes.CFUNCTYPE(
+    CK_RV, CK_SESSION_HANDLE, ctypes.POINTER(CK_ATTRIBUTE), CK_ULONG
+)
+FN_FIND = ctypes.CFUNCTYPE(
+    CK_RV,
+    CK_SESSION_HANDLE,
+    ctypes.POINTER(CK_OBJECT_HANDLE),
+    CK_ULONG,
+    ctypes.POINTER(CK_ULONG),
+)
+FN_FIND_FINAL = ctypes.CFUNCTYPE(CK_RV, CK_SESSION_HANDLE)
+FN_SIGN_INIT = ctypes.CFUNCTYPE(
+    CK_RV, CK_SESSION_HANDLE, ctypes.POINTER(CK_MECHANISM), CK_OBJECT_HANDLE
+)
+FN_SIGN = ctypes.CFUNCTYPE(
+    CK_RV, CK_SESSION_HANDLE, CK_VOID_PTR, CK_ULONG, CK_VOID_PTR, ctypes.POINTER(CK_ULONG)
+)
+
+
+class CK_FUNCTION_LIST(ctypes.Structure):
+    _fields_ = [
+        ("version", CK_VERSION),
+        ("C_Initialize", FN_INIT),
+        ("C_Finalize", FN_FINALIZE),
+        ("C_GetInfo", CK_VOID_PTR),
+        ("C_GetFunctionList", CK_VOID_PTR),
+        ("C_GetSlotList", FN_GET_SLOT_LIST),
+        ("C_GetSlotInfo", CK_VOID_PTR),
+        ("C_GetTokenInfo", FN_GET_TOKEN_INFO),
+        ("C_GetMechanismList", CK_VOID_PTR),
+        ("C_GetMechanismInfo", CK_VOID_PTR),
+        ("C_InitToken", CK_VOID_PTR),
+        ("C_InitPIN", CK_VOID_PTR),
+        ("C_SetPIN", CK_VOID_PTR),
+        ("C_OpenSession", FN_OPEN_SESSION),
+        ("C_CloseSession", FN_CLOSE_SESSION),
+        ("C_CloseAllSessions", CK_VOID_PTR),
+        ("C_GetSessionInfo", CK_VOID_PTR),
+        ("C_GetOperationState", CK_VOID_PTR),
+        ("C_SetOperationState", CK_VOID_PTR),
+        ("C_Login", FN_LOGIN),
+        ("C_Logout", FN_LOGOUT),
+        ("C_CreateObject", CK_VOID_PTR),
+        ("C_CopyObject", CK_VOID_PTR),
+        ("C_DestroyObject", CK_VOID_PTR),
+        ("C_GetObjectSize", CK_VOID_PTR),
+        ("C_GetAttributeValue", FN_GET_ATTR),
+        ("C_SetAttributeValue", CK_VOID_PTR),
+        ("C_FindObjectsInit", FN_FIND_INIT),
+        ("C_FindObjects", FN_FIND),
+        ("C_FindObjectsFinal", FN_FIND_FINAL),
+        ("C_EncryptInit", CK_VOID_PTR),
+        ("C_Encrypt", CK_VOID_PTR),
+        ("C_EncryptUpdate", CK_VOID_PTR),
+        ("C_EncryptFinal", CK_VOID_PTR),
+        ("C_DecryptInit", CK_VOID_PTR),
+        ("C_Decrypt", CK_VOID_PTR),
+        ("C_DecryptUpdate", CK_VOID_PTR),
+        ("C_DecryptFinal", CK_VOID_PTR),
+        ("C_DigestInit", CK_VOID_PTR),
+        ("C_Digest", CK_VOID_PTR),
+        ("C_DigestUpdate", CK_VOID_PTR),
+        ("C_DigestKey", CK_VOID_PTR),
+        ("C_DigestFinal", CK_VOID_PTR),
+        ("C_SignInit", FN_SIGN_INIT),
+        ("C_Sign", FN_SIGN),
+    ]
+
+
+def _trim_ck_bytes(raw_arr: ctypes.Array) -> str:
+    raw = bytes(raw_arr).rstrip(b" \x00")
+    return raw.decode("utf-8", errors="replace")
+
+
+def _load_module(path: str) -> tuple[ctypes.CDLL, CK_FUNCTION_LIST] | None:
+    mode = getattr(os, "RTLD_NOW", 0) | getattr(os, "RTLD_LOCAL", 0)
+    try:
+        lib = ctypes.CDLL(path, mode=mode) if mode else ctypes.CDLL(path)
+    except OSError as exc:
+        print(f"PKCS11_ERR:MODULE_LOAD_FAILED:{exc}", file=sys.stderr)
+        return None
+
+    try:
+        get_fn = lib.C_GetFunctionList
+    except AttributeError:
+        print("PKCS11_ERR:NO_FUNCTION_LIST", file=sys.stderr)
+        return None
+
+    get_fn.argtypes = [ctypes.POINTER(ctypes.POINTER(CK_FUNCTION_LIST))]
+    get_fn.restype = CK_RV
+    fn_ptr = ctypes.POINTER(CK_FUNCTION_LIST)()
+    if get_fn(ctypes.byref(fn_ptr)) != CKR_OK or not fn_ptr:
+        print("PKCS11_ERR:GET_FUNCTION_LIST_FAILED", file=sys.stderr)
+        return None
+    return lib, fn_ptr.contents
+
+
+def _read_attr(
+    p11: CK_FUNCTION_LIST, sess: CK_SESSION_HANDLE, obj: CK_OBJECT_HANDLE, attr_type: int
+) -> bytes | None:
+    attr = CK_ATTRIBUTE(attr_type, None, 0)
+    rv = p11.C_GetAttributeValue(sess, obj, ctypes.byref(attr), 1)
+    if rv != CKR_OK or attr.ulValueLen == 0 or attr.ulValueLen == CK_UNAVAILABLE_INFORMATION:
+        return None
+    buf = (ctypes.c_ubyte * attr.ulValueLen)()
+    attr.pValue = ctypes.cast(buf, CK_VOID_PTR)
+    if p11.C_GetAttributeValue(sess, obj, ctypes.byref(attr), 1) != CKR_OK:
+        return None
+    return bytes(buf[: attr.ulValueLen])
+
+
+def _login_pin(p11: CK_FUNCTION_LIST, sess: CK_SESSION_HANDLE, pin_bytes: bytes) -> int:
+    pin_buf = ctypes.create_string_buffer(pin_bytes, len(pin_bytes))
+    return int(p11.C_Login(sess, CKU_USER, ctypes.cast(pin_buf, CK_VOID_PTR), len(pin_bytes)))
+
+
+def cmd_list() -> int:
+    mod = os.environ.get("GENOFFICE_PKCS11_MODULE", "")
+    pin = os.environ.get("GENOFFICE_PKCS11_PIN", "")
+    if not mod:
+        print("PKCS11_ERR:MISSING_MODULE_PATH", file=sys.stderr)
+        return 2
+
+    loaded = _load_module(mod)
+    if loaded is None:
+        return 3
+    _lib, p11 = loaded
+
+    irv = p11.C_Initialize(None)
+    if irv not in (CKR_OK, CKR_CRYPTOKI_ALREADY_INITIALIZED):
+        print("PKCS11_ERR:INIT_FAILED", file=sys.stderr)
+        return 4
+
+    try:
+        slot_count = CK_ULONG(0)
+        if p11.C_GetSlotList(CK_TRUE, None, ctypes.byref(slot_count)) != CKR_OK or slot_count.value == 0:
+            print('{"slots":[],"certs":[]}')
+            return 0
+
+        slots = (CK_SLOT_ID * slot_count.value)()
+        if p11.C_GetSlotList(CK_TRUE, slots, ctypes.byref(slot_count)) != CKR_OK:
+            print('{"slots":[],"certs":[]}')
+            return 0
+
+        pin_bytes = pin.encode("utf-8") if pin else b""
+
+        # Pre-check login errors before emitting JSON
+        if pin_bytes:
+            for i in range(slot_count.value):
+                ti = CK_TOKEN_INFO()
+                if p11.C_GetTokenInfo(slots[i], ctypes.byref(ti)) != CKR_OK:
+                    continue
+                sess = CK_SESSION_HANDLE(0)
+                if p11.C_OpenSession(slots[i], CKF_SERIAL_SESSION, None, None, ctypes.byref(sess)) != CKR_OK:
+                    continue
+                lrv = _login_pin(p11, sess, pin_bytes)
+                if lrv not in (CKR_OK, CKR_USER_ALREADY_LOGGED_IN):
+                    p11.C_CloseSession(sess)
+                    if lrv == CKR_PIN_LOCKED:
+                        print("PKCS11_ERR:PIN_LOCKED", file=sys.stderr)
+                        return 12
+                    print(f"PKCS11_ERR:PIN_INCORRECT:0x{lrv:X}", file=sys.stderr)
+                    return 11
+                p11.C_Logout(sess)
+                p11.C_CloseSession(sess)
+
+        out_slots = []
+        out_certs = []
+
+        for i in range(slot_count.value):
+            ti = CK_TOKEN_INFO()
+            if p11.C_GetTokenInfo(slots[i], ctypes.byref(ti)) != CKR_OK:
+                continue
+            token_label = _trim_ck_bytes(ti.label)
+            out_slots.append(
+                {
+                    "slotId": int(slots[i]),
+                    "tokenLabel": token_label,
+                    "manufacturer": _trim_ck_bytes(ti.manufacturerID),
+                    "model": _trim_ck_bytes(ti.model),
+                    "serialNumber": _trim_ck_bytes(ti.serialNumber),
+                    "loginRequired": bool(ti.flags & CKF_LOGIN_REQUIRED),
+                }
+            )
+
+            sess = CK_SESSION_HANDLE(0)
+            if p11.C_OpenSession(slots[i], CKF_SERIAL_SESSION, None, None, ctypes.byref(sess)) != CKR_OK:
+                continue
+            try:
+                if pin_bytes:
+                    _login_pin(p11, sess, pin_bytes)
+
+                cls = CK_OBJECT_CLASS(CKO_CERTIFICATE)
+                tmpl = (CK_ATTRIBUTE * 1)(
+                    CK_ATTRIBUTE(CKA_CLASS, ctypes.cast(ctypes.byref(cls), CK_VOID_PTR), ctypes.sizeof(cls))
+                )
+                if p11.C_FindObjectsInit(sess, tmpl, 1) == CKR_OK:
+                    try:
+                        objs = (CK_OBJECT_HANDLE * 64)()
+                        found = CK_ULONG(0)
+                        while p11.C_FindObjects(sess, objs, 64, ctypes.byref(found)) == CKR_OK and found.value > 0:
+                            for j in range(found.value):
+                                der = _read_attr(p11, sess, objs[j], CKA_VALUE)
+                                if not der:
+                                    continue
+                                cid = _read_attr(p11, sess, objs[j], CKA_ID) or b""
+                                lbl = _read_attr(p11, sess, objs[j], CKA_LABEL) or b""
+                                thumb = hashlib.sha1(der).hexdigest().upper()
+                                out_certs.append(
+                                    {
+                                        "slotId": int(slots[i]),
+                                        "tokenLabel": token_label,
+                                        "ckaId": cid.hex(),
+                                        "label": lbl.decode("utf-8", errors="replace"),
+                                        "Thumbprint": thumb,
+                                        "Der": base64.b64encode(der).decode("ascii"),
+                                    }
+                                )
+                    finally:
+                        p11.C_FindObjectsFinal(sess)
+            finally:
+                if pin_bytes:
+                    p11.C_Logout(sess)
+                p11.C_CloseSession(sess)
+
+        print(json.dumps({"slots": out_slots, "certs": out_certs}, separators=(",", ":")))
+        return 0
+    finally:
+        p11.C_Finalize(None)
+
+
+def cmd_sign() -> int:
+    mod = os.environ.get("GENOFFICE_PKCS11_MODULE", "")
+    pin = os.environ.get("GENOFFICE_PKCS11_PIN", "")
+    slot_str = os.environ.get("GENOFFICE_PKCS11_SLOT", "0")
+    ckaid_hex = os.environ.get("GENOFFICE_PKCS11_CKAID", "")
+    di_hex = os.environ.get("GENOFFICE_DIGEST_INFO", "")
+    mech_str = os.environ.get("GENOFFICE_PKCS11_MECH", "")
+
+    if not mod or not di_hex:
+        print("PKCS11_ERR:MISSING_PARAMS", file=sys.stderr)
+        return 2
+    try:
+        di_bytes = bytes.fromhex(di_hex)
+    except ValueError:
+        di_bytes = b""
+    if not di_bytes:
+        print("PKCS11_ERR:INVALID_DIGEST_INFO", file=sys.stderr)
+        return 2
+
+    loaded = _load_module(mod)
+    if loaded is None:
+        return 3
+    _lib, p11 = loaded
+
+    irv = p11.C_Initialize(None)
+    if irv not in (CKR_OK, CKR_CRYPTOKI_ALREADY_INITIALIZED):
+        print("PKCS11_ERR:INIT_FAILED", file=sys.stderr)
+        return 4
+
+    try:
+        try:
+            slot_id = CK_SLOT_ID(int(slot_str, 10))
+        except ValueError:
+            slot_id = CK_SLOT_ID(0)
+
+        sess = CK_SESSION_HANDLE(0)
+        if p11.C_OpenSession(slot_id, CKF_SERIAL_SESSION, None, None, ctypes.byref(sess)) != CKR_OK:
+            print("PKCS11_ERR:OPEN_SESSION_FAILED", file=sys.stderr)
+            return 5
+
+        pin_bytes = pin.encode("utf-8") if pin else b""
+        logged_in = False
+        try:
+            if pin_bytes:
+                lrv = _login_pin(p11, sess, pin_bytes)
+                if lrv not in (CKR_OK, CKR_USER_ALREADY_LOGGED_IN):
+                    if lrv == CKR_PIN_LOCKED:
+                        print("PKCS11_ERR:PIN_LOCKED", file=sys.stderr)
+                        return 12
+                    print(f"PKCS11_ERR:PIN_INCORRECT:0x{lrv:X}", file=sys.stderr)
+                    return 11
+                logged_in = True
+
+            key = CK_OBJECT_HANDLE(0)
+            found = False
+            priv_cls = CK_OBJECT_CLASS(CKO_PRIVATE_KEY)
+
+            if ckaid_hex:
+                try:
+                    id_bytes = bytes.fromhex(ckaid_hex)
+                except ValueError:
+                    id_bytes = b""
+                if id_bytes:
+                    id_buf = ctypes.create_string_buffer(id_bytes, len(id_bytes))
+                    tmpl2 = (CK_ATTRIBUTE * 2)(
+                        CK_ATTRIBUTE(
+                            CKA_CLASS,
+                            ctypes.cast(ctypes.byref(priv_cls), CK_VOID_PTR),
+                            ctypes.sizeof(priv_cls),
+                        ),
+                        CK_ATTRIBUTE(CKA_ID, ctypes.cast(id_buf, CK_VOID_PTR), len(id_bytes)),
+                    )
+                    if p11.C_FindObjectsInit(sess, tmpl2, 2) == CKR_OK:
+                        cnt = CK_ULONG(0)
+                        if p11.C_FindObjects(sess, ctypes.byref(key), 1, ctypes.byref(cnt)) == CKR_OK and cnt.value > 0:
+                            found = True
+                        p11.C_FindObjectsFinal(sess)
+
+            if not found:
+                tmpl1 = (CK_ATTRIBUTE * 1)(
+                    CK_ATTRIBUTE(
+                        CKA_CLASS,
+                        ctypes.cast(ctypes.byref(priv_cls), CK_VOID_PTR),
+                        ctypes.sizeof(priv_cls),
+                    )
+                )
+                if p11.C_FindObjectsInit(sess, tmpl1, 1) == CKR_OK:
+                    cnt = CK_ULONG(0)
+                    if p11.C_FindObjects(sess, ctypes.byref(key), 1, ctypes.byref(cnt)) == CKR_OK and cnt.value > 0:
+                        found = True
+                    p11.C_FindObjectsFinal(sess)
+
+            if not found:
+                print("PKCS11_ERR:NO_PRIVATE_KEY", file=sys.stderr)
+                return 6
+
+            try:
+                mtype = int(mech_str, 10) if mech_str else CKM_RSA_PKCS
+            except ValueError:
+                mtype = CKM_RSA_PKCS
+            mech = CK_MECHANISM(mtype, None, 0)
+            sirv = p11.C_SignInit(sess, ctypes.byref(mech), key)
+            if sirv != CKR_OK:
+                if sirv == CKR_USER_NOT_LOGGED_IN:
+                    print("PKCS11_ERR:PIN_REQUIRED", file=sys.stderr)
+                    return 11
+                print(f"PKCS11_ERR:SIGN_INIT_FAILED:0x{sirv:X}", file=sys.stderr)
+                return 7
+
+            di_buf = ctypes.create_string_buffer(di_bytes, len(di_bytes))
+            sig_len = CK_ULONG(0)
+            slrv = p11.C_Sign(
+                sess, ctypes.cast(di_buf, CK_VOID_PTR), len(di_bytes), None, ctypes.byref(sig_len)
+            )
+            if slrv != CKR_OK or sig_len.value == 0:
+                if slrv == CKR_USER_NOT_LOGGED_IN:
+                    print("PKCS11_ERR:PIN_REQUIRED", file=sys.stderr)
+                    return 11
+                print("PKCS11_ERR:SIGN_LEN_FAILED", file=sys.stderr)
+                return 8
+
+            sig_buf = (ctypes.c_ubyte * sig_len.value)()
+            srv = p11.C_Sign(
+                sess,
+                ctypes.cast(di_buf, CK_VOID_PTR),
+                len(di_bytes),
+                ctypes.cast(sig_buf, CK_VOID_PTR),
+                ctypes.byref(sig_len),
+            )
+            if srv != CKR_OK:
+                if srv == CKR_USER_NOT_LOGGED_IN:
+                    print("PKCS11_ERR:PIN_REQUIRED", file=sys.stderr)
+                    return 11
+                print(f"PKCS11_ERR:SIGN_FAILED:0x{srv:X}", file=sys.stderr)
+                return 9
+
+            print(base64.b64encode(bytes(sig_buf[: sig_len.value])).decode("ascii"))
+            return 0
+        finally:
+            if logged_in:
+                p11.C_Logout(sess)
+            p11.C_CloseSession(sess)
+    finally:
+        p11.C_Finalize(None)
+
+
+def run_self_test() -> int:
+    # Verify PKCS#11 ABI structure layouts & field offsets on host architecture
+    ptr_size = ctypes.sizeof(ctypes.c_void_p)
+    assert CK_FUNCTION_LIST.C_Initialize.offset == ptr_size
+    assert CK_FUNCTION_LIST.C_Sign.offset == 44 * ptr_size
+    assert CK_TOKEN_INFO.flags.offset == 96
+    assert ctypes.sizeof(CK_ATTRIBUTE) == 3 * ptr_size
+    assert ctypes.sizeof(CK_MECHANISM) == 3 * ptr_size
+    assert _trim_ck_bytes((CK_UTF8CHAR * 8)(*b"Token  \x00")) == "Token"
+    print("pkcs11-helper self-test passed.")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = sys.argv[1:] if argv is None else argv
+    if not args:
+        print("Usage: pkcs11-helper <pkcs11-list|pkcs11-sign|--self-test>", file=sys.stderr)
+        return 1
+    cmd = args[0]
+    if cmd == "--self-test":
+        return run_self_test()
+    if cmd == "pkcs11-list":
+        return cmd_list()
+    if cmd == "pkcs11-sign":
+        return cmd_sign()
+    print(f"Unknown command: {cmd}", file=sys.stderr)
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

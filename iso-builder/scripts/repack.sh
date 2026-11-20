@@ -116,9 +116,12 @@ repack_layered_live_overlays() {
     grep -q -- "--enable-wayland-ime" /usr/bin/nidooffice-desktop
     ! grep -q "libreoffice-" /etc/xdg/ubuntu-mimeapps.list
     dpkg -s nido-desktop >/dev/null
+    dpkg -s nidooffice-desktop >/dev/null
     dpkg -s ubuntu-desktop-minimal >/dev/null
     dpkg -s vielotus >/dev/null
     dpkg -s nidobox >/dev/null
+    dpkg --compare-versions "$(dpkg-query -W -f="\${Version}" nidobox)" ge "1.4.7"
+    dpkg -s showtime >/dev/null 2>&1 || dpkg -s totem >/dev/null 2>&1
     dpkg -s casper >/dev/null
     ! dpkg -s fcitx5 >/dev/null 2>&1
     ! dpkg -s libreoffice-core >/dev/null 2>&1

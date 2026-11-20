@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 from xml.sax.saxutils import escape as xml_escape
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 MAX_UNCOMPRESSED_BYTES = 32 * 1024 * 1024  # 32 MiB zip-bomb guard
 
 W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
@@ -30,6 +30,53 @@ S_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 PIPE_SEP_RE = re.compile(r"^\|?(?:\s*:?-{3,}:?\s*\|)+\s*:?-{0,}:?\s*$")
 CELL_COL_RE = re.compile(r"^([A-Za-z]+)")
 NUMBER_RE = re.compile(r"^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$")
+INLINE_MD_RE = re.compile(
+    r"`(?P<code>[^`\n]+)`"
+    r"|\[(?P<link_label>[^\]\n]+)\]\((?P<link_url>https?://[^)\s]+)\)"
+    r"|\*\*\*(?=\S)(?P<bold_italic>.+?)(?<=\S)\*\*\*"
+    r"|\*\*(?=\S)(?P<bold>.+?)(?<=\S)\*\*"
+    r"|(?<!\w)__(?=\S)(?P<bold_u>.+?)(?<=\S)__(?!\w)"
+    r"|(?<!\*)\*(?=\S)(?!\*)(?P<italic>[^*\n]+?)(?<=\S)\*(?!\*)"
+    r"|~~(?=\S)(?P<strike>.+?)(?<=\S)~~"
+)
+BULLET_MD_RE = re.compile(r"^([ \t]*)[*\-+]\s+(.*)$")
+BULLET_GLYPHS = ("•", "◦", "▪")
+
+
+def _parse_inline_md(text: str) -> list[tuple[str, str]]:
+    if not text:
+        return []
+    spans: list[tuple[str, str]] = []
+    pos = 0
+    for match in INLINE_MD_RE.finditer(text):
+        start, end = match.span()
+        if start > pos:
+            spans.append(("text", text[pos:start]))
+        if match.group("code") is not None:
+            spans.append(("code", match.group("code")))
+        elif match.group("link_label") is not None:
+            spans.append(("text", match.group("link_label")))
+        elif match.group("bold_italic") is not None:
+            spans.append(("bold_italic", re.sub(r"`([^`\n]+)`", r"\1", match.group("bold_italic"))))
+        elif match.group("bold") is not None or match.group("bold_u") is not None:
+            inner = match.group("bold") if match.group("bold") is not None else match.group("bold_u")
+            if "`" in inner:
+                for sub_k, sub_t in _parse_inline_md(inner):
+                    spans.append(("code" if sub_k == "code" else "bold", sub_t))
+            else:
+                spans.append(("bold", inner))
+        elif match.group("italic") is not None:
+            spans.append(("italic", match.group("italic")))
+        elif match.group("strike") is not None:
+            spans.append(("strike", match.group("strike")))
+        pos = end
+    if pos < len(text):
+        spans.append(("text", text[pos:]))
+    return spans
+
+
+def _strip_inline_md(text: str) -> str:
+    return "".join(seg for _, seg in _parse_inline_md(text))
 
 
 def _natural_key(name: str) -> list[Any]:
@@ -245,11 +292,44 @@ def _parse_pipe_cells(line: str) -> list[str]:
     return [c.strip() for c in s.split("|")]
 
 
-def _docx_paragraph_xml(text: str, style_id: str | None = None) -> str:
-    ppr = ""
+def _docx_runs_xml(text: str, force_bold: bool = False, raw_code: bool = False) -> str:
+    if raw_code:
+        rpr = '<w:rPr><w:rFonts w:ascii="Liberation Mono" w:hAnsi="Liberation Mono" w:cs="Liberation Mono"/><w:sz w:val="20"/></w:rPr>'
+        return f'<w:r>{rpr}<w:t xml:space="preserve">{xml_escape(text)}</w:t></w:r>'
+    spans = _parse_inline_md(text)
+    if not spans:
+        return '<w:r><w:t xml:space="preserve"></w:t></w:r>'
+    parts: list[str] = []
+    for kind, seg in spans:
+        if not seg:
+            continue
+        rpr_items: list[str] = []
+        if force_bold or kind in ("bold", "bold_italic"):
+            rpr_items.append("<w:b/>")
+        if kind in ("italic", "bold_italic"):
+            rpr_items.append("<w:i/>")
+        if kind == "strike":
+            rpr_items.append("<w:strike/>")
+        if kind == "code":
+            rpr_items.append('<w:rFonts w:ascii="Liberation Mono" w:hAnsi="Liberation Mono" w:cs="Liberation Mono"/>')
+        rpr = f"<w:rPr>{''.join(rpr_items)}</w:rPr>" if rpr_items else ""
+        parts.append(f'<w:r>{rpr}<w:t xml:space="preserve">{xml_escape(seg)}</w:t></w:r>')
+    return "".join(parts)
+
+
+def _docx_paragraph_xml(
+    text: str,
+    style_id: str | None = None,
+    indent_twips: int = 0,
+    raw_code: bool = False,
+) -> str:
+    ppr_items: list[str] = []
     if style_id:
-        ppr = f'<w:pPr><w:pStyle w:val="{xml_escape(style_id)}"/></w:pPr>'
-    return f'<w:p>{ppr}<w:r><w:t xml:space="preserve">{xml_escape(text)}</w:t></w:r></w:p>'
+        ppr_items.append(f'<w:pStyle w:val="{xml_escape(style_id)}"/>')
+    if indent_twips > 0:
+        ppr_items.append(f'<w:ind w:left="{indent_twips}"/>')
+    ppr = f"<w:pPr>{''.join(ppr_items)}</w:pPr>" if ppr_items else ""
+    return f"<w:p>{ppr}{_docx_runs_xml(text, raw_code=raw_code)}</w:p>"
 
 
 def _docx_table_xml(rows: list[list[str]]) -> str:
@@ -269,9 +349,8 @@ def _docx_table_xml(rows: list[list[str]]) -> str:
         padded = row + [""] * (width - len(row))
         cells_xml: list[str] = []
         for cell in padded:
-            run_pr = "<w:rPr><w:b/></w:rPr>" if r_idx == 0 else ""
             cells_xml.append(
-                f'<w:tc><w:p><w:r>{run_pr}<w:t xml:space="preserve">{xml_escape(cell)}</w:t></w:r></w:p></w:tc>'
+                f"<w:tc><w:p>{_docx_runs_xml(cell, force_bold=(r_idx == 0))}</w:p></w:tc>"
             )
         out.append(f"<w:tr>{''.join(cells_xml)}</w:tr>")
     out.append("</w:tbl>")
@@ -287,9 +366,18 @@ def _markdown_to_docx_body(content: str, title: str | None = None) -> str:
 
     lines = content.splitlines()
     i = 0
+    in_code = False
     while i < len(lines):
         raw = lines[i]
         stripped = raw.strip()
+        if stripped.startswith("```"):
+            in_code = not in_code
+            i += 1
+            continue
+        if in_code:
+            elements.append(_docx_paragraph_xml(raw.rstrip(), None, indent_twips=360, raw_code=True))
+            i += 1
+            continue
         if not stripped:
             i += 1
             continue
@@ -311,10 +399,20 @@ def _markdown_to_docx_body(content: str, title: str | None = None) -> str:
             elements.append(_docx_paragraph_xml(stripped[3:].strip(), "Heading2"))
         elif stripped.startswith("# "):
             elements.append(_docx_paragraph_xml(stripped[2:].strip(), "Heading1"))
-        elif stripped.startswith("- ") or stripped.startswith("* "):
-            elements.append(_docx_paragraph_xml("• " + stripped[2:].strip(), None))
         else:
-            elements.append(_docx_paragraph_xml(raw.rstrip(), None))
+            b_match = BULLET_MD_RE.match(raw)
+            if b_match:
+                lvl = min(len(b_match.group(1).replace("\t", "  ")) // 2, 2)
+                glyph = BULLET_GLYPHS[lvl]
+                elements.append(
+                    _docx_paragraph_xml(
+                        f"{glyph} {b_match.group(2).strip()}",
+                        None,
+                        indent_twips=lvl * 360,
+                    )
+                )
+            else:
+                elements.append(_docx_paragraph_xml(raw.rstrip(), None))
         i += 1
 
     if not elements:
@@ -485,7 +583,8 @@ def write_xlsx(out_path: Path, content: str, title: str | None = None, src_ext: 
             if num is not None and r_idx > 1:
                 cells_xml.append(f'<c r="{coord}"><v>{num}</v></c>')
             else:
-                text = "" if val is None else str(val)
+                raw_text = "" if val is None else str(val)
+                text = _strip_inline_md(raw_text) if src_ext not in (".csv", ".tsv") else raw_text
                 # Always store strings in sharedStrings (t="s") so leading '=' is literal text, never a formula.
                 sid = intern_str(text)
                 cells_xml.append(f'<c r="{coord}" t="s"><v>{sid}</v></c>')

@@ -1,0 +1,99 @@
+{
+  "schemaVersion": 1,
+  "vendors": {
+    "mozilla": {
+      "id": "mozilla",
+      "name": "Mozilla Official APT",
+      "uri": "https://packages.mozilla.org/apt",
+      "suites": ["mozilla"],
+      "components": ["main"],
+      "keyUrl": "https://packages.mozilla.org/apt/repo-signing-key.gpg",
+      "expectedFingerprints": [
+        "35BAA0B33E9EB396F59CA838C0BA5CE6DC6315A3"
+      ],
+      "pinOrigin": "packages.mozilla.org",
+      "allowedPackages": [
+        "firefox",
+        "firefox-l10n-vi",
+        "firefox-l10n-*"
+      ],
+      "pinPriority": 1000,
+      "blockUbuntuPackage": "firefox"
+    },
+    "google-chrome": {
+      "id": "google-chrome",
+      "name": "Google Chrome Official APT",
+      "uri": "https://dl.google.com/linux/chrome/deb",
+      "suites": ["stable"],
+      "components": ["main"],
+      "keyUrl": "https://dl.google.com/linux/linux_signing_key.pub",
+      "expectedFingerprints": [
+        "EB4C1BFD4F042F6DDDCCEC917721F63BD38B4796",
+        "3B068FB4789ABE4AEFA3BB491397BC53640DB551"
+      ],
+      "pinOrigin": "dl.google.com",
+      "allowedPackages": [
+        "google-chrome-stable",
+        "google-chrome-beta"
+      ],
+      "pinPriority": 500,
+      "suppressVendorSelfSource": "google-chrome"
+    },
+    "brave": {
+      "id": "brave",
+      "name": "Brave Browser Official APT",
+      "uri": "https://brave-browser-apt-release.s3.brave.com",
+      "suites": ["stable"],
+      "components": ["main"],
+      "keyUrl": "https://brave-browser-apt-release.s3.brave.com/brave-browser-archive-keyring.gpg",
+      "expectedFingerprints": [
+        "DBF1A116C220B8C7164F98230686B78420038257",
+        "47D32A74E9A9E013A4B4926C68D513D36A73CD96"
+      ],
+      "pinOrigin": "brave-browser-apt-release.s3.brave.com",
+      "allowedPackages": [
+        "brave-browser",
+        "brave-keyring"
+      ],
+      "pinPriority": 500
+    },
+    "vscode": {
+      "id": "vscode",
+      "name": "Microsoft Visual Studio Code Official APT",
+      "uri": "https://packages.microsoft.com/repos/code",
+      "suites": ["stable"],
+      "components": ["main"],
+      "keyUrl": "https://packages.microsoft.com/keys/microsoft.asc",
+      "expectedFingerprints": [
+        "BC528686B50D79E339D3721CEB3E94ADBE1229CF"
+      ],
+      "pinOrigin": "packages.microsoft.com",
+      "allowedPackages": [
+        "code"
+      ],
+      "pinPriority": 500,
+      "suppressVendorSelfSource": "vscode"
+    },
+    "docker": {
+      "id": "docker",
+      "name": "Docker CE Official Ubuntu APT",
+      "uri": "https://download.docker.com/linux/ubuntu",
+      "suites": ["{codename}"],
+      "components": ["stable"],
+      "keyUrl": "https://download.docker.com/linux/ubuntu/gpg",
+      "expectedFingerprints": [
+        "9DC858229FC7DD38854AE2D88D81803C0EBFCD88",
+        "D3306A018370199E527AE7997EA0A9C3F273FCD8"
+      ],
+      "pinOrigin": "download.docker.com",
+      "allowedPackages": [
+        "docker-ce",
+        "docker-ce-cli",
+        "containerd.io",
+        "docker-buildx-plugin",
+        "docker-compose-plugin"
+      ],
+      "pinPriority": 500
+    }
+  }
+}

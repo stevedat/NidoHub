@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+  <vendor>Nido Holdings</vendor>
+  <vendor_url>https://nido-holdings.com</vendor_url>
+  <icon_name>com.nidoholdings.NidoHub</icon_name>
+
+  <action id="com.nidoholdings.nidohub.pkg">
+    <description>Manage software packages via NidoHub</description>
+    <description xml:lang="vi">Quản lý cài đặt và cập nhật phần mềm qua NidoHub</description>
+    <message>Authentication is required to install, update, or remove software packages via NidoHub.</message>
+    <message xml:lang="vi">Cần xác thực quản trị để cài đặt, cập nhật hoặc gỡ phần mềm qua NidoHub.</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/nido-hub/nido-pkg-helper</annotate>
+    <annotate key="org.freedesktop.policykit.exec.allow_gui">false</annotate>
+  </action>
+</policyconfig>

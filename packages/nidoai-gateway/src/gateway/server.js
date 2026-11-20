@@ -1,0 +1,1246 @@
+import http from 'node:http';
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import { CHAT_BACKEND_KINDS, MIN_CLIENT_TOKEN_LENGTH, PKG_VERSION, isChatBackendKind, loadConfig, maskSecret, saveConfigUpdatesToEnvLocal, } from '../config.js';
+import { SUPPORTED_CHAT_COMPLETION_FIELDS, hasMultimodalContent, validateChatCompletionRequest, } from './schema.js';
+import { ANTHROPIC_API_VERSION, executeAnthropicUpstreamCall, } from './anthropic-adapter.js';
+import { probeLocalBackendReachability } from './live-probe.js';
+import { renderControlPanelHtml } from './ui-html.js';
+import { runDoctor } from '../doctor/doctor.js';
+import { CodexAppServerWorker } from '../agent/codex-worker.js';
+import { getRuntimeDiscoveryPath, readAgentsStatus, writeRuntimeDiscovery, } from '../runtime-discovery.js';
+import { formatSecretStoreLabel } from '../security/secret-store.js';
+const MAX_TEXT_BODY_BYTES = 1_048_576; // 1 MiB for plain text/JSON requests
+const MAX_MULTIMODAL_BODY_BYTES = 4_194_304; // 4 MiB for vision image_url requests
+const SECURITY_HEADERS = {
+    'X-Content-Type-Options': 'nosniff',
+    'X-Frame-Options': 'DENY',
+    'Cache-Control': 'no-store',
+};
+function logOperational(entry, silent = false) {
+    if (silent)
+        return;
+    console.log(JSON.stringify(entry));
+}
+function sendJson(res, status, payload, extraHeaders = {}) {
+    const body = JSON.stringify(payload);
+    res.writeHead(status, {
+        ...SECURITY_HEADERS,
+        'Content-Type': 'application/json; charset=utf-8',
+        'Content-Length': Buffer.byteLength(body).toString(),
+        ...extraHeaders,
+    });
+    if (res.req?.method === 'HEAD') {
+        res.end();
+    }
+    else {
+        res.end(body);
+    }
+}
+function parseExplicitProviderPrefix(requestedModel) {
+    if (!requestedModel)
+        return { explicitKind: null, strippedModel: undefined };
+    if (requestedModel.includes('/')) {
+        const [prefix, rest] = requestedModel.split('/', 2);
+        if (isChatBackendKind(prefix) && rest) {
+            return { explicitKind: prefix, strippedModel: rest };
+        }
+    }
+    return { explicitKind: null, strippedModel: requestedModel };
+}
+function resolveModelForBackend(requestedModel, backend) {
+    const { strippedModel } = parseExplicitProviderPrefix(requestedModel);
+    if (!strippedModel || strippedModel === 'auto' || strippedModel === 'default') {
+        return backend.defaultModel;
+    }
+    return strippedModel;
+}
+function selectBackendsForRequest(reqData, config) {
+    const { explicitKind } = parseExplicitProviderPrefix(reqData.model);
+    // Rule 1: If client explicitly specified a provider prefix (e.g. "gemini/private-model"),
+    // pin strictly to that provider and NEVER fail over to another backend.
+    if (explicitKind !== null) {
+        return {
+            candidates: [config.backends[explicitKind]],
+            allowFailover: false,
+        };
+    }
+    const primaryKind = config.primaryBackend;
+    const isGenericModelAlias = reqData.model === undefined || reqData.model === 'auto' || reqData.model === 'default';
+    // Rule 2: Cross-provider failover is ONLY allowed when:
+    // - the client requested a generic alias (omitted, "auto", or "default"), AND
+    // - config.allowCrossProviderFailover is explicitly enabled, AND
+    // - a distinct failoverBackend is configured.
+    if (isGenericModelAlias &&
+        config.allowCrossProviderFailover &&
+        config.failoverBackend &&
+        config.failoverBackend !== primaryKind) {
+        const fb = config.backends[config.failoverBackend];
+        if (fb.configured) {
+            return {
+                candidates: [config.backends[primaryKind], fb],
+                allowFailover: true,
+            };
+        }
+    }
+    return {
+        candidates: [config.backends[primaryKind]],
+        allowFailover: false,
+    };
+}
+function isRetriableUpstreamStatus(status) {
+    // Never fail over on client errors, auth errors, billing errors, or model-not-found errors (400, 401, 402, 403, 404, 422).
+    // Only fail over on rate-limit (429) or transient 5xx server/gateway errors.
+    return status === 429 || status === 500 || status === 502 || status === 503 || status === 504;
+}
+class PayloadTooLargeError extends Error {
+    statusCode = 413;
+    constructor(maxBytes) {
+        super(`Request body exceeds ${maxBytes} byte limit`);
+    }
+}
+async function readRequestBody(req, maxBytes = MAX_TEXT_BODY_BYTES) {
+    return new Promise((resolve, reject) => {
+        const chunks = [];
+        let total = 0;
+        let settled = false;
+        req.on('data', (chunk) => {
+            if (settled)
+                return;
+            total += chunk.length;
+            if (total > maxBytes) {
+                settled = true;
+                reject(new PayloadTooLargeError(maxBytes));
+                req.destroy();
+                return;
+            }
+            chunks.push(chunk);
+        });
+        req.on('end', () => {
+            if (settled)
+                return;
+            settled = true;
+            resolve({ text: Buffer.concat(chunks).toString('utf8'), byteLength: total });
+        });
+        req.on('error', (err) => {
+            if (settled)
+                return;
+            settled = true;
+            reject(err);
+        });
+    });
+}
+function timingSafeBearerMatch(authHeader, expectedToken) {
+    if (!expectedToken || expectedToken.length < MIN_CLIENT_TOKEN_LENGTH)
+        return false;
+    if (!authHeader || !authHeader.startsWith('Bearer '))
+        return false;
+    const provided = authHeader.slice('Bearer '.length).trim();
+    const a = Buffer.from(provided, 'utf8');
+    const b = Buffer.from(expectedToken, 'utf8');
+    if (a.length !== b.length)
+        return false;
+    return crypto.timingSafeEqual(a, b);
+}
+/**
+ * Requests a stream from the upstream OpenAI-compatible endpoint so we can:
+ * 1. Accurately measure TTFT (Time To First Token) for both stream: true and stream: false.
+ * 2. Verify terminal stream completion (both a terminal finish_reason AND data: [DONE])
+ *    before marking a response successful or emitting [DONE] to the client.
+ */
+async function executeUpstreamCall(backend, reqData, wantClientStream, res, requestId, requestStartMs) {
+    const model = resolveModelForBackend(reqData.model, backend);
+    if (backend.kind === 'anthropic') {
+        return executeAnthropicUpstreamCall({
+            backend,
+            model,
+            reqData,
+            wantClientStream,
+            res,
+            requestId,
+            requestStartMs,
+            securityHeaders: SECURITY_HEADERS,
+        });
+    }
+    if (!backend.configured) {
+        return {
+            ok: false,
+            emittedStreamBytes: false,
+            retriableForFailover: true,
+            status: 503,
+            model,
+            ttftMs: 0,
+            totalMs: Math.round(performance.now() - requestStartMs),
+            errorPayload: {
+                error: {
+                    type: 'backend_not_configured',
+                    message: `Backend '${backend.kind}' is not configured.`,
+                },
+            },
+        };
+    }
+    const upstreamPayload = {
+        model,
+        messages: reqData.messages,
+        stream: true,
+    };
+    if (reqData.temperature !== undefined)
+        upstreamPayload.temperature = reqData.temperature;
+    if (reqData.max_tokens !== undefined)
+        upstreamPayload.max_tokens = reqData.max_tokens;
+    if (reqData.max_completion_tokens !== undefined) {
+        upstreamPayload.max_completion_tokens = reqData.max_completion_tokens;
+    }
+    if (reqData.top_p !== undefined)
+        upstreamPayload.top_p = reqData.top_p;
+    if (reqData.stop !== undefined)
+        upstreamPayload.stop = reqData.stop;
+    if (reqData.response_format !== undefined) {
+        upstreamPayload.response_format = reqData.response_format;
+    }
+    const callStartMs = performance.now();
+    let upstreamRes;
+    try {
+        upstreamRes = await fetch(`${backend.baseUrl}/chat/completions`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${backend.apiKey}`,
+            },
+            body: JSON.stringify(upstreamPayload),
+            signal: AbortSignal.timeout(120_000),
+        });
+    }
+    catch (err) {
+        return {
+            ok: false,
+            emittedStreamBytes: false,
+            retriableForFailover: true,
+            status: 502,
+            model,
+            ttftMs: 0,
+            totalMs: Math.round(performance.now() - requestStartMs),
+            errorPayload: {
+                error: {
+                    type: 'upstream_connection_error',
+                    message: err instanceof Error ? err.message : 'Upstream connection failed',
+                },
+            },
+        };
+    }
+    if (!upstreamRes.ok || !upstreamRes.body) {
+        let errBody = { error: { message: `Upstream HTTP ${upstreamRes.status}` } };
+        try {
+            errBody = await upstreamRes.json();
+        }
+        catch {
+            // ignore json parse error
+        }
+        return {
+            ok: false,
+            emittedStreamBytes: false,
+            retriableForFailover: isRetriableUpstreamStatus(upstreamRes.status),
+            status: upstreamRes.status,
+            model,
+            ttftMs: 0,
+            totalMs: Math.round(performance.now() - requestStartMs),
+            errorPayload: errBody,
+        };
+    }
+    const reader = upstreamRes.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let ttftMs = null;
+    let emittedStreamBytes = false;
+    let aggregatedText = '';
+    let finishReason = null;
+    let sawFinishReason = false;
+    let sawDoneMarker = false;
+    let sawAnyChoiceChunk = false;
+    let responseId = `chatcmpl-${requestId}`;
+    const processLine = (rawLine) => {
+        const trimmed = rawLine.trim();
+        if (!trimmed.startsWith('data:'))
+            return;
+        const dataStr = trimmed.slice(5).trim();
+        if (dataStr === '[DONE]') {
+            sawDoneMarker = true;
+            return;
+        }
+        let parsed;
+        try {
+            parsed = JSON.parse(dataStr);
+        }
+        catch {
+            return;
+        }
+        if (typeof parsed.id === 'string')
+            responseId = parsed.id;
+        if (!Array.isArray(parsed.choices) || parsed.choices.length === 0)
+            return;
+        sawAnyChoiceChunk = true;
+        const firstChoice = (parsed.choices[0] ?? {});
+        const delta = (firstChoice.delta ?? {});
+        const deltaContent = typeof delta.content === 'string' ? delta.content : '';
+        if (deltaContent.length > 0 && ttftMs === null) {
+            ttftMs = Math.round(performance.now() - callStartMs);
+        }
+        if (typeof firstChoice.finish_reason === 'string' &&
+            firstChoice.finish_reason.trim().length > 0) {
+            finishReason = firstChoice.finish_reason.trim();
+            sawFinishReason = true;
+        }
+        if (wantClientStream) {
+            if (!emittedStreamBytes) {
+                res.writeHead(200, {
+                    ...SECURITY_HEADERS,
+                    'Content-Type': 'text/event-stream; charset=utf-8',
+                    'Cache-Control': 'no-cache',
+                    Connection: 'keep-alive',
+                    'x-nidoai-request-id': requestId,
+                    'x-nidoai-backend': backend.kind,
+                    'x-nidoai-model': model,
+                });
+                emittedStreamBytes = true;
+            }
+            res.write(`data: ${JSON.stringify(parsed)}\n\n`);
+        }
+        else {
+            aggregatedText += deltaContent;
+        }
+    };
+    try {
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) {
+                buffer += decoder.decode();
+                if (buffer.trim().length > 0) {
+                    for (const remLine of buffer.split(/\r?\n/)) {
+                        processLine(remLine);
+                    }
+                    buffer = '';
+                }
+                break;
+            }
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split(/\r?\n/);
+            buffer = lines.pop() ?? '';
+            for (const line of lines) {
+                processLine(line);
+            }
+        }
+    }
+    catch (streamErr) {
+        if (emittedStreamBytes) {
+            // Never emit [DONE] on an interrupted stream; send an explicit error event and close.
+            res.write(`event: error\ndata: ${JSON.stringify({
+                error: {
+                    type: 'upstream_stream_error',
+                    code: 'incomplete_upstream_response',
+                    message: streamErr instanceof Error ? streamErr.message : 'Upstream stream interrupted',
+                },
+            })}\n\n`);
+            res.end();
+            return {
+                ok: false,
+                emittedStreamBytes: true,
+                retriableForFailover: false,
+                status: 502,
+                model,
+                ttftMs: ttftMs ?? 0,
+                totalMs: Math.round(performance.now() - requestStartMs),
+            };
+        }
+        return {
+            ok: false,
+            emittedStreamBytes: false,
+            retriableForFailover: true,
+            status: 502,
+            model,
+            ttftMs: ttftMs ?? 0,
+            totalMs: Math.round(performance.now() - requestStartMs),
+            errorPayload: {
+                error: {
+                    type: 'upstream_stream_error',
+                    code: 'incomplete_upstream_response',
+                    message: streamErr instanceof Error ? streamErr.message : 'Stream interrupted',
+                },
+            },
+        };
+    }
+    // Strict terminal completion check:
+    // Upstream MUST have sent at least one valid choice chunk, a non-empty finish_reason, AND data: [DONE].
+    const isCompleteStream = sawAnyChoiceChunk && sawFinishReason && sawDoneMarker;
+    const finalTtftMs = ttftMs ?? Math.round(performance.now() - callStartMs);
+    const totalMs = Math.round(performance.now() - requestStartMs);
+    if (!isCompleteStream) {
+        const incompleteErrorPayload = {
+            error: {
+                type: 'upstream_incomplete_stream',
+                code: 'incomplete_upstream_response',
+                message: `Upstream stream ended prematurely without completion signals (sawChoice=${String(sawAnyChoiceChunk)}, sawFinishReason=${String(sawFinishReason)}, sawDone=${String(sawDoneMarker)}).`,
+            },
+        };
+        if (emittedStreamBytes) {
+            // Stream headers were already sent to SSE client; emit an error event and do NOT send data: [DONE]!
+            res.write(`event: error\ndata: ${JSON.stringify(incompleteErrorPayload)}\n\n`);
+            res.end();
+            return {
+                ok: false,
+                emittedStreamBytes: true,
+                retriableForFailover: false,
+                status: 502,
+                model,
+                ttftMs: finalTtftMs,
+                totalMs,
+                errorPayload: incompleteErrorPayload,
+            };
+        }
+        return {
+            ok: false,
+            emittedStreamBytes: false,
+            retriableForFailover: true,
+            status: 502,
+            model,
+            ttftMs: finalTtftMs,
+            totalMs,
+            errorPayload: incompleteErrorPayload,
+        };
+    }
+    if (wantClientStream) {
+        res.write('data: [DONE]\n\n');
+        res.end();
+    }
+    else {
+        sendJson(res, 200, {
+            id: responseId,
+            object: 'chat.completion',
+            created: Math.floor(Date.now() / 1000),
+            model,
+            choices: [
+                {
+                    index: 0,
+                    message: {
+                        role: 'assistant',
+                        content: aggregatedText,
+                    },
+                    finish_reason: finishReason,
+                },
+            ],
+        }, {
+            'x-nidoai-request-id': requestId,
+            'x-nidoai-backend': backend.kind,
+            'x-nidoai-model': model,
+            'x-nidoai-ttft-ms': String(finalTtftMs),
+            'x-nidoai-total-ms': String(totalMs),
+        });
+    }
+    return {
+        ok: true,
+        emittedStreamBytes,
+        retriableForFailover: false,
+        status: 200,
+        model,
+        ttftMs: finalTtftMs,
+        totalMs,
+    };
+}
+function parseCookies(cookieHeader) {
+    if (!cookieHeader)
+        return {};
+    const out = {};
+    for (const part of cookieHeader.split(';')) {
+        const eq = part.indexOf('=');
+        if (eq <= 0)
+            continue;
+        const k = part.slice(0, eq).trim();
+        const v = part.slice(eq + 1).trim();
+        out[k] = v;
+    }
+    return out;
+}
+function timingSafeStringEqual(aStr, bStr) {
+    const a = Buffer.from(aStr, 'utf8');
+    const b = Buffer.from(bStr, 'utf8');
+    if (a.length !== b.length)
+        return false;
+    return crypto.timingSafeEqual(a, b);
+}
+function verifyAdminRequestAuth(req, expectedClientToken, expectedCsrfToken) {
+    if (timingSafeBearerMatch(req.headers.authorization, expectedClientToken)) {
+        return true;
+    }
+    const secFetchSite = req.headers['sec-fetch-site'];
+    if (typeof secFetchSite === 'string' && secFetchSite === 'cross-site') {
+        return false;
+    }
+    const headerCsrf = req.headers['x-nidoai-csrf'];
+    const cookies = parseCookies(req.headers.cookie);
+    const cookieCsrf = cookies['nidoai_ui_csrf'];
+    if (typeof headerCsrf === 'string' &&
+        typeof cookieCsrf === 'string' &&
+        timingSafeStringEqual(headerCsrf, expectedCsrfToken) &&
+        timingSafeStringEqual(cookieCsrf, expectedCsrfToken)) {
+        return true;
+    }
+    return false;
+}
+export async function startGatewayServer(initialConfig, options = {}) {
+    if (!initialConfig.clientToken || initialConfig.clientToken.length < MIN_CLIENT_TOKEN_LENGTH) {
+        throw new Error(`NIDOAI_CLIENT_TOKEN must be explicitly configured (minimum ${MIN_CLIENT_TOKEN_LENGTH} characters) before starting the gateway server.`);
+    }
+    let currentConfig = initialConfig;
+    let actualPort = initialConfig.port;
+    const csrfToken = crypto.randomUUID();
+    const recentLogs = [];
+    let codexWorker = null;
+    let codexWorkerCwd = process.cwd();
+    let activeCodexThreadId = null;
+    const recordLog = (entry) => {
+        recentLogs.unshift(entry);
+        if (recentLogs.length > 50)
+            recentLogs.pop();
+        logOperational(entry, options.silent);
+    };
+    let codexWorkerQueue = Promise.resolve();
+    const ensureCodexWorker = async (requestedCwd) => {
+        let release;
+        const prev = codexWorkerQueue;
+        codexWorkerQueue = new Promise((r) => {
+            release = r;
+        });
+        await prev;
+        try {
+            const targetCwd = typeof requestedCwd === 'string' && requestedCwd.trim().length > 0
+                ? requestedCwd.trim()
+                : codexWorkerCwd;
+            fs.mkdirSync(targetCwd, { recursive: true });
+            if (!codexWorker || !codexWorker.isRunning() || codexWorkerCwd !== targetCwd) {
+                if (codexWorker) {
+                    await codexWorker.stop();
+                }
+                codexWorkerCwd = targetCwd;
+                codexWorker = new CodexAppServerWorker({
+                    codexBin: currentConfig.codexBin,
+                    cwd: targetCwd,
+                    sandboxMode: 'read-only',
+                    approvalPolicy: 'never',
+                });
+                await codexWorker.start();
+            }
+            return codexWorker;
+        }
+        finally {
+            release();
+        }
+    };
+    const cachedHtml = renderControlPanelHtml(csrfToken);
+    const cachedHtmlBytes = Buffer.byteLength(cachedHtml).toString();
+    const server = http.createServer(async (req, res) => {
+        const requestStartMs = performance.now();
+        const requestId = crypto.randomUUID();
+        const method = req.method ?? 'GET';
+        const url = new URL(req.url ?? '/', `http://${currentConfig.host}:${actualPort}`);
+        const pathname = url.pathname;
+        // 0. GET / (Interactive Control Panel)
+        if ((method === 'GET' || method === 'HEAD') && pathname === '/') {
+            const totalMs = Math.round(performance.now() - requestStartMs);
+            res.writeHead(200, {
+                'Content-Type': 'text/html; charset=utf-8',
+                'Content-Length': cachedHtmlBytes,
+                'Set-Cookie': `nidoai_ui_csrf=${csrfToken}; HttpOnly; SameSite=Strict; Path=/`,
+            });
+            if (method !== 'HEAD')
+                res.end(cachedHtml);
+            else
+                res.end();
+            recordLog({
+                timestamp: new Date().toISOString(),
+                requestId,
+                method,
+                path: pathname,
+                status: 200,
+                totalMs,
+            });
+            return;
+        }
+        // 0b. Admin Control Plane API (/api/admin/*)
+        if (pathname.startsWith('/api/admin/')) {
+            if (!verifyAdminRequestAuth(req, currentConfig.clientToken, csrfToken)) {
+                sendJson(res, 401, {
+                    error: {
+                        type: 'authentication_error',
+                        code: 'unauthorized_admin_request',
+                        message: 'Missing valid CSRF session or Bearer token for Admin API.',
+                    },
+                });
+                return;
+            }
+            if (method === 'GET' && pathname === '/api/admin/pairing-token') {
+                sendJson(res, 200, { pairingToken: currentConfig.clientToken });
+                return;
+            }
+            if (method === 'GET' && pathname === '/api/admin/state') {
+                const primary = currentConfig.backends[currentConfig.primaryBackend];
+                const localProbe = currentConfig.backends.local.configured
+                    ? await probeLocalBackendReachability(currentConfig.backends.local.baseUrl, {
+                        apiKey: currentConfig.backends.local.apiKey,
+                    })
+                    : { reachable: false, latencyMs: 0, models: [], checkedAt: Date.now() };
+                const primaryReachable = primary.kind === 'local' ? primary.configured && localProbe.reachable : primary.configured;
+                const secretStoreMode = currentConfig.secretStoreMode ?? 'file-0600-fallback';
+                sendJson(res, 200, {
+                    bind: `${currentConfig.host}:${actualPort}`,
+                    discoveryPath: getRuntimeDiscoveryPath(),
+                    maskedClientToken: maskSecret(currentConfig.clientToken),
+                    secretStore: {
+                        mode: secretStoreMode,
+                        label: formatSecretStoreLabel(secretStoreMode),
+                    },
+                    primaryBackend: {
+                        kind: primary.kind,
+                        configured: primary.configured,
+                        reachable: primaryReachable,
+                        defaultModel: primary.defaultModel,
+                    },
+                    failoverBackend: currentConfig.allowCrossProviderFailover
+                        ? currentConfig.failoverBackend
+                        : null,
+                    allowCrossProviderFailover: currentConfig.allowCrossProviderFailover,
+                    backends: {
+                        gemini: {
+                            configured: currentConfig.backends.gemini.configured,
+                            reachable: currentConfig.backends.gemini.configured,
+                            defaultModel: currentConfig.backends.gemini.defaultModel,
+                            baseUrl: currentConfig.backends.gemini.baseUrl,
+                            maskedKey: maskSecret(currentConfig.backends.gemini.apiKey),
+                        },
+                        openai: {
+                            configured: currentConfig.backends.openai.configured,
+                            reachable: currentConfig.backends.openai.configured,
+                            defaultModel: currentConfig.backends.openai.defaultModel,
+                            baseUrl: currentConfig.backends.openai.baseUrl,
+                            maskedKey: maskSecret(currentConfig.backends.openai.apiKey),
+                        },
+                        anthropic: {
+                            configured: currentConfig.backends.anthropic.configured,
+                            reachable: currentConfig.backends.anthropic.configured,
+                            defaultModel: currentConfig.backends.anthropic.defaultModel,
+                            baseUrl: currentConfig.backends.anthropic.baseUrl,
+                            maskedKey: maskSecret(currentConfig.backends.anthropic.apiKey),
+                        },
+                        local: {
+                            configured: currentConfig.backends.local.configured,
+                            reachable: localProbe.reachable,
+                            defaultModel: currentConfig.backends.local.defaultModel,
+                            baseUrl: currentConfig.backends.local.baseUrl,
+                            maskedKey: '',
+                        },
+                    },
+                    agentsStatus: readAgentsStatus(),
+                    codex: {
+                        running: codexWorker ? codexWorker.isRunning() : false,
+                        activeThreadId: activeCodexThreadId,
+                        cwd: codexWorkerCwd,
+                    },
+                    logs: recentLogs,
+                });
+                return;
+            }
+            if (method === 'POST' && pathname === '/api/admin/doctor') {
+                const checks = await runDoctor(currentConfig);
+                sendJson(res, 200, { checks });
+                return;
+            }
+            if (method === 'POST' && pathname === '/api/admin/config') {
+                try {
+                    const { text: raw } = await readRequestBody(req);
+                    const body = JSON.parse(raw || '{}');
+                    const useSecretStore = process.env.NIDOAI_SECRET_STORE !== 'file';
+                    saveConfigUpdatesToEnvLocal(body, process.cwd(), { useSecretStore });
+                    currentConfig = loadConfig();
+                    if (options.writeRuntimeDiscovery) {
+                        const p = currentConfig.backends[currentConfig.primaryBackend];
+                        const lp = p.kind === 'local' && p.configured
+                            ? await probeLocalBackendReachability(p.baseUrl, { apiKey: p.apiKey, force: true })
+                            : null;
+                        writeRuntimeDiscovery({
+                            baseUrl: `http://127.0.0.1:${actualPort}`,
+                            clientToken: currentConfig.clientToken,
+                            capabilities: {
+                                vision: true,
+                                streaming: true,
+                                jsonObject: true,
+                                primaryBackend: p.kind,
+                                primaryConfigured: p.configured,
+                                primaryReachable: lp ? lp.reachable : p.configured,
+                                secretStoreMode: currentConfig.secretStoreMode,
+                            },
+                        });
+                    }
+                    sendJson(res, 200, { ok: true, secretStoreMode: currentConfig.secretStoreMode });
+                }
+                catch (err) {
+                    sendJson(res, 400, {
+                        error: { message: err instanceof Error ? err.message : 'Invalid config update' },
+                    });
+                }
+                return;
+            }
+            if (method === 'POST' && pathname === '/api/admin/rotate-token') {
+                const newToken = `nidoai_${crypto.randomBytes(24).toString('hex')}`;
+                saveConfigUpdatesToEnvLocal({ clientToken: newToken });
+                currentConfig = loadConfig();
+                if (options.writeRuntimeDiscovery) {
+                    writeRuntimeDiscovery({
+                        baseUrl: `http://127.0.0.1:${actualPort}`,
+                        clientToken: currentConfig.clientToken,
+                    });
+                }
+                sendJson(res, 200, { ok: true, clientToken: currentConfig.clientToken });
+                return;
+            }
+            if (method === 'POST' && pathname === '/api/admin/playground/chat') {
+                try {
+                    const { text: raw } = await readRequestBody(req);
+                    const body = JSON.parse(raw || '{}');
+                    const chatRes = await fetch(`http://127.0.0.1:${actualPort}/v1/chat/completions`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            Authorization: `Bearer ${currentConfig.clientToken}`,
+                        },
+                        signal: AbortSignal.timeout(60_000),
+                        body: JSON.stringify({
+                            model: body.model || 'auto',
+                            messages: [{ role: 'user', content: body.prompt || 'Hello' }],
+                            ...(body.responseFormat === 'json_object'
+                                ? { response_format: { type: 'json_object' } }
+                                : {}),
+                        }),
+                    });
+                    const data = (await chatRes.json());
+                    if (!chatRes.ok) {
+                        sendJson(res, chatRes.status, data);
+                        return;
+                    }
+                    const choices = Array.isArray(data.choices) ? data.choices : [];
+                    const firstChoice = (choices[0] ?? {});
+                    const message = (firstChoice.message ?? {});
+                    sendJson(res, 200, {
+                        content: typeof message.content === 'string' ? message.content : JSON.stringify(data),
+                        backend: chatRes.headers.get('x-nidoai-backend') ?? 'unknown',
+                        model: chatRes.headers.get('x-nidoai-model') ?? (body.model || 'auto'),
+                        ttftMs: Number(chatRes.headers.get('x-nidoai-ttft-ms') ?? 0),
+                        totalMs: Number(chatRes.headers.get('x-nidoai-total-ms') ?? 0),
+                    });
+                }
+                catch (err) {
+                    sendJson(res, 500, {
+                        error: { message: err instanceof Error ? err.message : 'Playground call failed' },
+                    });
+                }
+                return;
+            }
+            if (method === 'POST' && pathname === '/api/admin/codex/thread/start') {
+                try {
+                    const { text: raw } = await readRequestBody(req);
+                    const body = JSON.parse(raw || '{}');
+                    const worker = await ensureCodexWorker(body.cwd);
+                    const thread = await worker.startThread({ cwd: codexWorkerCwd });
+                    activeCodexThreadId = thread.threadId;
+                    sendJson(res, 200, {
+                        threadId: thread.threadId,
+                        cwd: thread.cwd,
+                        handshakeMs: worker.handshakeMs,
+                    });
+                }
+                catch (err) {
+                    sendJson(res, 500, {
+                        error: { message: err instanceof Error ? err.message : 'Codex startThread failed' },
+                    });
+                }
+                return;
+            }
+            if (method === 'POST' && pathname === '/api/admin/codex/thread/resume') {
+                try {
+                    const { text: raw } = await readRequestBody(req);
+                    const body = JSON.parse(raw || '{}');
+                    if (!body.threadId || !body.threadId.trim()) {
+                        sendJson(res, 400, { error: { message: 'threadId is required to resume a session.' } });
+                        return;
+                    }
+                    const worker = await ensureCodexWorker(body.cwd);
+                    const resumed = await worker.resumeThread({
+                        threadId: body.threadId.trim(),
+                        cwd: codexWorkerCwd,
+                    });
+                    activeCodexThreadId = resumed.threadId;
+                    sendJson(res, 200, {
+                        threadId: resumed.threadId,
+                        cwd: resumed.cwd,
+                    });
+                }
+                catch (err) {
+                    sendJson(res, 500, {
+                        error: { message: err instanceof Error ? err.message : 'Codex resumeThread failed' },
+                    });
+                }
+                return;
+            }
+            if (method === 'POST' && pathname === '/api/admin/codex/turn/run') {
+                try {
+                    const { text: raw } = await readRequestBody(req);
+                    const body = JSON.parse(raw || '{}');
+                    const worker = await ensureCodexWorker(body.cwd);
+                    let targetThreadId = body.threadId?.trim() || activeCodexThreadId;
+                    if (!targetThreadId) {
+                        const started = await worker.startThread({ cwd: codexWorkerCwd });
+                        targetThreadId = started.threadId;
+                    }
+                    activeCodexThreadId = targetThreadId;
+                    const turnResult = await worker.runTurn({
+                        threadId: targetThreadId,
+                        text: body.text || 'Say READY.',
+                        effort: 'low',
+                    });
+                    recordLog({
+                        timestamp: new Date().toISOString(),
+                        requestId,
+                        method,
+                        path: pathname,
+                        status: 200,
+                        backend: 'codex-app-server',
+                        model: 'codex',
+                        ttftMs: turnResult.ttftMs ?? undefined,
+                        totalMs: turnResult.totalMs,
+                    });
+                    sendJson(res, 200, turnResult);
+                }
+                catch (err) {
+                    sendJson(res, 500, {
+                        error: { message: err instanceof Error ? err.message : 'Codex runTurn failed' },
+                    });
+                }
+                return;
+            }
+            if (method === 'POST' && pathname === '/api/admin/codex/turn/interrupt') {
+                try {
+                    const { text: raw } = await readRequestBody(req);
+                    const body = JSON.parse(raw || '{}');
+                    const targetThreadId = body.threadId?.trim() || activeCodexThreadId;
+                    if (!codexWorker || !targetThreadId) {
+                        sendJson(res, 400, { error: { message: 'No active Codex thread to interrupt.' } });
+                        return;
+                    }
+                    const turnId = body.turnId?.trim() || codexWorker.getActiveTurnId(targetThreadId);
+                    if (!turnId) {
+                        sendJson(res, 400, { error: { message: 'No active turn in flight on this thread.' } });
+                        return;
+                    }
+                    const out = await codexWorker.interruptTurn({ threadId: targetThreadId, turnId });
+                    sendJson(res, 200, out);
+                }
+                catch (err) {
+                    sendJson(res, 500, {
+                        error: { message: err instanceof Error ? err.message : 'Codex interruptTurn failed' },
+                    });
+                }
+                return;
+            }
+            sendJson(res, 404, { error: { message: `Unknown admin route ${method} ${pathname}` } });
+            return;
+        }
+        // 1. GET /healthz
+        if ((method === 'GET' || method === 'HEAD') && pathname === '/healthz') {
+            const primary = currentConfig.backends[currentConfig.primaryBackend];
+            const localProbe = currentConfig.backends.local.configured && method === 'GET'
+                ? await probeLocalBackendReachability(currentConfig.backends.local.baseUrl, {
+                    apiKey: currentConfig.backends.local.apiKey,
+                })
+                : null;
+            const primaryReachable = primary.kind === 'local'
+                ? primary.configured && Boolean(localProbe?.reachable)
+                : primary.configured;
+            const secretStoreMode = currentConfig.secretStoreMode ?? 'file-0600-fallback';
+            const totalMs = Math.round(performance.now() - requestStartMs);
+            sendJson(res, 200, {
+                status: 'ok',
+                version: PKG_VERSION,
+                bind: `${currentConfig.host}:${actualPort}`,
+                primaryBackend: {
+                    kind: primary.kind,
+                    configured: primary.kind === 'local' ? primaryReachable : primary.configured,
+                    configuredRaw: primary.configured,
+                    reachable: primaryReachable,
+                    defaultModel: primary.defaultModel,
+                },
+                failoverBackend: currentConfig.allowCrossProviderFailover
+                    ? currentConfig.failoverBackend
+                    : null,
+                allowCrossProviderFailover: currentConfig.allowCrossProviderFailover,
+                capabilities: {
+                    vision: true,
+                    streaming: true,
+                    jsonObject: true,
+                    backends: CHAT_BACKEND_KINDS,
+                },
+                secretStore: {
+                    mode: secretStoreMode,
+                    label: formatSecretStoreLabel(secretStoreMode),
+                },
+                supportedEndpoints: ['GET /healthz', 'GET /v1/models', 'POST /v1/chat/completions'],
+                supportedChatFields: SUPPORTED_CHAT_COMPLETION_FIELDS,
+            });
+            recordLog({
+                timestamp: new Date().toISOString(),
+                requestId,
+                method,
+                path: pathname,
+                status: 200,
+                totalMs,
+            });
+            return;
+        }
+        // 1b. GET /v1/models (Standard OpenAI-compatible model discovery for unmodified apps)
+        if ((method === 'GET' || method === 'HEAD') && pathname === '/v1/models') {
+            if (!timingSafeBearerMatch(req.headers.authorization, currentConfig.clientToken)) {
+                const totalMs = Math.round(performance.now() - requestStartMs);
+                sendJson(res, 401, {
+                    error: {
+                        type: 'authentication_error',
+                        code: 'invalid_client_token',
+                        message: 'Missing or invalid NidoAI client bearer token.',
+                    },
+                });
+                recordLog({
+                    timestamp: new Date().toISOString(),
+                    requestId,
+                    method,
+                    path: pathname,
+                    status: 401,
+                    totalMs,
+                });
+                return;
+            }
+            const nowSec = Math.floor(Date.now() / 1000);
+            const primary = currentConfig.backends[currentConfig.primaryBackend];
+            const localProbe = method === 'GET' && currentConfig.backends.local.configured
+                ? await probeLocalBackendReachability(currentConfig.backends.local.baseUrl, {
+                    apiKey: currentConfig.backends.local.apiKey,
+                })
+                : null;
+            const localReachable = Boolean(localProbe?.reachable);
+            const isBackendReady = (kind) => {
+                const b = currentConfig.backends[kind];
+                return kind === 'local' ? b.configured && localReachable : b.configured;
+            };
+            const modelsList = [
+                {
+                    id: 'auto',
+                    object: 'model',
+                    created: nowSec,
+                    owned_by: 'nidoai',
+                    configured: isBackendReady(currentConfig.primaryBackend),
+                    reachable: isBackendReady(currentConfig.primaryBackend),
+                },
+                {
+                    id: `${currentConfig.primaryBackend}/${primary.defaultModel}`,
+                    object: 'model',
+                    created: nowSec,
+                    owned_by: currentConfig.primaryBackend,
+                    configured: isBackendReady(currentConfig.primaryBackend),
+                    reachable: isBackendReady(currentConfig.primaryBackend),
+                },
+                {
+                    id: primary.defaultModel,
+                    object: 'model',
+                    created: nowSec,
+                    owned_by: currentConfig.primaryBackend,
+                    configured: isBackendReady(currentConfig.primaryBackend),
+                    reachable: isBackendReady(currentConfig.primaryBackend),
+                },
+            ];
+            const seenIds = new Set(modelsList.map((m) => m.id));
+            for (const kind of CHAT_BACKEND_KINDS) {
+                const b = currentConfig.backends[kind];
+                const prefixedId = `${kind}/${b.defaultModel}`;
+                if (!seenIds.has(prefixedId)) {
+                    seenIds.add(prefixedId);
+                    modelsList.push({
+                        id: prefixedId,
+                        object: 'model',
+                        created: nowSec,
+                        owned_by: kind,
+                        configured: isBackendReady(kind),
+                        reachable: isBackendReady(kind),
+                    });
+                }
+            }
+            if (method === 'GET' && isBackendReady(currentConfig.primaryBackend)) {
+                try {
+                    const modelHeaders = primary.kind === 'anthropic'
+                        ? {
+                            'x-api-key': primary.apiKey,
+                            'anthropic-version': ANTHROPIC_API_VERSION,
+                        }
+                        : { Authorization: `Bearer ${primary.apiKey}` };
+                    const upRes = await fetch(`${primary.baseUrl}/models`, {
+                        method: 'GET',
+                        headers: modelHeaders,
+                        signal: AbortSignal.timeout(3000),
+                    });
+                    if (upRes.ok) {
+                        const upJson = (await upRes.json());
+                        if (Array.isArray(upJson.data)) {
+                            for (const item of upJson.data) {
+                                if (typeof item?.id === 'string' && item.id.trim() && !seenIds.has(item.id.trim())) {
+                                    const id = item.id.trim();
+                                    seenIds.add(id);
+                                    modelsList.push({
+                                        id,
+                                        object: 'model',
+                                        created: typeof item.created === 'number' ? item.created : nowSec,
+                                        owned_by: typeof item.owned_by === 'string'
+                                            ? item.owned_by
+                                            : currentConfig.primaryBackend,
+                                        configured: true,
+                                        reachable: true,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+                catch {
+                    // Fallback gracefully to static model list if upstream /models fails or times out
+                }
+            }
+            const totalMs = Math.round(performance.now() - requestStartMs);
+            sendJson(res, 200, { object: 'list', data: modelsList });
+            recordLog({
+                timestamp: new Date().toISOString(),
+                requestId,
+                method,
+                path: pathname,
+                status: 200,
+                totalMs,
+            });
+            return;
+        }
+        // 2. POST /v1/chat/completions
+        if (method === 'POST' && pathname === '/v1/chat/completions') {
+            if (!timingSafeBearerMatch(req.headers.authorization, currentConfig.clientToken)) {
+                const totalMs = Math.round(performance.now() - requestStartMs);
+                sendJson(res, 401, {
+                    error: {
+                        type: 'authentication_error',
+                        code: 'invalid_client_token',
+                        message: 'Missing or invalid NidoAI client bearer token.',
+                    },
+                });
+                recordLog({
+                    timestamp: new Date().toISOString(),
+                    requestId,
+                    method,
+                    path: pathname,
+                    status: 401,
+                    totalMs,
+                });
+                return;
+            }
+            let parsedBody;
+            let rawByteLength = 0;
+            try {
+                const readRes = await readRequestBody(req, MAX_MULTIMODAL_BODY_BYTES);
+                rawByteLength = readRes.byteLength;
+                parsedBody = JSON.parse(readRes.text);
+            }
+            catch (err) {
+                const totalMs = Math.round(performance.now() - requestStartMs);
+                const isTooLarge = err instanceof PayloadTooLargeError;
+                const errStatus = isTooLarge ? 413 : 400;
+                sendJson(res, errStatus, {
+                    error: {
+                        type: 'invalid_request_error',
+                        code: isTooLarge ? 'payload_too_large' : 'invalid_json',
+                        message: isTooLarge
+                            ? `Request body exceeds maximum ${MAX_MULTIMODAL_BODY_BYTES} bytes limit.`
+                            : 'Request body must be valid JSON.',
+                        supportedFields: SUPPORTED_CHAT_COMPLETION_FIELDS,
+                    },
+                });
+                recordLog({
+                    timestamp: new Date().toISOString(),
+                    requestId,
+                    method,
+                    path: pathname,
+                    status: errStatus,
+                    totalMs,
+                });
+                return;
+            }
+            const validation = validateChatCompletionRequest(parsedBody);
+            if (!validation.ok) {
+                const totalMs = Math.round(performance.now() - requestStartMs);
+                sendJson(res, validation.status, { error: validation.error });
+                recordLog({
+                    timestamp: new Date().toISOString(),
+                    requestId,
+                    method,
+                    path: pathname,
+                    status: validation.status,
+                    totalMs,
+                });
+                return;
+            }
+            const reqData = validation.data;
+            if (rawByteLength > MAX_TEXT_BODY_BYTES && !hasMultimodalContent(reqData.messages)) {
+                const totalMs = Math.round(performance.now() - requestStartMs);
+                sendJson(res, 413, {
+                    error: {
+                        type: 'invalid_request_error',
+                        code: 'payload_too_large',
+                        message: `Text-only request body exceeds ${MAX_TEXT_BODY_BYTES} bytes limit (up to ${MAX_MULTIMODAL_BODY_BYTES} bytes allowed for multimodal image_url payloads).`,
+                        supportedFields: SUPPORTED_CHAT_COMPLETION_FIELDS,
+                    },
+                });
+                recordLog({
+                    timestamp: new Date().toISOString(),
+                    requestId,
+                    method,
+                    path: pathname,
+                    status: 413,
+                    totalMs,
+                });
+                return;
+            }
+            const wantStream = reqData.stream === true;
+            const { candidates, allowFailover } = selectBackendsForRequest(reqData, currentConfig);
+            let lastResult = null;
+            let failoverUsed = false;
+            for (let i = 0; i < candidates.length; i++) {
+                const candidate = candidates[i];
+                if (i > 0)
+                    failoverUsed = true;
+                const result = await executeUpstreamCall(candidate, reqData, wantStream, res, requestId, requestStartMs);
+                lastResult = result;
+                if (result.ok) {
+                    recordLog({
+                        timestamp: new Date().toISOString(),
+                        requestId,
+                        method,
+                        path: pathname,
+                        status: 200,
+                        backend: candidate.kind,
+                        model: result.model,
+                        stream: wantStream,
+                        ttftMs: result.ttftMs,
+                        totalMs: result.totalMs,
+                        failoverUsed,
+                    });
+                    return;
+                }
+                // Never fail over if stream bytes were already emitted to the client
+                if (result.emittedStreamBytes) {
+                    recordLog({
+                        timestamp: new Date().toISOString(),
+                        requestId,
+                        method,
+                        path: pathname,
+                        status: 502,
+                        backend: candidate.kind,
+                        model: result.model,
+                        stream: wantStream,
+                        ttftMs: result.ttftMs,
+                        totalMs: result.totalMs,
+                        failoverUsed,
+                    });
+                    return;
+                }
+                // Stop if failover is not permitted for this request or if the error is non-retriable (e.g. 400, 401, 403, 404)
+                if (!allowFailover || !result.retriableForFailover) {
+                    break;
+                }
+            }
+            const finalStatus = lastResult?.status ?? 502;
+            const totalMs = Math.round(performance.now() - requestStartMs);
+            sendJson(res, finalStatus, lastResult?.errorPayload ?? {
+                error: {
+                    type: 'upstream_error',
+                    message: 'Upstream request failed before streaming content.',
+                },
+            });
+            recordLog({
+                timestamp: new Date().toISOString(),
+                requestId,
+                method,
+                path: pathname,
+                status: finalStatus,
+                backend: candidates[failoverUsed ? candidates.length - 1 : 0]?.kind,
+                model: lastResult?.model,
+                stream: wantStream,
+                totalMs,
+                failoverUsed,
+            });
+            return;
+        }
+        const totalMs = Math.round(performance.now() - requestStartMs);
+        sendJson(res, 404, {
+            error: {
+                type: 'not_found',
+                message: `Unsupported endpoint '${method} ${pathname}'. Supported: GET /healthz, GET /v1/models, POST /v1/chat/completions`,
+            },
+        });
+        recordLog({
+            timestamp: new Date().toISOString(),
+            requestId,
+            method,
+            path: pathname,
+            status: 404,
+            totalMs,
+        });
+    });
+    return new Promise((resolve, reject) => {
+        server.once('error', reject);
+        server.listen(currentConfig.port, '127.0.0.1', () => {
+            const addr = server.address();
+            actualPort = typeof addr === 'object' && addr ? addr.port : currentConfig.port;
+            // Persistent error handler (replaces the once('error') from promise setup)
+            server.removeAllListeners('error');
+            server.on('error', (err) => {
+                console.error(JSON.stringify({ event: 'server_error', error: err.message, timestamp: new Date().toISOString() }));
+            });
+            if (options.writeRuntimeDiscovery) {
+                const primary = currentConfig.backends[currentConfig.primaryBackend];
+                writeRuntimeDiscovery({
+                    baseUrl: `http://127.0.0.1:${actualPort}`,
+                    clientToken: currentConfig.clientToken,
+                    capabilities: {
+                        vision: true,
+                        streaming: true,
+                        jsonObject: true,
+                        primaryBackend: primary.kind,
+                        primaryConfigured: primary.configured,
+                        primaryReachable: primary.kind === 'local' ? false : primary.configured,
+                        secretStoreMode: currentConfig.secretStoreMode,
+                    },
+                });
+            }
+            resolve({
+                server,
+                host: '127.0.0.1',
+                port: actualPort,
+                close: async () => {
+                    if (codexWorker) {
+                        await codexWorker.stop();
+                        codexWorker = null;
+                    }
+                    await new Promise((resClose, rejClose) => {
+                        server.close((err) => (err ? rejClose(err) : resClose()));
+                    });
+                },
+            });
+        });
+    });
+}

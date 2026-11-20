@@ -1,0 +1,16 @@
+#!/bin/sh
+set -e
+
+if [ "${1:-}" = "configure" ] && [ -x /usr/lib/nidooffice-desktop/install-runtime.sh ]; then
+  /usr/lib/nidooffice-desktop/install-runtime.sh
+fi
+
+# Enable socket-activated pcscd for USB Token / SmartCard digital signatures (0 MB idle RAM)
+if [ "${1:-}" = "configure" ] && command -v systemctl >/dev/null 2>&1; then
+  systemctl enable pcscd.socket >/dev/null 2>&1 || true
+  if [ -d /run/systemd/system ]; then
+    systemctl start pcscd.socket >/dev/null 2>&1 || true
+  fi
+fi
+
+exit 0

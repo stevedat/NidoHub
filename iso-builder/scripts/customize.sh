@@ -104,14 +104,14 @@ step_customize() {
 
   sanitize_chroot_apt_sources
 
-  # Rewrite APT mirror ONLY on amd64; arm64 must keep ports.ubuntu.com
+  # Rewrite archive mirror ONLY on amd64; NEVER rewrite security.ubuntu.com (keep upstream security direct)
+  # and NEVER touch ports.ubuntu.com on arm64.
   chroot "$WORK_DIR/squashfs" /bin/bash -c '
     ARCH="$(dpkg --print-architecture)"
     if [ "$ARCH" = "amd64" ] && [ "${USE_VN_MIRROR:-1}" = "1" ]; then
       for f in /etc/apt/sources.list /etc/apt/sources.list.d/ubuntu.sources; do
         if [ -f "$f" ]; then
           sed -i "s|http://archive.ubuntu.com/ubuntu|https://mirror.bizflycloud.vn/ubuntu|g" "$f"
-          sed -i "s|http://security.ubuntu.com/ubuntu|https://mirror.bizflycloud.vn/ubuntu|g" "$f"
         fi
       done
     fi
@@ -233,6 +233,15 @@ step_customize() {
     test -x /usr/bin/nido-hub
     test -x /usr/bin/nidooffice
     test -x /usr/bin/nidooffice-desktop
+    test -x /usr/bin/pkcs11-helper
+    /usr/bin/pkcs11-helper --self-test >/dev/null
+    test -x /usr/libexec/nido-hub/nido-pkg-helper
+    test -f /usr/lib/nido-hub/ai_discovery.py
+    test -f /usr/lib/nido-hub/agent_accounts.py
+    test -f /usr/lib/nido-hub/app_store.py
+    test -f /usr/lib/nido-hub/markdown_render.py
+    test -f /usr/lib/systemd/system/nido-native-first-cleanup.service
+    /usr/bin/nido-hub --self-test >/dev/null
     test -x /usr/local/bin/genoffice
     test -x /opt/NidoOffice/genoffice
     test -f /usr/share/applications/nidooffice.desktop
@@ -240,9 +249,22 @@ step_customize() {
     grep -q "{nidooffice,genoffice}" /etc/apparmor.d/nidooffice
     grep -q -- "--enable-wayland-ime" /usr/bin/nidooffice-desktop
     dpkg -s nido-desktop >/dev/null 2>&1
+    dpkg -s nidooffice-desktop >/dev/null 2>&1
+    dpkg -s pcscd >/dev/null 2>&1
+    dpkg -s libccid >/dev/null 2>&1
+    dpkg -s opensc >/dev/null 2>&1
+    dpkg -s opensc-pkcs11 >/dev/null 2>&1
+    dpkg -s libnss3-tools >/dev/null 2>&1
+    dpkg -s libsecret-tools >/dev/null 2>&1
     dpkg -s ubuntu-desktop-minimal >/dev/null 2>&1
+    dpkg -s unattended-upgrades >/dev/null 2>&1
+    dpkg -s fwupd >/dev/null 2>&1
+    dpkg -s flatpak >/dev/null 2>&1
+    dpkg -s firefox >/dev/null 2>&1
     dpkg -s vielotus >/dev/null 2>&1
     dpkg -s nidobox >/dev/null 2>&1
+    dpkg --compare-versions "$(dpkg-query -W -f="\${Version}" nidobox)" ge "1.4.7"
+    dpkg -s showtime >/dev/null 2>&1 || dpkg -s totem >/dev/null 2>&1
     ! dpkg -s fcitx5 >/dev/null 2>&1
     ! dpkg -s libreoffice-core >/dev/null 2>&1
     ! dpkg -s rhythmbox >/dev/null 2>&1

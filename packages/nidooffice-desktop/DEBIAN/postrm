@@ -1,0 +1,16 @@
+#!/bin/sh
+set -e
+
+if [ "${1:-}" = "purge" ]; then
+  rm -rf /opt/NidoOffice /opt/GenOffice
+  rm -f /usr/local/bin/genoffice
+  rm -f \
+    "/usr/share/templates/Tài liệu Word.docx" \
+    "/usr/share/templates/Bảng tính Excel.xlsx" \
+    "/usr/share/templates/Trình chiếu PowerPoint.pptx"
+  if command -v apparmor_parser >/dev/null 2>&1 && [ -f /etc/apparmor.d/nidooffice ]; then
+    apparmor_parser -R /etc/apparmor.d/nidooffice >/dev/null 2>&1 || true
+  fi
+fi
+
+exit 0

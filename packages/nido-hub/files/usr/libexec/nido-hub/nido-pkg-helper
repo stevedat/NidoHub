@@ -1,0 +1,569 @@
+#!/usr/bin/env python3
+"""Narrowly scoped privileged package helper invoked via Polkit (pkexec) by NidoHub.
+
+Security guarantees:
+- Never executes arbitrary shell commands or `sh -c`.
+- Strictly validates Debian package names and allowlisted official vendor IDs.
+- Verifies exact GPG key fingerprints before writing keyrings to /etc/apt/keyrings/.
+- Writes DEB822 .sources files with Signed-By and package-specific APT pinning
+  so third-party vendor repositories cannot hijack unrelated Ubuntu system packages.
+- Blocks removal of protected core Ubuntu / desktop / security / Nido packages.
+- Emits structured progress lines (`NIDO_PROGRESS:<phase>:<pct>:<safe_to_cancel>:<msg>`)
+  and switches `safe_to_cancel` to 0 during dpkg commit phases.
+"""
+
+from __future__ import annotations
+
+import argparse
+import fnmatch
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import urllib.request
+from pathlib import Path
+from typing import Any
+
+PKG_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9+.-]{0,127}$")
+
+PROTECTED_PACKAGES = frozenset(
+    {
+        "apt",
+        "base-files",
+        "bash",
+        "ca-certificates",
+        "coreutils",
+        "dbus",
+        "dpkg",
+        "fwupd",
+        "gdm3",
+        "gnome-shell",
+        "ibus",
+        "init",
+        "libc6",
+        "linux-generic",
+        "mutter",
+        "nautilus",
+        "network-manager",
+        "nido-desktop",
+        "nido-desktop-settings",
+        "nido-hub",
+        "nidoagent-cli",
+        "nidoai-gateway",
+        "pipewire",
+        "polkitd",
+        "snapd",
+        "sudo",
+        "systemd",
+        "systemd-sysv",
+        "ubuntu-desktop-minimal",
+        "ubuntu-minimal",
+        "ubuntu-standard",
+        "unattended-upgrades",
+        "vielotus",
+    }
+)
+
+DEFAULT_VENDORS_PATH = Path("/usr/share/nido-hub/vendors.json")
+FLATHUB_REPO_URL = "https://dl.flathub.org/repo/flathub.flatpakrepo"
+
+
+def emit_progress(phase: str, pct: int, safe_to_cancel: bool, message: str) -> None:
+    clamped = max(0, min(100, int(pct)))
+    flag = "1" if safe_to_cancel else "0"
+    clean_msg = message.replace("\n", " ").strip()
+    print(f"NIDO_PROGRESS:{phase}:{clamped}:{flag}:{clean_msg}", flush=True)
+
+
+def validate_pkg_names(pkgs: list[str]) -> list[str]:
+    if not pkgs:
+        raise ValueError("No package names specified.")
+    validated: list[str] = []
+    for raw in pkgs:
+        name = raw.strip()
+        if not PKG_NAME_RE.match(name):
+            raise ValueError(f"Invalid Debian package name: {raw!r}")
+        validated.append(name)
+    return validated
+
+
+def detect_host_arch() -> str:
+    env_arch = os.environ.get("NIDO_PKG_ARCH", "").strip()
+    if env_arch:
+        return env_arch
+    dpkg = shutil.which("dpkg")
+    if dpkg:
+        res = subprocess.run([dpkg, "--print-architecture"], capture_output=True, text=True, check=False)
+        if res.returncode == 0 and res.stdout.strip():
+            return res.stdout.strip()
+    machine = os.uname().machine.lower()
+    if machine in ("x86_64", "amd64"):
+        return "amd64"
+    if machine in ("aarch64", "arm64"):
+        return "arm64"
+    return machine
+
+
+def detect_ubuntu_codename(root_dir: Path) -> str:
+    env_codename = os.environ.get("NIDO_UBUNTU_CODENAME", "").strip()
+    if env_codename:
+        return env_codename
+    for rel in ("etc/os-release", "usr/lib/os-release"):
+        p = root_dir / rel
+        if p.is_file():
+            for line in p.read_text(encoding="utf-8", errors="replace").splitlines():
+                if line.startswith("UBUNTU_CODENAME=") or line.startswith("VERSION_CODENAME="):
+                    val = line.split("=", 1)[1].strip().strip("\"'")
+                    if val and re.match(r"^[a-z0-9-]+$", val):
+                        return val
+    return "resolute"
+
+
+def load_vendors(vendors_path: Path) -> dict[str, dict[str, Any]]:
+    data = json.loads(vendors_path.read_text(encoding="utf-8"))
+    vendors = data.get("vendors", {})
+    if not isinstance(vendors, dict):
+        raise ValueError(f"Invalid vendors registry format: {vendors_path}")
+    return vendors
+
+
+def extract_gpg_fingerprints(key_bytes: bytes) -> list[str]:
+    gpg = shutil.which("gpg")
+    if not gpg:
+        raise RuntimeError("gpg is required to verify vendor signing keys.")
+    res = subprocess.run(
+        [gpg, "--show-keys", "--with-colons"],
+        input=key_bytes,
+        capture_output=True,
+        check=False,
+    )
+    if res.returncode != 0:
+        raise RuntimeError(f"Failed to inspect GPG key: {res.stderr.decode(errors='replace').strip()}")
+    fprs: list[str] = []
+    for line in res.stdout.decode(errors="replace").splitlines():
+        if line.startswith("fpr:"):
+            parts = line.split(":")
+            if len(parts) > 9 and parts[9]:
+                fprs.append(parts[9].upper())
+    return fprs
+
+
+def verify_and_dearmor_key(key_bytes: bytes, expected_fingerprints: list[str]) -> bytes:
+    actual = extract_gpg_fingerprints(key_bytes)
+    expected_set = {f.upper() for f in expected_fingerprints if f}
+    if not actual or not any(f in expected_set for f in actual):
+        raise RuntimeError(
+            f"Vendor GPG fingerprint verification failed! Expected one of {sorted(expected_set)}, got {actual}"
+        )
+    gpg = shutil.which("gpg")
+    if not gpg:
+        raise RuntimeError("gpg is required to dearmor vendor signing keys.")
+    if b"-----BEGIN PGP PUBLIC KEY BLOCK-----" in key_bytes:
+        res = subprocess.run(
+            [gpg, "--dearmor"],
+            input=key_bytes,
+            capture_output=True,
+            check=False,
+        )
+        if res.returncode != 0 or not res.stdout:
+            raise RuntimeError(f"gpg --dearmor failed: {res.stderr.decode(errors='replace').strip()}")
+        return res.stdout
+    return key_bytes
+
+
+def render_deb822_source(
+    vendor: dict[str, Any],
+    keyring_path_target: str,
+    host_arch: str,
+    codename: str,
+) -> str:
+    suites = [str(s).replace("{codename}", codename) for s in vendor.get("suites", [])]
+    components = [str(c) for c in vendor.get("components", [])]
+    return (
+        "Types: deb\n"
+        f"URIs: {vendor['uri']}\n"
+        f"Suites: {' '.join(suites)}\n"
+        f"Components: {' '.join(components)}\n"
+        f"Architectures: {host_arch}\n"
+        f"Signed-By: {keyring_path_target}\n"
+    )
+
+
+def render_apt_pin(vendor: dict[str, Any]) -> str:
+    origin = str(vendor["pinOrigin"])
+    allowed = " ".join(str(p) for p in vendor.get("allowedPackages", []))
+    prio = int(vendor.get("pinPriority", 500))
+    blocks = [
+        f"# Package-specific APT pinning for {vendor['name']} (managed by NidoHub)\n"
+        "Package: *\n"
+        f"Pin: origin {origin}\n"
+        "Pin-Priority: 100\n",
+        f"Package: {allowed}\n"
+        f"Pin: origin {origin}\n"
+        f"Pin-Priority: {prio}\n",
+    ]
+    blocked_ubuntu = vendor.get("blockUbuntuPackage")
+    if isinstance(blocked_ubuntu, str) and blocked_ubuntu.strip():
+        blocks.append(
+            f"# Prevent Ubuntu transitional Snap wrapper for {blocked_ubuntu}\n"
+            f"Package: {blocked_ubuntu.strip()}\n"
+            "Pin: release o=Ubuntu*\n"
+            "Pin-Priority: -1\n"
+        )
+    return "\n".join(blocks)
+
+
+def atomic_write_bytes(path: Path, data: bytes, mode: int = 0o644) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.")
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+        os.chmod(tmp_name, mode)
+        os.replace(tmp_name, path)
+        os.chmod(path, mode)
+    finally:
+        if os.path.exists(tmp_name):
+            os.unlink(tmp_name)
+
+
+def setup_vendor_repo(
+    vendor_id: str,
+    vendors_path: Path,
+    root_dir: Path,
+    key_file_override: Path | None = None,
+) -> dict[str, Any]:
+    vendors = load_vendors(vendors_path)
+    if vendor_id not in vendors:
+        raise ValueError(f"Unsupported or untrusted vendor ID: {vendor_id}")
+    vendor = vendors[vendor_id]
+    host_arch = detect_host_arch()
+    codename = detect_ubuntu_codename(root_dir)
+
+    emit_progress("vendor-key", 10, True, f"Đang xác thực khóa ký GPG của {vendor['name']}...")
+    if key_file_override is not None:
+        raw_key = key_file_override.read_bytes()
+    else:
+        req = urllib.request.Request(
+            vendor["keyUrl"],
+            headers={"User-Agent": "NidoHub-PkgHelper/1.0"},
+        )
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            raw_key = resp.read()
+
+    dearmored_key = verify_and_dearmor_key(raw_key, list(vendor["expectedFingerprints"]))
+    keyring_rel = f"etc/apt/keyrings/nido-vendor-{vendor_id}.gpg"
+    keyring_host_path = root_dir / keyring_rel
+    keyring_target_str = f"/{keyring_rel}"
+    atomic_write_bytes(keyring_host_path, dearmored_key, mode=0o644)
+
+    source_text = render_deb822_source(vendor, keyring_target_str, host_arch, codename)
+    source_path = root_dir / f"etc/apt/sources.list.d/nido-vendor-{vendor_id}.sources"
+    atomic_write_bytes(source_path, source_text.encode("utf-8"), mode=0o644)
+
+    pin_text = render_apt_pin(vendor)
+    pin_path = root_dir / f"etc/apt/preferences.d/nido-vendor-{vendor_id}"
+    atomic_write_bytes(pin_path, pin_text.encode("utf-8"), mode=0o644)
+
+    suppress = vendor.get("suppressVendorSelfSource")
+    if suppress == "google-chrome":
+        default_chrome = root_dir / "etc/default/google-chrome"
+        atomic_write_bytes(
+            default_chrome,
+            b'repo_add_once="false"\nrepo_reenable_on_distupgrade="false"\n',
+            mode=0o644,
+        )
+    elif suppress == "vscode" and root_dir == Path("/"):
+        debconf_sel = shutil.which("debconf-set-selections")
+        if debconf_sel:
+            subprocess.run(
+                [debconf_sel],
+                input="code code/add-microsoft-repo boolean false\n",
+                text=True,
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+
+    emit_progress("vendor-ready", 25, True, f"Đã cấu hình kho chính chủ {vendor['name']} ({host_arch}).")
+    return vendor
+
+
+def _run_apt_streaming(argv: list[str], phase_label: str, start_pct: int, end_pct: int) -> int:
+    env = dict(os.environ)
+    env["DEBIAN_FRONTEND"] = "noninteractive"
+    env["LC_ALL"] = "C.UTF-8"
+
+    proc = subprocess.Popen(
+        argv,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+        env=env,
+    )
+    assert proc.stdout is not None
+    cur_pct = start_pct
+    safe_cancel = True
+
+    for raw_line in proc.stdout:
+        line = raw_line.strip()
+        if not line:
+            continue
+        low = line.lower()
+        # Once dpkg begins unpacking/configuring/removing, disallow unsafe cancellation
+        if any(
+            marker in low
+            for marker in (
+                "unpacking ",
+                "setting up ",
+                "removing ",
+                "purging ",
+                "processing triggers",
+                "preparing to unpack",
+            )
+        ):
+            safe_cancel = False
+            cur_pct = min(end_pct - 2, max(cur_pct + 4, (start_pct + end_pct) // 2))
+        elif line.startswith(("Get:", "Hit:", "Ign:", "Fetched ")):
+            cur_pct = min((start_pct + end_pct) // 2, cur_pct + 2)
+        emit_progress(phase_label, cur_pct, safe_cancel, line[:180])
+
+    rc = proc.wait()
+    if rc == 0:
+        emit_progress(phase_label, end_pct, False, "Hoàn tất thao tác APT.")
+    return rc
+
+
+def run_apt_update() -> int:
+    emit_progress("apt-update", 28, True, "Đang cập nhật chỉ mục kho gói APT...")
+    return _run_apt_streaming(
+        ["apt-get", "-o", "DPkg::Lock::Timeout=120", "update"],
+        "apt-update",
+        28,
+        45,
+    )
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="NidoHub narrowly scoped package helper")
+    parser.add_argument("--vendors-file", type=Path, default=DEFAULT_VENDORS_PATH)
+    parser.add_argument("--root", type=Path, default=Path("/"))
+    parser.add_argument("--key-file", type=Path, default=None)
+    parser.add_argument("--dry-run", action="store_true")
+
+    sub = parser.add_subparsers(dest="action", required=True)
+
+    p_inst = sub.add_parser("install-apt")
+    p_inst.add_argument("packages", nargs="+")
+
+    p_rem = sub.add_parser("remove-apt")
+    p_rem.add_argument("packages", nargs="+")
+
+    sub.add_parser("upgrade-apt")
+    sub.add_parser("repair-apt")
+
+    p_sv = sub.add_parser("setup-vendor")
+    p_sv.add_argument("vendor_id")
+
+    p_iv = sub.add_parser("install-vendor")
+    p_iv.add_argument("vendor_id")
+    p_iv.add_argument("packages", nargs="+")
+
+    p_ld = sub.add_parser("install-local-deb")
+    p_ld.add_argument("deb_path")
+
+    sub.add_parser("ensure-flathub")
+
+    args = parser.parse_args(argv)
+
+    try:
+        if args.action == "setup-vendor":
+            setup_vendor_repo(args.vendor_id, args.vendors_file, args.root, args.key_file)
+            emit_progress("done", 100, False, f"Đã thiết lập kho {args.vendor_id}.")
+            return 0
+
+        if args.action == "install-vendor":
+            pkgs = validate_pkg_names(args.packages)
+            vendors = load_vendors(args.vendors_file)
+            if args.vendor_id not in vendors:
+                raise ValueError(f"Unsupported vendor ID: {args.vendor_id}")
+            allowed_globs = [str(g) for g in vendors[args.vendor_id].get("allowedPackages", [])]
+            for pkg in pkgs:
+                if not any(fnmatch.fnmatchcase(pkg, pat) for pat in allowed_globs):
+                    raise ValueError(
+                        f"Package '{pkg}' is not allowlisted for vendor '{args.vendor_id}'"
+                    )
+            setup_vendor_repo(args.vendor_id, args.vendors_file, args.root, args.key_file)
+            if args.dry_run:
+                emit_progress("done", 100, False, f"Dry-run OK: install-vendor {args.vendor_id} {' '.join(pkgs)}")
+                return 0
+            rc = run_apt_update()
+            if rc != 0:
+                return rc
+            install_cmd = ["apt-get", "-o", "DPkg::Lock::Timeout=120", "install", "-y"]
+            # Vendors with pinPriority >= 1000 (e.g., Mozilla Firefox DEB replacing Ubuntu's
+            # epoch-1 transitional 1:1snap1 wrapper) intentionally downgrade the epoch-1 stub.
+            if int(vendors[args.vendor_id].get("pinPriority", 500)) >= 1000:
+                install_cmd.append("--allow-downgrades")
+            install_cmd.extend(["--", *pkgs])
+            rc = _run_apt_streaming(
+                install_cmd,
+                "apt-install",
+                46,
+                98,
+            )
+            if rc == 0:
+                emit_progress("done", 100, False, f"Đã cài đặt thành công: {', '.join(pkgs)}")
+            return rc
+
+        if args.action == "install-apt":
+            pkgs = validate_pkg_names(args.packages)
+            if args.dry_run:
+                emit_progress("done", 100, False, f"Dry-run OK: install-apt {' '.join(pkgs)}")
+                return 0
+            rc = run_apt_update()
+            if rc != 0:
+                return rc
+            rc = _run_apt_streaming(
+                ["apt-get", "-o", "DPkg::Lock::Timeout=120", "install", "-y", "--", *pkgs],
+                "apt-install",
+                46,
+                98,
+            )
+            if rc == 0:
+                emit_progress("done", 100, False, f"Đã cài đặt/cập nhật thành công: {', '.join(pkgs)}")
+            return rc
+
+        if args.action == "remove-apt":
+            pkgs = validate_pkg_names(args.packages)
+            blocked = [p for p in pkgs if p in PROTECTED_PACKAGES]
+            if blocked:
+                raise ValueError(
+                    f"Không cho phép gỡ gói hệ thống quan trọng: {', '.join(blocked)}"
+                )
+            if args.dry_run:
+                emit_progress("done", 100, False, f"Dry-run OK: remove-apt {' '.join(pkgs)}")
+                return 0
+            rc = _run_apt_streaming(
+                ["apt-get", "-o", "DPkg::Lock::Timeout=120", "remove", "-y", "--", *pkgs],
+                "apt-remove",
+                15,
+                95,
+            )
+            if rc == 0:
+                emit_progress("done", 100, False, f"Đã gỡ thành công: {', '.join(pkgs)}")
+            return rc
+
+        if args.action == "upgrade-apt":
+            if args.dry_run:
+                emit_progress("done", 100, False, "Dry-run OK: upgrade-apt")
+                return 0
+            rc = run_apt_update()
+            if rc != 0:
+                return rc
+            rc = _run_apt_streaming(
+                ["apt-get", "-o", "DPkg::Lock::Timeout=120", "upgrade", "-y"],
+                "apt-upgrade",
+                46,
+                98,
+            )
+            if rc == 0:
+                emit_progress("done", 100, False, "Đã cập nhật toàn bộ gói hệ thống APT.")
+            return rc
+
+        if args.action == "repair-apt":
+            if args.dry_run:
+                emit_progress("done", 100, False, "Dry-run OK: repair-apt")
+                return 0
+            emit_progress("apt-repair", 15, False, "Đang chạy dpkg --configure -a...")
+            rc1 = _run_apt_streaming(["dpkg", "--configure", "-a"], "apt-repair", 15, 55)
+            emit_progress("apt-repair", 56, False, "Đang chạy apt-get install -f -y...")
+            rc2 = _run_apt_streaming(
+                ["apt-get", "-o", "DPkg::Lock::Timeout=120", "install", "-f", "-y"],
+                "apt-repair",
+                56,
+                98,
+            )
+            if rc1 == 0 and rc2 == 0:
+                emit_progress("done", 100, False, "Đã khôi phục trạng thái gói APT/dpkg thành công.")
+                return 0
+            return rc2 or rc1
+
+        if args.action == "install-local-deb":
+            deb_file = Path(args.deb_path).expanduser().resolve(strict=True)
+            if not deb_file.is_file() or deb_file.suffix.lower() != ".deb":
+                raise ValueError(f"Tệp gói .deb không hợp lệ: {deb_file}")
+            # Validate authentic Debian binary archive header before passing to apt-get
+            chk = subprocess.run(
+                ["dpkg-deb", "--field", str(deb_file), "Package"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            pkg_label = chk.stdout.strip()
+            if chk.returncode != 0 or not pkg_label or not PKG_NAME_RE.match(pkg_label):
+                raise ValueError(f"Tệp không phải gói Debian (.deb) hợp lệ: {deb_file.name}")
+            if args.dry_run:
+                emit_progress("done", 100, False, f"Dry-run OK: install-local-deb {pkg_label} ({deb_file.name})")
+                return 0
+            rc = _run_apt_streaming(
+                ["apt-get", "-o", "DPkg::Lock::Timeout=120", "install", "-y", "--", str(deb_file)],
+                "apt-install",
+                20,
+                98,
+            )
+            if rc == 0:
+                emit_progress("done", 100, False, f"Đã cài đặt gói cục bộ: {pkg_label}")
+            return rc
+
+        if args.action == "ensure-flathub":
+            if args.dry_run:
+                emit_progress("done", 100, False, "Dry-run OK: ensure-flathub")
+                return 0
+            if not shutil.which("flatpak"):
+                rc = run_apt_update()
+                if rc != 0:
+                    return rc
+                rc = _run_apt_streaming(
+                    [
+                        "apt-get",
+                        "-o",
+                        "DPkg::Lock::Timeout=120",
+                        "install",
+                        "-y",
+                        "--no-install-recommends",
+                        "flatpak",
+                        "xdg-desktop-portal-gnome",
+                    ],
+                    "apt-install",
+                    46,
+                    85,
+                )
+                if rc != 0:
+                    return rc
+            emit_progress("flathub", 90, True, "Đang đăng ký kho Flathub (không cài sẵn ứng dụng)...")
+            res = subprocess.run(
+                ["flatpak", "remote-add", "--if-not-exists", "flathub", FLATHUB_REPO_URL],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if res.returncode == 0:
+                emit_progress("done", 100, False, "Đã sẵn sàng Flathub.")
+            else:
+                print((res.stderr or res.stdout).strip(), file=sys.stderr)
+            return res.returncode
+
+    except Exception as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

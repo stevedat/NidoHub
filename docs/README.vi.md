@@ -29,7 +29,7 @@ sha256sum -c SHA256SUMS.txt
 - **Bộ gõ Sen Việt (IBus):** Sẵn sàng gõ tiếng Việt Telex & VNI qua GNOME IBus nguyên bản trên cả Wayland và X11 ngay sau khi đăng nhập.
 - **Bộ văn phòng NidoOffice:** Cài sẵn làm ứng dụng văn phòng mặc định cho Word (`.docx`), Excel (`.xlsx`), PowerPoint (`.pptx`), PDF và Markdown (thay thế hoàn toàn LibreOffice).
 - **Bộ tiện ích NidoBox:** Ứng dụng GTK4/Libadwaita + Rust nguyên bản (`Super+Shift+S` chụp màn hình + OCR Tiếng Việt ngoại tuyến, trạm truyền tệp LAN QR NidoDrop, đổi ảnh hàng loạt, giải nén giữ dấu Tiếng Việt và mở khoá ổ NTFS kẹt Windows).
-- **NidoAgent:** Trung tâm điều khiển & trợ lý công việc nổi bật trên Dock, phím tắt (`Super+Space`), dòng lệnh (`nidoagent`), hoặc trình quản lý tệp.
+- **NidoAgent:** Trung tâm điều khiển & trợ lý công việc nổi bật trên Dock, phím tắt (`Super+Shift+A`), dòng lệnh (`nidoagent`), hoặc trình quản lý tệp.
 - **Kiểm soát cục bộ:** Tự chọn API key cá nhân hoặc kết nối mô hình AI chạy trên máy.
 
 ## Build từ mã nguồn

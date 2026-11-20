@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Ubuntu-Nido ISO builder configuration
 
-NIDO_VERSION="${NIDO_VERSION:-0.1.0}"
+NIDO_VERSION="${NIDO_VERSION:-0.2.0}"
 UBUNTU_VERSION="${UBUNTU_VERSION:-26.04}"
 TARGET_ARCH="${TARGET_ARCH:-amd64}"
 

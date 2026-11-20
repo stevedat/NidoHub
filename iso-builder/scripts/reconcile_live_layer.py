@@ -33,6 +33,7 @@ PROTECTED_CUSTOM_PREFIXES = (
     "nido-",
     "nidoai",
     "nidoagent",
+    "nidobox",
     "nidooffice",
     "vielotus",
 )

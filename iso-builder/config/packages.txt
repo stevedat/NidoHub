@@ -1,8 +1,10 @@
-# Base utilities required for Ubuntu-Nido
+# Base utilities required for Ubuntu-Nido (Native-First architecture)
 ca-certificates
 curl
 desktop-file-utils
 file
+flatpak
+fwupd
 gir1.2-adw-1
 gir1.2-gtk-3.0
 gir1.2-gtk-4.0
@@ -16,7 +18,14 @@ ibus-gtk4
 im-config
 jq
 libnotify-bin
+libnss3-tools
+librsvg2-common
+libsecret-tools
+libccid
 ntfs-3g
+opensc
+opensc-pkcs11
+pcscd
 pkexec
 polkitd
 python3
@@ -25,6 +34,9 @@ shared-mime-info
 tesseract-ocr
 tesseract-ocr-eng
 tesseract-ocr-vie
+unattended-upgrades
 unzip
 wget
+xdg-desktop-portal-gnome
 zenity
+zstd

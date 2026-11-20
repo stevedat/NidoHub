@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# Runs once on an installed Ubuntu-Nido system (NEVER inside a Live ISO installer session).
+# - Removes Ubuntu App Center (snap-store) so NidoHub is the single default software manager.
+# - Removes Firefox Snap ONLY if the official Mozilla DEB /usr/bin/firefox is installed.
+# - Preserves snapd, Live Installer dependencies, and fwupd firmware updates.
+set -euo pipefail
+
+# Never run in Live ISO / Casper environments
+if [ -f /run/casper-md5check.json ] || [ -f /cdrom/.disk/info ] || grep -qw "boot=casper" /proc/cmdline 2>/dev/null; then
+  exit 0
+fi
+
+STAMP_DIR="/var/lib/ubuntu-nido"
+STAMP_FILE="${STAMP_DIR}/native-first-cleaned"
+if [ -f "$STAMP_FILE" ] && [ "${1:-}" != "--force" ]; then
+  exit 0
+fi
+
+if ! command -v snap >/dev/null 2>&1; then
+  mkdir -p "$STAMP_DIR"
+  date -u +"%Y-%m-%dT%H:%M:%SZ" > "$STAMP_FILE"
+  exit 0
+fi
+
+# Wait briefly for snapd socket if booting for the first time
+if command -v snap >/dev/null 2>&1; then
+  snap wait system seed.loaded >/dev/null 2>&1 || true
+fi
+
+# 1. Remove Ubuntu App Center (snap-store) only
+if snap list snap-store >/dev/null 2>&1; then
+  echo "[Ubuntu-Nido] Removing Ubuntu App Center (snap-store) in favor of NidoHub..."
+  snap remove --purge snap-store || true
+fi
+rm -f /var/lib/snapd/desktop/applications/snap-store_*.desktop 2>/dev/null || true
+
+# 2. Remove Firefox Snap ONLY if official Mozilla DEB Firefox is verified installed
+if [ -x /usr/bin/firefox ] && ! grep -qs "snap install firefox" /usr/bin/firefox 2>/dev/null; then
+  if snap list firefox >/dev/null 2>&1; then
+    echo "[Ubuntu-Nido] Removing Firefox Snap (official Mozilla Firefox DEB is active)..."
+    snap remove --purge firefox || true
+  fi
+  rm -f /var/lib/snapd/desktop/applications/firefox_*.desktop 2>/dev/null || true
+fi
+
+if command -v update-desktop-database >/dev/null 2>&1; then
+  update-desktop-database -q /usr/share/applications || true
+fi
+
+mkdir -p "$STAMP_DIR"
+date -u +"%Y-%m-%dT%H:%M:%SZ" > "$STAMP_FILE"
+echo "[Ubuntu-Nido] Native-First installed-system cleanup complete (snapd & fwupd preserved)."

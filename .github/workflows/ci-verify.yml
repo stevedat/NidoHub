@@ -28,19 +28,26 @@ jobs:
 
       - name: Test real dpkg installation on Ubuntu
         run: |
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y ./packages/dist/nidoai-gateway_0.1.0_all.deb \
-            ./packages/dist/nidoagent-cli_0.1.0_all.deb \
-            ./packages/dist/nido-desktop-settings_0.1.0_all.deb \
-            ./packages/dist/nido-hub_0.1.0_all.deb \
-            ./packages/dist/nidooffice-cli_0.1.0_all.deb
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y ./packages/dist/nidoai-gateway_0.2.0_all.deb \
+            ./packages/dist/nidoagent-cli_0.2.0_all.deb \
+            ./packages/dist/nido-desktop-settings_0.2.0_all.deb \
+            ./packages/dist/nido-hub_0.2.0_all.deb \
+            ./packages/dist/nidooffice-cli_0.2.0_all.deb \
+            ./packages/dist/nidooffice-desktop_0.13.1_all.deb
           nidoagent --version
           nidoai doctor
           nido-hub --self-test
+          pkcs11-helper --self-test
           nidooffice --version
+          test -x /usr/bin/nidooffice-desktop
+          test -x /opt/NidoOffice/genoffice
           sudo apt-get update
           apt-cache policy vielotus | grep -q "ubuntu-nido-apt"
           apt-cache policy nidobox | grep -q "ubuntu-nido-apt"
+          apt-cache policy nidooffice-desktop | grep -q "ubuntu-nido-apt"
           apt-cache policy nido-desktop | grep -q "ubuntu-nido-apt"
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ./packages/dist/nido-desktop_0.1.0_all.deb
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ./packages/dist/nido-desktop_0.2.0_all.deb
+          dpkg --compare-versions "$(dpkg-query -W -f='${Version}' nidobox)" ge "1.4.7"
           nidobox --self-test
           dpkg -s nido-desktop >/dev/null
+          dpkg -s showtime >/dev/null 2>&1 || dpkg -s totem >/dev/null 2>&1

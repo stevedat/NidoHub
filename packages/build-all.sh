@@ -20,23 +20,28 @@ python3 "${ROOT_DIR}/branding/generate-assets.py" --hub-icon-dir "${NIDOHUB_STAG
 cp "${ROOT_DIR}/iso-builder/config/includes.chroot/usr/share/backgrounds/ubuntu-nido/wallpaper.png" \
   "${SETTINGS_STAGE_DIR}/usr/share/backgrounds/ubuntu-nido/wallpaper.png"
 
-if [[ -n "$NIDOAI_SRC_DIR" && ( -f "${NIDOAI_SRC_DIR}/src/cli.mjs" || -f "${NIDOAI_SRC_DIR}/src/cli.ts" ) ]]; then
-  echo "==> Staging external NidoAI source from ${NIDOAI_SRC_DIR} (strict secret exclusion)"
+if [[ -n "$NIDOAI_SRC_DIR" && -f "${NIDOAI_SRC_DIR}/build/cli.mjs" ]]; then
+  echo "==> Staging compiled external NidoAI build from ${NIDOAI_SRC_DIR}/build (strict secret exclusion)"
   cp "${NIDOAI_SRC_DIR}/package.json" "${STAGE_DIR}/usr/lib/nidoai/package.json"
   [[ -f "${NIDOAI_SRC_DIR}/README.md" ]] && cp "${NIDOAI_SRC_DIR}/README.md" "${STAGE_DIR}/usr/lib/nidoai/README.md"
   if [[ -f "${NIDOAI_SRC_DIR}/.env.example" ]]; then
     sed 's|^NIDOAI_CODEX_BIN=.*|NIDOAI_CODEX_BIN=/usr/local/bin/codex|' \
       "${NIDOAI_SRC_DIR}/.env.example" > "${STAGE_DIR}/usr/lib/nidoai/.env.example"
   fi
+  cp -R "${NIDOAI_SRC_DIR}/build" "${STAGE_DIR}/usr/lib/nidoai/src"
+elif [[ -n "$NIDOAI_SRC_DIR" && -f "${NIDOAI_SRC_DIR}/src/cli.mjs" ]]; then
+  echo "==> Staging external pure-JS NidoAI source from ${NIDOAI_SRC_DIR}/src (strict secret exclusion)"
+  cp "${NIDOAI_SRC_DIR}/package.json" "${STAGE_DIR}/usr/lib/nidoai/package.json"
+  [[ -f "${NIDOAI_SRC_DIR}/README.md" ]] && cp "${NIDOAI_SRC_DIR}/README.md" "${STAGE_DIR}/usr/lib/nidoai/README.md"
   cp -R "${NIDOAI_SRC_DIR}/src" "${STAGE_DIR}/usr/lib/nidoai/src"
 else
-  echo "==> Staging built-in open-source NidoAI Gateway (packages/nidoai-gateway/src)"
+  echo "==> Staging unified pure-JS NidoAI Gateway (packages/nidoai-gateway/src)"
   mkdir -p "${STAGE_DIR}/usr/lib/nidoai/src"
-  cp "${SCRIPT_DIR}/nidoai-gateway/src/cli.mjs" "${STAGE_DIR}/usr/lib/nidoai/src/cli.mjs"
+  cp -R "${SCRIPT_DIR}/nidoai-gateway/src/." "${STAGE_DIR}/usr/lib/nidoai/src/"
   cat > "${STAGE_DIR}/usr/lib/nidoai/package.json" <<'PKG'
 {
   "name": "nidoai-gateway",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module"
 }
 PKG
@@ -66,9 +71,18 @@ chmod 755 \
   "${SCRIPT_DIR}/nido-hub/DEBIAN/postinst" \
   "${SCRIPT_DIR}/nido-hub/files/usr/bin/nido-hub" \
   "${SCRIPT_DIR}/nido-hub/files/usr/lib/nido-hub/app.py" \
+  "${SCRIPT_DIR}/nido-hub/files/usr/libexec/nido-hub/nido-pkg-helper" \
   "${SCRIPT_DIR}/nidooffice-cli/files/usr/bin/nidooffice" \
   "${SCRIPT_DIR}/nidooffice-cli/files/usr/lib/nidooffice-cli/engine.py" \
-  "${SCRIPT_DIR}/nido-desktop/DEBIAN/postinst"
+  "${SCRIPT_DIR}/nidooffice-desktop/DEBIAN/postinst" \
+  "${SCRIPT_DIR}/nidooffice-desktop/DEBIAN/postrm" \
+  "${SCRIPT_DIR}/nidooffice-desktop/files/usr/bin/nidooffice-desktop" \
+  "${SCRIPT_DIR}/nidooffice-desktop/files/usr/bin/pkcs11-helper" \
+  "${SCRIPT_DIR}/nidooffice-desktop/files/usr/lib/nidooffice-desktop/install-runtime.sh" \
+  "${SCRIPT_DIR}/nido-desktop/DEBIAN/postinst" \
+  "${SCRIPT_DIR}/nido-desktop/DEBIAN/postrm" \
+  "${SCRIPT_DIR}/nido-desktop/files/usr/libexec/ubuntu-nido/showtime-launch" \
+  "${SCRIPT_DIR}/nido-desktop/files/usr/libexec/ubuntu-nido/native-first-cleanup"
 
 VER_ARGS=()
 if [[ -n "$DEB_VERSION_SUFFIX" ]]; then
@@ -80,53 +94,66 @@ python3 "$DEB_BUILDER" \
   --source-dir "${SCRIPT_DIR}/nidoai-gateway" \
   --extra-files "$STAGE_DIR" \
   ${VER_ARGS[@]+"${VER_ARGS[@]}"} \
-  --output "${DIST_DIR}/nidoai-gateway_0.1.0${DEB_VERSION_SUFFIX}_all.deb"
+  --output "${DIST_DIR}/nidoai-gateway_0.2.0${DEB_VERSION_SUFFIX}_all.deb"
 
 python3 "$DEB_BUILDER" \
   --source-dir "${SCRIPT_DIR}/nidoagent-cli" \
   ${VER_ARGS[@]+"${VER_ARGS[@]}"} \
-  --output "${DIST_DIR}/nidoagent-cli_0.1.0${DEB_VERSION_SUFFIX}_all.deb"
+  --output "${DIST_DIR}/nidoagent-cli_0.2.0${DEB_VERSION_SUFFIX}_all.deb"
 
 python3 "$DEB_BUILDER" \
   --source-dir "${SCRIPT_DIR}/nido-desktop-settings" \
   --extra-files "$SETTINGS_STAGE_DIR" \
   ${VER_ARGS[@]+"${VER_ARGS[@]}"} \
-  --output "${DIST_DIR}/nido-desktop-settings_0.1.0${DEB_VERSION_SUFFIX}_all.deb"
+  --output "${DIST_DIR}/nido-desktop-settings_0.2.0${DEB_VERSION_SUFFIX}_all.deb"
 
 python3 "$DEB_BUILDER" \
   --source-dir "${SCRIPT_DIR}/nido-hub" \
   --extra-files "$NIDOHUB_STAGE_DIR" \
   ${VER_ARGS[@]+"${VER_ARGS[@]}"} \
-  --output "${DIST_DIR}/nido-hub_0.1.0${DEB_VERSION_SUFFIX}_all.deb"
+  --output "${DIST_DIR}/nido-hub_0.2.0${DEB_VERSION_SUFFIX}_all.deb"
 
 python3 "$DEB_BUILDER" \
   --source-dir "${SCRIPT_DIR}/nidooffice-cli" \
   ${VER_ARGS[@]+"${VER_ARGS[@]}"} \
-  --output "${DIST_DIR}/nidooffice-cli_0.1.0${DEB_VERSION_SUFFIX}_all.deb"
+  --output "${DIST_DIR}/nidooffice-cli_0.2.0${DEB_VERSION_SUFFIX}_all.deb"
+
+python3 "$DEB_BUILDER" \
+  --source-dir "${SCRIPT_DIR}/nidooffice-desktop" \
+  ${VER_ARGS[@]+"${VER_ARGS[@]}"} \
+  --output "${DIST_DIR}/nidooffice-desktop_0.13.1${DEB_VERSION_SUFFIX}_all.deb"
 
 python3 "$DEB_BUILDER" \
   --source-dir "${SCRIPT_DIR}/nido-desktop" \
   ${VER_ARGS[@]+"${VER_ARGS[@]}"} \
-  --output "${DIST_DIR}/nido-desktop_0.1.0${DEB_VERSION_SUFFIX}_all.deb"
+  --output "${DIST_DIR}/nido-desktop_0.2.0${DEB_VERSION_SUFFIX}_all.deb"
 
 if [[ -n "$VIELOTUS_BIN_DIR" && -d "$VIELOTUS_BIN_DIR" ]]; then
   mkdir -p "${SCRIPT_DIR}/vendor"
-  for deb in "${VIELOTUS_BIN_DIR}"/vielotus_*.deb; do
-    if [[ -f "$deb" ]]; then
+  shopt -s nullglob
+  vl_debs=("${VIELOTUS_BIN_DIR}"/vielotus_*.deb)
+  shopt -u nullglob
+  if [[ "${#vl_debs[@]}" -gt 0 ]]; then
+    rm -f "${SCRIPT_DIR}/vendor"/vielotus_*.deb
+    for deb in "${vl_debs[@]}"; do
       cp "$deb" "${SCRIPT_DIR}/vendor/"
       echo "==> Staged vendor package: $(basename "$deb")"
-    fi
-  done
+    done
+  fi
 fi
 
 if [[ -n "$NIDOBOX_BIN_DIR" && -d "$NIDOBOX_BIN_DIR" ]]; then
   mkdir -p "${SCRIPT_DIR}/vendor"
-  for deb in "${NIDOBOX_BIN_DIR}"/nidobox_*.deb; do
-    if [[ -f "$deb" ]]; then
+  shopt -s nullglob
+  nb_debs=("${NIDOBOX_BIN_DIR}"/nidobox_*.deb)
+  shopt -u nullglob
+  if [[ "${#nb_debs[@]}" -gt 0 ]]; then
+    rm -f "${SCRIPT_DIR}/vendor"/nidobox_*.deb
+    for deb in "${nb_debs[@]}"; do
       cp "$deb" "${SCRIPT_DIR}/vendor/"
       echo "==> Staged vendor package: $(basename "$deb")"
-    fi
-  done
+    done
+  fi
 fi
 
 echo "==> Built packages in ${DIST_DIR}:"

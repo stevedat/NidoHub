@@ -1,0 +1,10 @@
+#!/bin/sh
+set -e
+
+case "${1:-}" in
+  remove|purge)
+    rm -f /usr/local/bin/showtime /usr/local/share/dbus-1/services/org.gnome.Showtime.service
+    ;;
+esac
+
+exit 0

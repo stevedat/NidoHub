@@ -1,6 +1,55 @@
 #!/bin/sh
 set -e
 
+if [ "${1:-}" = "configure" ] && command -v python3 >/dev/null 2>&1; then
+  python3 - <<'PY' || true
+from pathlib import Path
+
+mimes = {
+    "application/vnd.debian.binary-package": "com.nidoholdings.NidoHub.desktop",
+    "application/x-deb": "com.nidoholdings.NidoHub.desktop",
+    "application/vnd.flatpak.ref": "com.nidoholdings.NidoHub.desktop",
+}
+
+for path in (
+    Path("/etc/xdg/mimeapps.list"),
+    Path("/etc/xdg/ubuntu-mimeapps.list"),
+    Path("/etc/xdg/gnome-mimeapps.list"),
+):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = path.read_text(encoding="utf-8", errors="replace").splitlines() if path.is_file() else []
+    if "[Default Applications]" not in lines:
+        lines.insert(0, "[Default Applications]")
+    out = []
+    in_default = False
+    seen = set()
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            if in_default:
+                for k, v in mimes.items():
+                    if k not in seen:
+                        out.append(f"{k}={v}")
+                        seen.add(k)
+            in_default = stripped == "[Default Applications]"
+            out.append(line)
+            continue
+        if in_default and "=" in line:
+            key = line.split("=", 1)[0].strip()
+            if key in mimes:
+                if key not in seen:
+                    out.append(f"{key}={mimes[key]}")
+                    seen.add(key)
+                continue
+        out.append(line)
+    if in_default:
+        for k, v in mimes.items():
+            if k not in seen:
+                out.append(f"{k}={v}")
+    path.write_text("\n".join(out) + "\n", encoding="utf-8")
+PY
+fi
+
 if command -v gtk-update-icon-cache >/dev/null 2>&1; then
   gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor || true
 fi

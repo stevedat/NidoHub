@@ -1,19 +1,27 @@
 #!/usr/bin/env bash
-# Hook 0160: Install first-party NidoBox (v1.4.0) utility suite from signed APT repository
+# Hook 0160: Install first-party NidoBox (v1.4.7+) utility suite from signed APT repository
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 
 APT_LOCK_TIMEOUT="${APT_LOCK_TIMEOUT:-600}"
 APT_GET=(apt-get -o "DPkg::Lock::Timeout=${APT_LOCK_TIMEOUT}")
+MIN_NIDOBOX_VERSION="1.4.7"
 ARCH="$(dpkg --print-architecture)"
 
+INSTALLED_VER=""
 if dpkg -s nidobox >/dev/null 2>&1; then
-  echo "[Ubuntu-Nido] Package 'nidobox' already installed."
+  INSTALLED_VER="$(dpkg-query -W -f='${Version}' nidobox 2>/dev/null || true)"
+fi
+
+if [ -n "$INSTALLED_VER" ] && dpkg --compare-versions "$INSTALLED_VER" ge "$MIN_NIDOBOX_VERSION"; then
+  echo "[Ubuntu-Nido] Package 'nidobox' (${INSTALLED_VER}) already installed (>= ${MIN_NIDOBOX_VERSION})."
 else
-  echo "[Ubuntu-Nido] Installing NidoBox (${ARCH}) from signed Ubuntu-Nido APT repository..."
+  echo "[Ubuntu-Nido] Installing/upgrading NidoBox (>= ${MIN_NIDOBOX_VERSION}, ${ARCH}) from signed Ubuntu-Nido APT repository..."
   "${APT_GET[@]}" update -qq
   "${APT_GET[@]}" install -y --no-install-recommends nidobox
 fi
 
+FINAL_VER="$(dpkg-query -W -f='${Version}' nidobox 2>/dev/null || echo 0)"
+dpkg --compare-versions "$FINAL_VER" ge "$MIN_NIDOBOX_VERSION"
 /usr/bin/nidobox --self-test >/dev/null
-echo "[Ubuntu-Nido] NidoBox hook completed."
+echo "[Ubuntu-Nido] NidoBox (${FINAL_VER}) hook completed."

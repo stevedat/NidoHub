@@ -101,7 +101,7 @@ fi
 
 CHOICE="$(zenity --list \
   --title="Chào mừng tới Ubuntu-Nido" \
-  --text="• Bộ gõ Sen Việt (Telex) đã bật sẵn.\n• Nhấn Super+Space để mở nhanh NidoAgent.\n\nChọn nguồn AI cho NidoAI Gateway:" \
+  --text="• Bộ gõ Sen Việt (Telex, Super+Space) đã bật sẵn.\n• Nhấn Super+Shift+A để mở nhanh NidoAgent.\n\nChọn nguồn AI cho NidoAI Gateway:" \
   --radiolist \
   --column="Chọn" --column="Mã" --column="Nhà cung cấp" \
   TRUE "gemini" "Google Gemini API (BYOK — Có gói miễn phí)" \
@@ -155,5 +155,5 @@ date -u +"%Y-%m-%dT%H:%M:%SZ" > "$DONE_FILE"
 
 zenity --info \
   --title="Ubuntu-Nido đã sẵn sàng" \
-  --text="Thiết lập hoàn tất!\n\nMẹo sử dụng:\n• Nhấn Super+Space để hỏi nhanh NidoAgent\n• Chuột phải tệp trong Files → Scripts → Giao-cho-NidoAgent\n• Mở Terminal gõ: nidoagent status" \
+  --text="Thiết lập hoàn tất!\n\nMẹo sử dụng:\n• Nhấn Super+Shift+A để hỏi nhanh NidoAgent (Super+Space chuyển bộ gõ)\n• Chuột phải tệp trong Files → Scripts → Giao-cho-NidoAgent\n• Mở Terminal gõ: nidoagent status" \
   --width=480 || true

@@ -1,13 +1,14 @@
 [Desktop Entry]
 Type=Application
 Name=NidoHub & NidoAgent
-Name[vi]=NidoHub — Trợ lý NidoAgent
-Comment=AI Setup, App Manager, and NidoAgent Workspace
-Comment[vi]=Thiết lập AI, Quản lý ứng dụng và Trợ lý NidoAgent
-Exec=/usr/bin/nido-hub
+Name[vi]=NidoHub — Trung tâm Ứng dụng & NidoAgent
+Comment=Software Center, AI Setup, and NidoAgent Workspace
+Comment[vi]=Kho Ứng dụng Native-First, Thiết lập AI và Trợ lý NidoAgent
+Exec=/usr/bin/nido-hub %U
 Icon=com.nidoholdings.NidoHub
 StartupWMClass=com.nidoholdings.NidoHub
 Terminal=false
-Categories=System;Settings;Utility;
+Categories=System;Settings;PackageManager;Utility;
+MimeType=application/vnd.debian.binary-package;application/x-deb;application/vnd.flatpak.ref;
 StartupNotify=true
-Keywords=AI;Nido;Agent;Welcome;Update;
+Keywords=AI;Nido;Agent;Welcome;Update;Software;Store;Apps;DEB;Flatpak;

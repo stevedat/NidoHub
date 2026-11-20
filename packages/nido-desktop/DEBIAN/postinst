@@ -1,6 +1,14 @@
 #!/bin/sh
 set -e
 
+if [ -x /usr/bin/showtime ]; then
+  mkdir -p /usr/local/bin /usr/local/share/dbus-1/services
+  ln -sf /usr/libexec/ubuntu-nido/showtime-launch /usr/local/bin/showtime
+  ln -sf /usr/libexec/ubuntu-nido/org.gnome.Showtime.service /usr/local/share/dbus-1/services/org.gnome.Showtime.service
+else
+  rm -f /usr/local/bin/showtime /usr/local/share/dbus-1/services/org.gnome.Showtime.service
+fi
+
 if [ -d /etc/dconf/db/local.d ] && command -v dconf >/dev/null 2>&1; then
   dconf update >/dev/null 2>&1 || true
 fi
@@ -11,6 +19,10 @@ fi
 
 if command -v gtk-update-icon-cache >/dev/null 2>&1; then
   gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor || true
+fi
+
+if [ -f /usr/lib/systemd/system/nido-native-first-cleanup.service ] && command -v systemctl >/dev/null 2>&1; then
+  systemctl enable nido-native-first-cleanup.service >/dev/null 2>&1 || true
 fi
 
 if command -v update-desktop-database >/dev/null 2>&1; then

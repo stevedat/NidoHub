@@ -1,10 +1,10 @@
 Package: nido-hub
-Version: 0.1.0
+Version: 0.2.0
 Section: admin
 Priority: optional
 Architecture: all
-Depends: python3, nidoagent-cli (>= 0.1.0)
-Recommends: python3-gi, gir1.2-gtk-4.0, gir1.2-adw-1, policykit-1 | pkexec
+Depends: python3, nidoagent-cli (>= 0.2.0), ca-certificates, gpg
+Recommends: python3-gi, gir1.2-gtk-4.0, gir1.2-adw-1, policykit-1 | pkexec, libsecret-tools, flatpak, xdg-desktop-portal-gnome, fwupd, unattended-upgrades
 Maintainer: Nido Holdings <support@nido-holdings.com>
 Homepage: https://nido-holdings.com
 Description: Ubuntu-Nido Welcome, AI Setup and Application Hub

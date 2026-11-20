@@ -94,7 +94,7 @@ jobs:
           cd iso-builder
           NIDO_VERSION="${GITHUB_REF_NAME#v}"
           if [[ ! "$NIDO_VERSION" =~ ^[0-9]+\.[0-9]+ ]]; then
-            NIDO_VERSION="0.1.0"
+            NIDO_VERSION="0.2.0"
           fi
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
             sudo -E NIDO_VERSION="$NIDO_VERSION" ./build.sh --release

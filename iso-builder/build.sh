@@ -121,7 +121,7 @@ resolve_iso "$ISO_ARG"
 
 validate_customized_rootfs() {
   [ -f "$WORK_DIR/squashfs/etc/ubuntu-nido-customized" ] || return 1
-  chroot "$WORK_DIR/squashfs" /bin/bash -c "test -f /etc/dconf/db/local && test -x /usr/bin/nidoai && test -x /usr/bin/nidoagent && test -x /usr/bin/nido-hub && test -x /usr/bin/nidooffice && dpkg -s nido-desktop >/dev/null 2>&1 && dpkg -s vielotus >/dev/null 2>&1 && test -f /usr/share/plymouth/themes/ubuntu-nido/ubuntu-nido.plymouth"
+  chroot "$WORK_DIR/squashfs" /bin/bash -c "test -f /etc/dconf/db/local && test -x /usr/bin/nidoai && test -x /usr/bin/nidoagent && test -x /usr/bin/nido-hub && test -x /usr/bin/nidobox && test -x /usr/bin/nidooffice && test -x /usr/bin/nidooffice-desktop && dpkg -s nido-desktop >/dev/null 2>&1 && dpkg -s nidobox >/dev/null 2>&1 && dpkg -s vielotus >/dev/null 2>&1 && test -f /usr/share/plymouth/themes/ubuntu-nido/ubuntu-nido.plymouth"
 }
 
 print_header

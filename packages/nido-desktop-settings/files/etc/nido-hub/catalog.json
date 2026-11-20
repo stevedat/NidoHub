@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "distro": "Ubuntu-Nido",
   "release": "0.1.0",
   "aptRepo": "https://ubuntu-nido-apt.pages.dev",
@@ -7,6 +7,9 @@
     {
       "id": "core",
       "name": "Nido Minimal Desktop",
+      "category": "nido",
+      "source": "nido-apt",
+      "protected": true,
       "status": "available",
       "packages": ["nido-desktop", "nidoai-gateway", "nidoagent-cli", "nido-hub", "nido-desktop-settings"],
       "description": "Gói tổng hợp Nido Minimal Desktop (NidoAI Gateway, NidoAgent và Trung tâm NidoHub)."
@@ -14,13 +17,19 @@
     {
       "id": "office-cli",
       "name": "NidoOffice (Bộ Văn phòng AI & CLI)",
+      "category": "nido",
+      "source": "nido-apt",
+      "protected": false,
       "status": "available",
-      "packages": ["nidooffice-cli"],
+      "packages": ["nidooffice-cli", "nidooffice-desktop"],
       "description": "Bộ ứng dụng văn phòng mặc định cho Word (.docx), Excel (.xlsx), Slide (.pptx), PDF & Markdown."
     },
     {
       "id": "sen-viet",
       "name": "Bộ gõ Sen Việt (VieLotusIM — IBus)",
+      "category": "nido",
+      "source": "nido-apt",
+      "protected": true,
       "status": "available",
       "packages": ["vielotus"],
       "description": "Bộ gõ tiếng Việt Telex & VNI tốc độ cao tích hợp trực tiếp qua GNOME IBus."
@@ -28,9 +37,131 @@
     {
       "id": "nidobox",
       "name": "NidoBox Utility Suite",
+      "category": "nido",
+      "source": "nido-apt",
+      "protected": false,
       "status": "available",
       "packages": ["nidobox"],
       "description": "NidoDrop LAN QR, Capture Studio + OCR Tiếng Việt, đổi ảnh đa luồng, giải nén giữ dấu & mở khoá ổ NTFS."
+    }
+  ],
+  "apps": [
+    {
+      "id": "firefox-deb",
+      "name": "Mozilla Firefox (Official DEB)",
+      "category": "browser",
+      "source": "vendor-apt",
+      "vendorId": "mozilla",
+      "packages": ["firefox"],
+      "description": "Trình duyệt Firefox bản .deb chính chủ từ Mozilla APT (không dùng Snap, cập nhật tự động qua APT)."
+    },
+    {
+      "id": "google-chrome",
+      "name": "Google Chrome (Official DEB)",
+      "category": "browser",
+      "source": "vendor-apt",
+      "vendorId": "google-chrome",
+      "packages": ["google-chrome-stable"],
+      "description": "Trình duyệt Google Chrome bản .deb chính chủ từ Google APT (tự kiểm tra tương thích kiến trúc động)."
+    },
+    {
+      "id": "brave-browser",
+      "name": "Brave Browser (Official DEB)",
+      "category": "browser",
+      "source": "vendor-apt",
+      "vendorId": "brave",
+      "packages": ["brave-browser"],
+      "description": "Trình duyệt Brave chặn quảng cáo bản .deb chính chủ từ Brave APT."
+    },
+    {
+      "id": "vscode",
+      "name": "Visual Studio Code (Official DEB)",
+      "category": "dev",
+      "source": "vendor-apt",
+      "vendorId": "vscode",
+      "packages": ["code"],
+      "description": "Trình soạn thảo mã nguồn VS Code bản .deb chính chủ từ Microsoft APT (chạy native không bị kẹt sandbox)."
+    },
+    {
+      "id": "docker-ce",
+      "name": "Docker Engine & Compose (Official DEB)",
+      "category": "dev",
+      "source": "vendor-apt",
+      "vendorId": "docker",
+      "packages": ["docker-ce", "docker-ce-cli", "containerd.io", "docker-compose-plugin"],
+      "description": "Nền tảng container Docker CE chính chủ cho lập trình và triển khai dịch vụ."
+    },
+    {
+      "id": "dev-essentials",
+      "name": "Bộ công cụ lập trình cơ bản (Git, Build, jq)",
+      "category": "dev",
+      "source": "ubuntu-apt",
+      "packages": ["git", "build-essential", "curl", "jq"],
+      "description": "Các gói .deb chuẩn từ Ubuntu APT cho biên dịch và quản trị mã nguồn."
+    },
+    {
+      "id": "vlc",
+      "name": "VLC Media Player (Ubuntu DEB)",
+      "category": "media",
+      "source": "ubuntu-apt",
+      "packages": ["vlc"],
+      "description": "Trình phát đa phương tiện mã nguồn mở hỗ trợ hầu hết định dạng video và âm thanh."
+    },
+    {
+      "id": "gimp",
+      "name": "GIMP — Chỉnh sửa ảnh (Ubuntu DEB)",
+      "category": "media",
+      "source": "ubuntu-apt",
+      "packages": ["gimp"],
+      "description": "Phần mềm chỉnh sửa ảnh chuyên nghiệp bản .deb chuẩn Ubuntu."
+    },
+    {
+      "id": "obs-studio",
+      "name": "OBS Studio — Quay màn hình & Livestream (Ubuntu DEB)",
+      "category": "media",
+      "source": "ubuntu-apt",
+      "packages": ["obs-studio"],
+      "description": "Công cụ quay màn hình và phát trực tiếp bản .deb gốc từ Ubuntu APT."
+    },
+    {
+      "id": "gnome-tweaks",
+      "name": "GNOME Tweaks (Ubuntu DEB)",
+      "category": "system",
+      "source": "ubuntu-apt",
+      "packages": ["gnome-tweaks"],
+      "description": "Tùy chỉnh phông chữ, giao diện và hành vi nâng cao cho GNOME Desktop."
+    },
+    {
+      "id": "telegram-flatpak",
+      "name": "Telegram Desktop (Flathub)",
+      "category": "social",
+      "source": "flatpak",
+      "flatpakId": "org.telegram.desktop",
+      "description": "Ứng dụng nhắn tin Telegram qua Flathub (cài riêng cho người dùng hiện tại, không cần mật khẩu root)."
+    },
+    {
+      "id": "discord-flatpak",
+      "name": "Discord (Flathub)",
+      "category": "social",
+      "source": "flatpak",
+      "flatpakId": "com.discordapp.Discord",
+      "description": "Ứng dụng trò chuyện nhóm và gọi thoại Discord qua Flathub."
+    },
+    {
+      "id": "spotify-flatpak",
+      "name": "Spotify (Flathub)",
+      "category": "media",
+      "source": "flatpak",
+      "flatpakId": "com.spotify.Client",
+      "description": "Nghe nhạc trực tuyến Spotify qua Flathub."
+    },
+    {
+      "id": "blender-flatpak",
+      "name": "Blender 3D (Flathub)",
+      "category": "media",
+      "source": "flatpak",
+      "flatpakId": "org.blender.Blender",
+      "description": "Bộ công cụ thiết kế đồ họa 3D mã nguồn mở Blender bản mới nhất từ Flathub."
     }
   ]
 }

@@ -1,9 +1,9 @@
 Package: nidoagent-cli
-Version: 0.1.0
+Version: 0.2.0
 Section: utils
 Priority: optional
 Architecture: all
-Depends: nidoai-gateway (>= 0.1.0)
+Depends: nidoai-gateway (>= 0.2.0)
 Maintainer: Nido Holdings <support@nido-holdings.com>
 Homepage: https://nido-holdings.com
 Description: NidoAgent CLI orchestrator for Ubuntu-Nido

@@ -1,0 +1,15 @@
+[Unit]
+Description=Ubuntu-Nido Native-First Installed System Cleanup
+After=snapd.seeded.service
+Wants=snapd.seeded.service
+ConditionPathExists=!/run/casper-md5check.json
+ConditionPathExists=!/cdrom/.disk/info
+ConditionPathExists=!/var/lib/ubuntu-nido/native-first-cleaned
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/ubuntu-nido/native-first-cleanup
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

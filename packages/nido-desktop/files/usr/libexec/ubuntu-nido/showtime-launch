@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Avoid GdkDmabufTexture YU12 2x2 alignment failures in gstgtk4paintablesink
+# on odd-sized Screencast recordings (e.g. 1236x649 / 1237x650).
+case ",${GDK_DISABLE:-}," in
+  *,dmabuf,*) ;;
+  *)
+    export GDK_DISABLE="${GDK_DISABLE:+${GDK_DISABLE},}dmabuf"
+    ;;
+esac
+
+if [ -x /usr/bin/showtime ]; then
+  exec /usr/bin/showtime "$@"
+fi
+
+echo "showtime is not installed at /usr/bin/showtime" >&2
+exit 127

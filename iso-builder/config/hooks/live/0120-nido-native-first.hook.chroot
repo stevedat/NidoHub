@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# Hook 0120: Ubuntu-Nido Native-First policy
+# - Installs official Mozilla Firefox DEB with verified GPG key + package-specific APT pinning
+# - Preserves upstream Ubuntu security updates (unattended-upgrades) and firmware updates (fwupd)
+# - Registers Flathub remote WITHOUT preloading Flatpak applications or runtimes
+# - Preserves snapd and Live Installer (ubuntu-desktop-bootstrap); schedules installed-system
+#   cleanup of Ubuntu App Center (snap-store) and Firefox Snap via nido-native-first-cleanup.service
+set -euo pipefail
+export DEBIAN_FRONTEND=noninteractive
+
+APT_LOCK_TIMEOUT="${APT_LOCK_TIMEOUT:-600}"
+APT_GET=(apt-get -o "DPkg::Lock::Timeout=${APT_LOCK_TIMEOUT}")
+
+echo "[Ubuntu-Nido] Configuring official Mozilla APT repository (verified GPG + package-specific pin)..."
+if [ -x /usr/libexec/nido-hub/nido-pkg-helper ]; then
+  /usr/libexec/nido-hub/nido-pkg-helper setup-vendor mozilla
+else
+  echo "ERROR: Missing /usr/libexec/nido-hub/nido-pkg-helper (install nido-hub package first)" >&2
+  exit 1
+fi
+
+echo "[Ubuntu-Nido] Installing official Mozilla Firefox DEB (replacing Ubuntu Snap wrapper)..."
+"${APT_GET[@]}" update
+"${APT_GET[@]}" install -y --allow-downgrades --no-install-recommends firefox
+
+# Verify firefox is a real native DEB from Mozilla, not the Ubuntu transitional snap wrapper
+if [ -f /usr/bin/firefox ] && grep -qs "snap install firefox" /usr/bin/firefox 2>/dev/null; then
+  echo "ERROR: /usr/bin/firefox is still the Ubuntu transitional Snap wrapper!" >&2
+  exit 1
+fi
+
+echo "[Ubuntu-Nido] Verifying upstream security updates (unattended-upgrades) and firmware (fwupd)..."
+dpkg -s unattended-upgrades >/dev/null
+dpkg -s fwupd >/dev/null
+if [ ! -f /etc/apt/apt.conf.d/20auto-upgrades ]; then
+  cat > /etc/apt/apt.conf.d/20auto-upgrades <<'AUTOUP'
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Unattended-Upgrade "1";
+AUTOUP
+fi
+
+echo "[Ubuntu-Nido] Registering optional Flathub remote (zero preloaded Flatpak apps or runtimes)..."
+if command -v flatpak >/dev/null 2>&1; then
+  flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo || true
+fi
+
+# Preserve snapd & ubuntu-desktop-bootstrap; schedule post-install removal of snap-store
+if [ -f /usr/lib/systemd/system/nido-native-first-cleanup.service ]; then
+  mkdir -p /etc/systemd/system/multi-user.target.wants
+  ln -sf /usr/lib/systemd/system/nido-native-first-cleanup.service \
+    /etc/systemd/system/multi-user.target.wants/nido-native-first-cleanup.service
+fi
+
+echo "[Ubuntu-Nido] Native-First hook 0120 completed."

@@ -25,7 +25,15 @@ SHELL_SCRIPTS=(
   "${ROOT_DIR}/packages/nido-hub/DEBIAN/postinst"
   "${ROOT_DIR}/packages/nido-hub/files/usr/bin/nido-hub"
   "${ROOT_DIR}/packages/nidooffice-cli/files/usr/bin/nidooffice"
+  "${ROOT_DIR}/packages/nidooffice-desktop/DEBIAN/postinst"
+  "${ROOT_DIR}/packages/nidooffice-desktop/DEBIAN/postrm"
+  "${ROOT_DIR}/packages/nidooffice-desktop/files/usr/bin/nidooffice-desktop"
+  "${ROOT_DIR}/packages/nidooffice-desktop/files/usr/lib/nidooffice-desktop/install-runtime.sh"
   "${ROOT_DIR}/packages/nido-desktop/DEBIAN/postinst"
+  "${ROOT_DIR}/packages/nido-desktop/DEBIAN/postrm"
+  "${ROOT_DIR}/packages/nido-desktop/files/usr/libexec/ubuntu-nido/showtime-launch"
+  "${ROOT_DIR}/packages/nido-desktop/files/usr/libexec/ubuntu-nido/native-first-cleanup"
+  "${ROOT_DIR}/scripts/validate_native_first.sh"
   "${ROOT_DIR}/iso-builder/build.sh"
   "${ROOT_DIR}/iso-builder/scripts/config.sh"
   "${ROOT_DIR}/iso-builder/scripts/utils.sh"
@@ -38,6 +46,7 @@ SHELL_SCRIPTS=(
   "${ROOT_DIR}/iso-builder/scripts/local-arm64.sh"
   "${ROOT_DIR}/iso-builder/config/hooks/live/0100-nido-gnome-setup.hook.chroot"
   "${ROOT_DIR}/iso-builder/config/hooks/live/0110-nido-minimal-prune.hook.chroot"
+  "${ROOT_DIR}/iso-builder/config/hooks/live/0120-nido-native-first.hook.chroot"
   "${ROOT_DIR}/iso-builder/config/hooks/live/0150-vielotus-im.hook.chroot"
   "${ROOT_DIR}/iso-builder/config/hooks/live/0160-nidobox.hook.chroot"
   "${ROOT_DIR}/iso-builder/config/hooks/live/0170-nidooffice-desktop.hook.chroot"
@@ -95,12 +104,13 @@ from pathlib import Path
 
 dist = Path(sys.argv[1])
 expected = [
-    "nidoai-gateway_0.1.0_all.deb",
-    "nidoagent-cli_0.1.0_all.deb",
-    "nido-desktop-settings_0.1.0_all.deb",
-    "nido-hub_0.1.0_all.deb",
-    "nidooffice-cli_0.1.0_all.deb",
-    "nido-desktop_0.1.0_all.deb",
+    "nidoai-gateway_0.2.0_all.deb",
+    "nidoagent-cli_0.2.0_all.deb",
+    "nido-desktop-settings_0.2.0_all.deb",
+    "nido-hub_0.2.0_all.deb",
+    "nidooffice-cli_0.2.0_all.deb",
+    "nidooffice-desktop_0.13.1_all.deb",
+    "nido-desktop_0.2.0_all.deb",
 ]
 
 def parse_ar(raw: bytes) -> dict[str, bytes]:
@@ -139,24 +149,32 @@ for fname in expected:
         names = [m.name for m in tf.getmembers()]
         leaked = [n for n in names if n.endswith("/.env") or n.endswith("/.env.local") or n == "./.env" or n == "./.env.local"]
         assert not leaked, f"{fname}: SECRET LEAKED: {leaked}"
-        if fname == "nidoai-gateway_0.1.0_all.deb":
+        if fname == "nidoai-gateway_0.2.0_all.deb":
             assert "./usr/lib/nidoai/src/cli.mjs" in names, f"{fname}: missing pure JS cli.mjs entry"
+            assert "./usr/lib/nidoai/src/gateway/anthropic-adapter.js" in names, f"{fname}: missing unified anthropic-adapter.js"
+            assert "./usr/lib/nidoai/src/security/secret-store.js" in names, f"{fname}: missing unified secret-store.js"
             assert "./usr/lib/nidoai/src/cli.ts" not in names, f"{fname}: stale cli.ts found (breaks stock Ubuntu nodejs)"
-        elif fname == "nido-desktop-settings_0.1.0_all.deb":
+        elif fname == "nido-desktop-settings_0.2.0_all.deb":
             for req_cfg in (
                 "./etc/dconf/profile/user",
                 "./etc/dconf/db/local.d/00-ubuntu-nido-settings",
                 "./usr/share/backgrounds/ubuntu-nido/wallpaper.png",
             ):
                 assert req_cfg in names, f"{fname}: missing {req_cfg}"
-        elif fname == "nido-hub_0.1.0_all.deb":
-            assert "./usr/share/icons/hicolor/scalable/apps/com.nidoholdings.NidoHub.svg" in names, (
-                f"{fname}: missing scalable NidoHub SVG icon"
-            )
-            assert "./usr/share/icons/hicolor/256x256/apps/com.nidoholdings.NidoHub.png" in names, (
-                f"{fname}: missing 256x256 NidoHub PNG icon"
-            )
-        elif fname == "nido-desktop_0.1.0_all.deb":
+        elif fname == "nido-hub_0.2.0_all.deb":
+            for req_hub in (
+                "./usr/lib/nido-hub/agent_accounts.py",
+                "./usr/lib/nido-hub/ai_discovery.py",
+                "./usr/lib/nido-hub/app_store.py",
+                "./usr/lib/nido-hub/markdown_render.py",
+                "./usr/libexec/nido-hub/nido-pkg-helper",
+                "./usr/share/nido-hub/vendors.json",
+                "./usr/share/polkit-1/actions/com.nidoholdings.nidohub.pkg.policy",
+                "./usr/share/icons/hicolor/scalable/apps/com.nidoholdings.NidoHub.svg",
+                "./usr/share/icons/hicolor/256x256/apps/com.nidoholdings.NidoHub.png",
+            ):
+                assert req_hub in names, f"{fname}: missing {req_hub}"
+        elif fname == "nido-desktop_0.2.0_all.deb":
             ctrl_key = next((k for k in members if k.startswith("control.tar")), None)
             ctrl_raw = members[ctrl_key]
             if ctrl_key.endswith(".gz"):
@@ -169,11 +187,27 @@ for fname in expected:
                 ctrl_tar = ctrl_raw
             with tarfile.open(fileobj=io.BytesIO(ctrl_tar), mode="r:") as ctf:
                 ctrl_txt = ctf.extractfile("./control").read().decode("utf-8")
-                for dep in ("nido-desktop-settings", "nido-hub", "nidoagent-cli", "nidoai-gateway", "nidooffice-cli", "vielotus", "nidobox"):
+                for dep in ("nido-desktop-settings", "nido-hub", "nidoagent-cli", "nidoai-gateway", "nidooffice-cli", "nidooffice-desktop", "vielotus", "nidobox (>= 1.4.7)", "showtime | totem"):
                     assert dep in ctrl_txt, f"{fname}: missing dependency {dep}"
+            for req_st in (
+                "./usr/libexec/ubuntu-nido/showtime-launch",
+                "./usr/libexec/ubuntu-nido/org.gnome.Showtime.service",
+                "./usr/libexec/ubuntu-nido/native-first-cleanup",
+                "./usr/lib/systemd/system/nido-native-first-cleanup.service",
+            ):
+                assert req_st in names, f"{fname}: missing {req_st}"
+        elif fname == "nidooffice-desktop_0.13.1_all.deb":
+            for req_od in (
+                "./etc/apparmor.d/nidooffice",
+                "./usr/bin/nidooffice-desktop",
+                "./usr/bin/pkcs11-helper",
+                "./usr/lib/nidooffice-desktop/install-runtime.sh",
+                "./usr/share/applications/nidooffice.desktop",
+            ):
+                assert req_od in names, f"{fname}: missing {req_od}"
 print(f"Audited all {len(expected)} .deb archives: valid ar format, zero secret files.")
 PY
-pass "Built and audited 6 .deb packages (zero secrets)"
+pass "Built and audited 7 .deb packages (zero secrets)"
 
 echo "=== 4. Static APT Repository Verification ==="
 python3 "${ROOT_DIR}/scripts/build_apt_repo.py" \
@@ -193,10 +227,24 @@ for suite in ("resolute", "noble"):
         pkg_gz = repo / "dists" / suite / "main" / f"binary-{arch}" / "Packages.gz"
         assert pkg_gz.is_file(), f"Missing {pkg_gz}"
         pkg_text = gzip.decompress(pkg_gz.read_bytes()).decode("utf-8")
-        for pkg in ("nidoai-gateway", "nidoagent-cli", "nido-desktop-settings", "nido-hub", "nidooffice-cli", "nido-desktop"):
+        for pkg in ("nidoai-gateway", "nidoagent-cli", "nido-desktop-settings", "nido-hub", "nidooffice-cli", "nidooffice-desktop", "nido-desktop"):
             assert f"Package: {pkg}" in pkg_text, f"{pkg} missing in {suite}/{arch}"
-        if any((repo.parent / "packages" / "vendor").glob(f"nidobox_*_{arch}.deb")):
+        nidobox_vendor = sorted((repo.parent / "packages" / "vendor").glob(f"nidobox_*_{arch}.deb"))
+        if nidobox_vendor:
+            assert len(nidobox_vendor) == 1, f"Duplicate nidobox vendor debs for {arch}: {[p.name for p in nidobox_vendor]}"
             assert "Package: nidobox" in pkg_text, f"nidobox missing in {suite}/{arch}"
+            nb_ver = ""
+            for stanza in pkg_text.strip().split("\n\n"):
+                lines = stanza.splitlines()
+                if "Package: nidobox" in lines:
+                    for ln in lines:
+                        if ln.startswith("Version:"):
+                            nb_ver = ln.split(":", 1)[1].strip()
+                            break
+            def _ver_tuple(v: str) -> tuple[int, ...]:
+                base = v.split("-", 1)[0].split("+", 1)[0]
+                return tuple(int(x) for x in base.split(".") if x.isdigit())
+            assert _ver_tuple(nb_ver) >= (1, 4, 7), f"Expected nidobox >= 1.4.7 in {suite}/{arch}, got {nb_ver!r}"
         digest = hashlib.sha256(pkg_gz.read_bytes()).hexdigest()
         assert digest in rel_text, f"SHA256 mismatch for {pkg_gz} in Release"
 print("Verified static APT repo Release & Packages.gz checksums for resolute & noble (amd64/arm64).")
@@ -207,7 +255,7 @@ python3 "${ROOT_DIR}/scripts/build_deb_portable.py" \
   --source-dir "${ROOT_DIR}/packages/nido-hub" \
   --extra-files "${ROOT_DIR}/packages/nido-hub/stage" \
   --version-suffix "+dev1" \
-  --output "${DEV_TEST_DIR}/nido-hub_0.1.0+dev1_all.deb"
+  --output "${DEV_TEST_DIR}/nido-hub_0.2.0+dev1_all.deb"
 python3 "${ROOT_DIR}/scripts/build_apt_repo.py" \
   --dist-dir "${DEV_TEST_DIR}" \
   --out-dir "${DEV_TEST_DIR}/apt" >/dev/null
@@ -216,9 +264,9 @@ import gzip, sys
 from pathlib import Path
 tmp = Path(sys.argv[1])
 ctrl = Path(sys.argv[2]).read_text(encoding="utf-8")
-assert "Version: 0.1.0\n" in ctrl, "Source DEBIAN/control must stay untouched at 0.1.0"
+assert "Version: 0.2.0\n" in ctrl, "Source DEBIAN/control must stay untouched at 0.2.0"
 pkg_txt = gzip.decompress((tmp / "apt/dists/resolute/main/binary-arm64/Packages.gz").read_bytes()).decode("utf-8")
-assert "Version: 0.1.0+dev1\n" in pkg_txt, f"Expected dev suffix in APT metadata: {pkg_txt}"
+assert "Version: 0.2.0+dev1\n" in pkg_txt, f"Expected dev suffix in APT metadata: {pkg_txt}"
 print("Verified --version-suffix +dev1 non-mutating dev APT build.")
 PY
 rm -rf "${DEV_TEST_DIR}"
@@ -246,10 +294,11 @@ extract_root = sandbox / "rootfs"
 extract_root.mkdir(parents=True, exist_ok=True)
 
 for deb_name in (
-    "nidoai-gateway_0.1.0_all.deb",
-    "nidoagent-cli_0.1.0_all.deb",
-    "nido-hub_0.1.0_all.deb",
-    "nidooffice-cli_0.1.0_all.deb",
+    "nidoai-gateway_0.2.0_all.deb",
+    "nidoagent-cli_0.2.0_all.deb",
+    "nido-hub_0.2.0_all.deb",
+    "nidooffice-cli_0.2.0_all.deb",
+    "nidooffice-desktop_0.13.1_all.deb",
 ):
     raw = (dist / deb_name).read_bytes()
     pos = 8
@@ -295,10 +344,10 @@ env \
   "${SANDBOX}/rootfs/usr/bin/nidoai" serve > "${SANDBOX}/gateway.log" 2>&1 &
 GW_PID=$!
 
-python3 - "${TEST_PORT}" <<'PY'
-import sys, time, urllib.error, urllib.request
+python3 - "${TEST_PORT}" "${TEST_TOKEN}" <<'PY'
+import json, sys, time, urllib.error, urllib.request
 
-port = sys.argv[1]
+port, token = sys.argv[1], sys.argv[2]
 url = f"http://127.0.0.1:{port}/healthz"
 for _ in range(50):
     try:
@@ -308,7 +357,11 @@ for _ in range(50):
                 assert hdrs.get("x-content-type-options") == "nosniff", f"Missing nosniff header: {hdrs}"
                 assert hdrs.get("x-frame-options") == "DENY", f"Missing X-Frame-Options: {hdrs}"
                 assert hdrs.get("cache-control") == "no-store", f"Missing Cache-Control: {hdrs}"
-                print(f"Gateway healthy with security headers at {url}")
+                health = json.loads(resp.read().decode("utf-8"))
+                caps = health.get("capabilities", {})
+                assert caps.get("vision") is True, f"Expected vision capability=true: {health}"
+                assert "anthropic" in caps.get("backends", []), f"Expected anthropic backend support: {health}"
+                print(f"Gateway healthy with security headers & vision/anthropic capabilities at {url}")
                 break
     except Exception:
         time.sleep(0.1)
@@ -320,6 +373,44 @@ try:
     raise SystemExit("Expected 401 on unauthenticated /v1/models")
 except urllib.error.HTTPError as err:
     assert err.code == 401, f"Expected 401 on /v1/models, got {err.code}"
+
+# Verify SSRF image_url rejection (400) and valid multimodal base64 image_url acceptance (passes schema -> 503 unconfigured)
+bad_img_req = urllib.request.Request(
+    f"http://127.0.0.1:{port}/v1/chat/completions",
+    data=json.dumps({
+        "model": "auto",
+        "messages": [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": "file:///etc/passwd"}}]}],
+    }).encode("utf-8"),
+    headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
+    method="POST",
+)
+try:
+    urllib.request.urlopen(bad_img_req, timeout=2.0)
+    raise SystemExit("Expected 400 for file:// image_url")
+except urllib.error.HTTPError as err:
+    assert err.code == 400, f"Expected 400 for file:// image_url, got {err.code}"
+
+good_img_req = urllib.request.Request(
+    f"http://127.0.0.1:{port}/v1/chat/completions",
+    data=json.dumps({
+        "model": "auto",
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "OCR"},
+                {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,/9j/4AAQSkZJRg=="}},
+            ],
+        }],
+    }).encode("utf-8"),
+    headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
+    method="POST",
+)
+try:
+    urllib.request.urlopen(good_img_req, timeout=2.0)
+    raise SystemExit("Expected 503 for unconfigured backend on valid vision payload")
+except urllib.error.HTTPError as err:
+    assert err.code == 503, f"Expected 503 (schema accepted vision payload), got {err.code}"
+print("Verified multimodal Vision image_url schema & SSRF guard on live unified NidoAI gateway.")
 PY
 
 NIDOAI_STATUS_OUT="$(env \
@@ -392,7 +483,13 @@ env["NIDOOFFICE_PY_ENTRY"] = str(sandbox / "rootfs/usr/lib/nidooffice-cli/engine
 env["NIDOOFFICE_DESKTOP_CLI"] = str(sandbox / "nonexistent-desktop-cli")
 
 docx_path = sandbox / "report.docx"
-md_in = "# Báo cáo kiểm thử\n\nNội dung: Báo cáo Ubuntu-Nido — Tiếng Việt chuẩn\n\n| Hạng mục | Giá trị |\n| --- | --- |\n| GPU | 100 |\n"
+md_in = (
+    "# Báo cáo kiểm thử\n\n"
+    "Nội dung: Báo cáo Ubuntu-Nido — Tiếng Việt chuẩn\n\n"
+    "* **Chuẩn ký số:** **PAdES** (`ETSI.CAdES.detached`)\n"
+    "  * **Phiên bản:** NidoOffice `v0.13.1` (phép nhân 2 * 3 * 4)\n\n"
+    "| **Hạng mục** | Giá trị |\n| --- | --- |\n| **GPU** | 100 |\n"
+)
 subprocess.run(
     [nidooffice_bin, "create", "--type", "docx", "--out", str(docx_path), "--from", "-"],
     input=md_in,
@@ -409,9 +506,17 @@ docx_out = subprocess.run(
     capture_output=True,
 ).stdout
 assert "Báo cáo Ubuntu-Nido — Tiếng Việt chuẩn" in docx_out, f"DOCX round-trip mismatch: {docx_out}"
+assert "**Chuẩn ký số:**" not in docx_out and "**PAdES**" not in docx_out and "`v0.13.1`" not in docx_out, (
+    f"Raw markdown markers leaked into DOCX text: {docx_out}"
+)
+assert "Chuẩn ký số: PAdES (ETSI.CAdES.detached)" in docx_out and "2 * 3 * 4" in docx_out
+import zipfile
+with zipfile.ZipFile(docx_path, "r") as zf_doc:
+    doc_xml = zf_doc.read("word/document.xml").decode("utf-8")
+assert "<w:b/>" in doc_xml and "Liberation Mono" in doc_xml, "Expected native OOXML bold & monospace runs"
 
 xlsx_path = sandbox / "summary.xlsx"
-table_in = "| Thành phần | Trạng thái |\n| --- | --- |\n| NidoAgent | 200 |\n| Sen Việt | =TEST |\n"
+table_in = "| **Thành phần** | Trạng thái |\n| --- | --- |\n| **NidoAgent** | 200 |\n| Sen Việt (`v2`) | =TEST |\n"
 subprocess.run(
     [nidooffice_bin, "create", "--type", "xlsx", "--out", str(xlsx_path), "--from", "-"],
     input=table_in,
@@ -428,6 +533,7 @@ xlsx_out = subprocess.run(
     capture_output=True,
 ).stdout
 assert "NidoAgent" in xlsx_out and "200" in xlsx_out and "=TEST" in xlsx_out, f"XLSX round-trip mismatch: {xlsx_out}"
+assert "**NidoAgent**" not in xlsx_out and "`v2`" not in xlsx_out, f"Raw markdown leaked into XLSX: {xlsx_out}"
 
 mock_desktop_cli = sandbox / "mock-nidooffice-desktop"
 mock_desktop_cli.write_text("#!/bin/sh\necho \"delegated:$*\"\n", encoding="utf-8")
@@ -442,7 +548,178 @@ delegated_out = subprocess.run(
     capture_output=True,
 ).stdout.strip()
 assert delegated_out == f"delegated:read {docx_path}", f"Expected desktop CLI delegation, got: {delegated_out}"
-print("Verified nido-hub --self-test, nidooffice DOCX/XLSX round-trip, and desktop CLI delegation.")
+
+# Verify nidooffice-desktop auto-latest resolver & --check-update using loopback mock metadata server
+import http.server, threading
+class _MockReleaseHandler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path.endswith("latest-linux-arm64.yml") or self.path.endswith("latest-linux.yml"):
+            body = b"version: 0.14.2\npath: NidoOffice-0.14.2-arm64.AppImage\n"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/yaml")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        else:
+            self.send_response(404)
+            self.end_headers()
+    def log_message(self, *args):
+        pass
+
+srv = http.server.HTTPServer(("127.0.0.1", 0), _MockReleaseHandler)
+srv_port = srv.server_address[1]
+t = threading.Thread(target=srv.serve_forever, daemon=True)
+t.start()
+try:
+    fake_opt = sandbox / "opt-nidooffice"
+    fake_opt.mkdir(parents=True, exist_ok=True)
+    (fake_opt / ".installed-version").write_text("0.13.0\n", encoding="utf-8")
+    desk_env = dict(env)
+    desk_env["NIDOOFFICE_RUNTIME_INSTALLER"] = str(
+        sandbox / "rootfs/usr/lib/nidooffice-desktop/install-runtime.sh"
+    )
+    desk_env["NIDOOFFICE_INSTALL_DIR"] = str(fake_opt)
+    desk_env["NIDOOFFICE_ARCH"] = "arm64"
+    desk_env["NIDOOFFICE_RELEASE_BASE_URL"] = f"http://127.0.0.1:{srv_port}"
+    chk_out = subprocess.run(
+        [str(sandbox / "rootfs/usr/bin/nidooffice-desktop"), "--check-update"],
+        text=True,
+        check=True,
+        env=desk_env,
+        capture_output=True,
+    ).stdout
+    assert "installed=0.13.0" in chk_out, f"Unexpected installed version: {chk_out}"
+    assert "latest=0.14.2" in chk_out, f"Expected resolved latest=0.14.2: {chk_out}"
+    assert "update_available=true" in chk_out, f"Expected update_available=true: {chk_out}"
+
+    pin_out = subprocess.run(
+        [str(sandbox / "rootfs/usr/bin/nidooffice-desktop"), "--check-update", "--version", "0.13.0"],
+        text=True,
+        check=True,
+        env=desk_env,
+        capture_output=True,
+    ).stdout
+    assert "latest=0.13.0" in pin_out and "update_available=false" in pin_out, f"Pinned check failed: {pin_out}"
+finally:
+    srv.shutdown()
+    srv.server_close()
+
+print("Verified nido-hub --self-test, nidooffice DOCX/XLSX round-trip, desktop CLI delegation, and auto-latest updater.")
+
+# Verify packaged pkcs11-helper (for NidoOffice USB Token / SmartCard PKCS#11 signing)
+p11_helper = sandbox / "rootfs/usr/bin/pkcs11-helper"
+assert p11_helper.is_file(), f"Missing packaged pkcs11-helper at {p11_helper}"
+subprocess.run([sys.executable, str(p11_helper), "--self-test"], check=True, capture_output=True, text=True)
+r_missing = subprocess.run(
+    [sys.executable, str(p11_helper), "pkcs11-list"],
+    capture_output=True,
+    text=True,
+    env={k: v for k, v in os.environ.items() if not k.startswith("GENOFFICE_")},
+)
+assert r_missing.returncode == 2 and "PKCS11_ERR:MISSING_MODULE_PATH" in r_missing.stderr, (
+    f"Unexpected pkcs11-list missing-env result: rc={r_missing.returncode} stderr={r_missing.stderr}"
+)
+print("Verified packaged pkcs11-helper ABI layout and error protocol.")
+PY
+
+# Verify nido-pkg-helper narrowly scoped security, GPG fingerprint enforcement, DEB822 & package-specific APT pinning
+python3 - "${SANDBOX}" "${ROOT_DIR}/packages/nido-desktop-settings/files/etc/apt/keyrings/ubuntu-nido.asc" "${ROOT_DIR}/iso-builder/scripts/customize.sh" <<'PY'
+import json, os, subprocess, sys
+from pathlib import Path
+
+sandbox = Path(sys.argv[1])
+sample_key = Path(sys.argv[2])
+customize_sh = Path(sys.argv[3]).read_text(encoding="utf-8")
+helper = sandbox / "rootfs/usr/libexec/nido-hub/nido-pkg-helper"
+assert helper.is_file(), f"Missing packaged nido-pkg-helper at {helper}"
+
+# 1. Verify upstream Ubuntu security updates are NEVER rewritten to third-party mirrors
+assert "security.ubuntu.com/ubuntu|https://mirror.bizflycloud.vn" not in customize_sh, (
+    "customize.sh must NEVER rewrite security.ubuntu.com to a third-party mirror!"
+)
+
+# 2. Protected core packages cannot be removed
+for protected in ("systemd", "fwupd", "unattended-upgrades", "ubuntu-desktop-minimal", "nido-hub", "snapd"):
+    r = subprocess.run(
+        [sys.executable, str(helper), "--dry-run", "remove-apt", protected],
+        capture_output=True, text=True, check=False,
+    )
+    assert r.returncode != 0, f"Expected protected package removal to fail for {protected}"
+
+# 3. Verify GPG fingerprint check + DEB822 + package-specific APT pinning in isolated --root
+fake_root = sandbox / "fake-root"
+fake_root.mkdir(parents=True, exist_ok=True)
+real_fpr = "AC980631CB8BA9D2602A0990528AF2083F61DC2F"
+test_vendors = sandbox / "test-vendors.json"
+test_vendors.write_text(json.dumps({
+    "schemaVersion": 1,
+    "vendors": {
+        "mozilla": {
+            "id": "mozilla",
+            "name": "Mozilla Official APT",
+            "uri": "https://packages.mozilla.org/apt",
+            "suites": ["mozilla"],
+            "components": ["main"],
+            "keyUrl": "https://packages.mozilla.org/apt/repo-signing-key.gpg",
+            "expectedFingerprints": [real_fpr],
+            "pinOrigin": "packages.mozilla.org",
+            "allowedPackages": ["firefox", "firefox-l10n-*"],
+            "pinPriority": 1000,
+            "blockUbuntuPackage": "firefox",
+        },
+        "badvendor": {
+            "id": "badvendor",
+            "name": "Bad Key Vendor",
+            "uri": "https://example.invalid/apt",
+            "suites": ["stable"],
+            "components": ["main"],
+            "keyUrl": "https://example.invalid/key.gpg",
+            "expectedFingerprints": ["0000000000000000000000000000000000000000"],
+            "pinOrigin": "example.invalid",
+            "allowedPackages": ["demo"],
+            "pinPriority": 500,
+        },
+    }
+}), encoding="utf-8")
+
+env = dict(os.environ)
+env["NIDO_PKG_ARCH"] = "arm64"
+env["NIDO_UBUNTU_CODENAME"] = "resolute"
+
+# Wrong GPG fingerprint MUST fail hard
+bad_r = subprocess.run(
+    [sys.executable, str(helper), "--vendors-file", str(test_vendors), "--root", str(fake_root), "--key-file", str(sample_key), "setup-vendor", "badvendor"],
+    env=env, capture_output=True, text=True, check=False,
+)
+assert bad_r.returncode != 0 and "fingerprint" in bad_r.stderr.lower(), f"Expected GPG fingerprint mismatch failure: {bad_r.stderr}"
+
+# Non-allowlisted package for mozilla MUST fail hard
+unauth_pkg = subprocess.run(
+    [sys.executable, str(helper), "--vendors-file", str(test_vendors), "--root", str(fake_root), "--key-file", str(sample_key), "--dry-run", "install-vendor", "mozilla", "libc6"],
+    env=env, capture_output=True, text=True, check=False,
+)
+assert unauth_pkg.returncode != 0, "Vendor install must reject non-allowlisted package libc6"
+
+# Valid fingerprint & allowlisted package succeeds and writes DEB822 + package-specific pin
+ok_r = subprocess.run(
+    [sys.executable, str(helper), "--vendors-file", str(test_vendors), "--root", str(fake_root), "--key-file", str(sample_key), "--dry-run", "install-vendor", "mozilla", "firefox"],
+    env=env, capture_output=True, text=True, check=True,
+)
+assert "NIDO_PROGRESS:done:100:0:" in ok_r.stdout
+src_txt = (fake_root / "etc/apt/sources.list.d/nido-vendor-mozilla.sources").read_text(encoding="utf-8")
+assert "Architectures: arm64" in src_txt and "Signed-By: /etc/apt/keyrings/nido-vendor-mozilla.gpg" in src_txt
+pin_txt = (fake_root / "etc/apt/preferences.d/nido-vendor-mozilla").read_text(encoding="utf-8")
+assert "Package: *\nPin: origin packages.mozilla.org\nPin-Priority: 100" in pin_txt
+assert "Package: firefox firefox-l10n-*\nPin: origin packages.mozilla.org\nPin-Priority: 1000" in pin_txt
+assert "Package: firefox\nPin: release o=Ubuntu*\nPin-Priority: -1" in pin_txt
+assert (fake_root / "etc/apt/keyrings/nido-vendor-mozilla.gpg").is_file()
+helper_src = helper.read_text(encoding="utf-8")
+assert "--allow-downgrades" in helper_src, "nido-pkg-helper must pass --allow-downgrades for pinPriority >= 1000 vendors (e.g. Mozilla DEB replacing Ubuntu 1:1snap1)"
+hook_120 = Path(sys.argv[3]).parents[1] / "config/hooks/live/0120-nido-native-first.hook.chroot"
+assert hook_120.is_file() and "--allow-downgrades" in hook_120.read_text(encoding="utf-8"), (
+    "0120-nido-native-first.hook.chroot must pass --allow-downgrades for Firefox DEB"
+)
+print("Verified nido-pkg-helper GPG fingerprint enforcement, DEB822 .sources, package-specific APT pinning, --allow-downgrades, and protected-package guard.")
 PY
 pass "Live nidoai-gateway <-> nidoagent-cli, nido-hub, and nidooffice smoke tests passed"
 
@@ -551,6 +828,7 @@ with tempfile.TemporaryDirectory() as td:
         "Package: dracut\nStatus: install ok installed\nVersion: 110-11\n\n"
         "Package: dracut-core\nStatus: install ok installed\nVersion: 110-11\n\n"
         "Package: vielotus\nStatus: install ok installed\nVersion: 2.0.4\n\n"
+        "Package: nidobox\nStatus: install ok installed\nVersion: 1.4.7\n\n"
         "Package: nido-hub\nStatus: install ok installed\nVersion: 0.1.0\n",
         encoding="utf-8",
     )
@@ -587,8 +865,9 @@ with tempfile.TemporaryDirectory() as td:
     assert not stale_schemas.exists(), "Stale gschemas.compiled was not unlinked"
 
     merged = (live_dir / "var/lib/dpkg/status").read_text(encoding="utf-8")
+    assert "nidobox" in rec.PROTECTED_CUSTOM_PREFIXES, "nidobox missing from PROTECTED_CUSTOM_PREFIXES"
     assert "Version: 2.39-nido" in merged and "2.39-stale" not in merged, "Base libc6 should win"
-    assert "Package: vielotus" in merged and "Package: nido-hub" in merged, "Custom pkgs lost"
+    assert "Package: vielotus" in merged and "Package: nidobox" in merged and "Package: nido-hub" in merged, "Custom pkgs lost"
     assert "Package: casper" in merged and "Package: libaio1t64" in merged, "Live pkgs missing"
     assert "Package: dracut\n" not in merged and "Package: dracut-core\n" not in merged, "Whiteout pkgs not pruned"
 

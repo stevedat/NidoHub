@@ -18,7 +18,10 @@ for core_meta in \
   nido-hub \
   nidoagent-cli \
   nidoai-gateway \
-  nidooffice-cli; do
+  nidooffice-cli \
+  nidooffice-desktop \
+  nidobox \
+  vielotus; do
   if dpkg -s "$core_meta" >/dev/null 2>&1; then
     apt-mark manual "$core_meta" >/dev/null 2>&1 || true
   fi

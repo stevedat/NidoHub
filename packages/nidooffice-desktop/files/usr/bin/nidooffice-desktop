@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+RUNTIME_INSTALLER="${NIDOOFFICE_RUNTIME_INSTALLER:-/usr/lib/nidooffice-desktop/install-runtime.sh}"
+
+case "${1:-}" in
+  --version|-V)
+    if [ -f /opt/NidoOffice/.nidooffice-version ]; then
+      printf 'NidoOffice Desktop %s\n' "$(cat /opt/NidoOffice/.nidooffice-version)"
+      exit 0
+    fi
+    if [ -x "$RUNTIME_INSTALLER" ]; then
+      exec "$RUNTIME_INSTALLER" --check
+    fi
+    echo "NidoOffice Desktop (runtime not installed)" >&2
+    exit 1
+    ;;
+  --check-update)
+    shift
+    exec "$RUNTIME_INSTALLER" --check "$@"
+    ;;
+  --update)
+    shift
+    if [ "$(id -u)" -eq 0 ]; then
+      exec "$RUNTIME_INSTALLER" "$@"
+    elif [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] && command -v pkexec >/dev/null 2>&1; then
+      exec pkexec "$RUNTIME_INSTALLER" "$@"
+    elif command -v sudo >/dev/null 2>&1; then
+      exec sudo "$RUNTIME_INSTALLER" "$@"
+    else
+      echo "nidooffice-desktop --update requires root privileges (pkexec or sudo)." >&2
+      exit 1
+    fi
+    ;;
+esac
+
+BIN="/opt/NidoOffice/nidooffice"
+if [ ! -x "$BIN" ]; then
+  BIN="/opt/NidoOffice/genoffice"
+fi
+
+export ELECTRON_OZONE_PLATFORM_HINT="${ELECTRON_OZONE_PLATFORM_HINT:-auto}"
+EXTRA_ARGS=()
+
+if [ -n "${WAYLAND_DISPLAY:-}" ]; then
+  HAS_IME=0
+  HAS_TI_VER=0
+  for arg in "$@"; do
+    case "$arg" in
+      --enable-wayland-ime) HAS_IME=1 ;;
+      --wayland-text-input-version=*) HAS_TI_VER=1 ;;
+    esac
+  done
+  [ "$HAS_IME" -eq 0 ] && EXTRA_ARGS+=(--enable-wayland-ime)
+  [ "$HAS_TI_VER" -eq 0 ] && EXTRA_ARGS+=(--wayland-text-input-version=3)
+fi
+
+if [ "$(id -u)" -eq 0 ]; then
+  HAS_NO_SANDBOX=0
+  for arg in "$@"; do
+    if [ "$arg" = "--no-sandbox" ]; then
+      HAS_NO_SANDBOX=1
+      break
+    fi
+  done
+  [ "$HAS_NO_SANDBOX" -eq 0 ] && EXTRA_ARGS+=(--no-sandbox)
+fi
+
+exec "$BIN" "${EXTRA_ARGS[@]}" "$@"

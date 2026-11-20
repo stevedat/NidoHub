@@ -29,7 +29,7 @@ sha256sum -c SHA256SUMS.txt
 - **Sen Việt Input (IBus):** Ready-to-type Vietnamese Telex & VNI over native GNOME IBus across Wayland and X11.
 - **NidoOffice Suite:** Pre-installed default AI-native office suite for Word (`.docx`), Excel (`.xlsx`), PowerPoint (`.pptx`), PDF, and Markdown — replacing LibreOffice out of the box.
 - **NidoBox Suite:** Native GTK4/Libadwaita & Rust utilities (`Super+Shift+S` Capture Studio + offline Vietnamese OCR, NidoDrop LAN QR transfer, Batch Image, Vietnamese/CJK-safe Archive, and 1-click NTFS dirty-bit unlock).
-- **NidoAgent:** Trigger AI-assisted tasks from keyboard (`Super+Space`), terminal (`nidoagent`), dock/hub, or Files.
+- **NidoAgent:** Trigger AI-assisted tasks from keyboard (`Super+Shift+A`), terminal (`nidoagent`), dock/hub, or Files.
 - **On-Device Control:** Bring your own API keys or connect local models.
 
 ## Build
