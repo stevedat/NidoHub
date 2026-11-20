@@ -79,7 +79,7 @@ jobs:
       - name: Install ISO build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y squashfs-tools xorriso rsync wget curl dpkg-dev python3 p7zip-full zstd
+          sudo apt-get install -y squashfs-tools xorriso rsync wget curl dpkg-dev python3 p7zip-full zstd rclone
           if [ "${TARGET_ARCH}" = "amd64" ]; then
             sudo apt-get install -y isolinux syslinux-utils grub-pc-bin qemu-system-x86
           else
@@ -277,12 +277,58 @@ jobs:
           ISO_PATH="iso-builder/NidoOS-desktop-${{ matrix.arch }}.iso"
           ISO_SIZE="$(du -h "$ISO_PATH" | cut -f1)"
           ISO_SHA="$(sha256sum "$ISO_PATH" | cut -d' ' -f1)"
+          mkdir -p iso-builder/checksums
+          printf '%s  NidoOS-desktop-%s.iso\n' "$ISO_SHA" "${{ matrix.arch }}" > "iso-builder/checksums/NidoOS-desktop-${{ matrix.arch }}.sha256"
           {
             echo "### NidoOS ISO (${{ matrix.arch }})"
             echo "- File: \`NidoOS-desktop-${{ matrix.arch }}.iso\`"
             echo "- Size: \`${ISO_SIZE}\`"
             echo "- SHA256: \`${ISO_SHA}\`"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload ISO to S3 CDN (if secrets configured)
+        if: ${{ secrets.CDN_ACCESS_KEY_ID != '' && secrets.CDN_SECRET_ACCESS_KEY != '' && vars.CDN_S3_ENDPOINT != '' }}
+        env:
+          CDN_BUCKET: ${{ vars.CDN_BUCKET || 'nidoos-releases' }}
+          CDN_PUBLIC_URL: ${{ vars.CDN_PUBLIC_URL }}
+          RCLONE_CONFIG_CDN_TYPE: s3
+          RCLONE_CONFIG_CDN_PROVIDER: Other
+          RCLONE_CONFIG_CDN_REGION: auto
+          RCLONE_CONFIG_CDN_ENDPOINT: ${{ vars.CDN_S3_ENDPOINT }}
+          RCLONE_CONFIG_CDN_ACCESS_KEY_ID: ${{ secrets.CDN_ACCESS_KEY_ID }}
+          RCLONE_CONFIG_CDN_SECRET_ACCESS_KEY: ${{ secrets.CDN_SECRET_ACCESS_KEY }}
+          RCLONE_CONFIG_CDN_ACL: private
+          RCLONE_CONFIG_CDN_NO_CHECK_BUCKET: "true"
+        run: |
+          set -euo pipefail
+          ISO_NAME="NidoOS-desktop-${{ matrix.arch }}.iso"
+          ISO_PATH="iso-builder/${ISO_NAME}"
+          PUB_BASE="${CDN_PUBLIC_URL%/}"
+          TARGETS=("latest")
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            TARGETS+=("${GITHUB_REF_NAME}")
+          fi
+          for prefix in "${TARGETS[@]}"; do
+            rclone copyto "$ISO_PATH" "cdn:${CDN_BUCKET}/${prefix}/${ISO_NAME}" \
+              --s3-chunk-size 64M \
+              --s3-upload-concurrency 8 \
+              --s3-no-check-bucket \
+              --header-upload "Content-Type: application/octet-stream" \
+              --header-upload "Content-Disposition: attachment; filename=\"${ISO_NAME}\"" \
+              --header-upload "Cache-Control: public, max-age=3600" \
+              --stats 10s \
+              --stats-one-line
+            if [ -n "$PUB_BASE" ]; then
+              echo "- Fast CDN (${prefix}): [${ISO_NAME}](${PUB_BASE}/${prefix}/${ISO_NAME})" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
+
+      - name: Upload ISO checksum artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nidoos-sha256-${{ matrix.arch }}
+          path: iso-builder/checksums/NidoOS-desktop-${{ matrix.arch }}.sha256
+          retention-days: 7
 
       - name: Upload ISO artifact
         uses: actions/upload-artifact@v4
@@ -303,23 +349,58 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: build
     runs-on: ubuntu-24.04
+    env:
+      CDN_BUCKET: ${{ vars.CDN_BUCKET || 'nidoos-releases' }}
+      CDN_PUBLIC_URL: ${{ vars.CDN_PUBLIC_URL }}
+      RCLONE_CONFIG_CDN_TYPE: s3
+      RCLONE_CONFIG_CDN_PROVIDER: Other
+      RCLONE_CONFIG_CDN_REGION: auto
+      RCLONE_CONFIG_CDN_ENDPOINT: ${{ vars.CDN_S3_ENDPOINT }}
+      RCLONE_CONFIG_CDN_ACCESS_KEY_ID: ${{ secrets.CDN_ACCESS_KEY_ID }}
+      RCLONE_CONFIG_CDN_SECRET_ACCESS_KEY: ${{ secrets.CDN_SECRET_ACCESS_KEY }}
+      RCLONE_CONFIG_CDN_ACL: private
+      RCLONE_CONFIG_CDN_NO_CHECK_BUCKET: "true"
     steps:
-      - name: Download ISO artifacts
+      - name: Download ISO checksums
         uses: actions/download-artifact@v4
         with:
-          pattern: nidoos-iso-*
+          pattern: nidoos-sha256-*
           path: release-assets
           merge-multiple: true
 
-      - name: Generate installer-only SHA256SUMS.txt
+      - name: Assemble SHA256SUMS.txt & publish to S3 CDN
         run: |
+          set -euo pipefail
           cd release-assets
-          sha256sum NidoOS-desktop-*.iso > SHA256SUMS.txt
+          cat NidoOS-desktop-*.sha256 | sort -k2 > SHA256SUMS.txt
           cat SHA256SUMS.txt
+          if [ -n "${RCLONE_CONFIG_CDN_ACCESS_KEY_ID:-}" ] && [ -n "${RCLONE_CONFIG_CDN_SECRET_ACCESS_KEY:-}" ] && [ -n "${RCLONE_CONFIG_CDN_ENDPOINT:-}" ]; then
+            sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends rclone
+            for prefix in "latest" "${GITHUB_REF_NAME}"; do
+              rclone copyto SHA256SUMS.txt "cdn:${CDN_BUCKET}/${prefix}/SHA256SUMS.txt" \
+                --s3-no-check-bucket \
+                --header-upload "Content-Type: text/plain; charset=utf-8" \
+                --header-upload "Cache-Control: no-cache"
+            done
+          fi
+          PUB_BASE="${CDN_PUBLIC_URL%/}"
+          cat > RELEASE_BODY.md <<EOF
+          ## NidoOS ${GITHUB_REF_NAME} (Ubuntu 26.04 LTS Base)
 
-      - name: Publish GitHub Release
+          Direct high-speed CDN downloads (GitHub Releases enforces a 2 GiB per-asset limit):
+
+          - **amd64 (x86_64 PC/Laptop):** [NidoOS-desktop-amd64.iso](${PUB_BASE}/${GITHUB_REF_NAME}/NidoOS-desktop-amd64.iso)
+          - **arm64 (Apple Silicon VM / ARM64):** [NidoOS-desktop-arm64.iso](${PUB_BASE}/${GITHUB_REF_NAME}/NidoOS-desktop-arm64.iso)
+          - **Checksums:** [SHA256SUMS.txt](${PUB_BASE}/${GITHUB_REF_NAME}/SHA256SUMS.txt)
+
+          \`\`\`sh
+          sha256sum -c SHA256SUMS.txt
+          \`\`\`
+          EOF
+
+      - name: Publish GitHub Release (SHA256SUMS + CDN links)
         uses: softprops/action-gh-release@v2
         with:
+          body_path: release-assets/RELEASE_BODY.md
           files: |
-            release-assets/NidoOS-desktop-*.iso
             release-assets/SHA256SUMS.txt

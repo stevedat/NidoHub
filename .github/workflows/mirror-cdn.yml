@@ -1,0 +1,148 @@
+name: Mirror NidoOS ISO to S3 CDN
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "Build NidoOS ISO workflow run ID"
+        required: true
+        default: "44735273675"
+        type: string
+      release_prefix:
+        description: "Destination CDN folder prefix (e.g. latest or v0.2.0)"
+        required: true
+        default: "latest"
+        type: string
+      arch:
+        description: "Architecture(s) to mirror"
+        required: true
+        default: "both"
+        type: choice
+        options:
+          - "both"
+          - "arm64"
+          - "amd64"
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  mirror:
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+      CDN_S3_ENDPOINT: ${{ vars.CDN_S3_ENDPOINT }}
+      CDN_BUCKET: ${{ vars.CDN_BUCKET || 'nidoos-releases' }}
+      CDN_PUBLIC_URL: ${{ vars.CDN_PUBLIC_URL }}
+      RCLONE_CONFIG_CDN_TYPE: s3
+      RCLONE_CONFIG_CDN_PROVIDER: Other
+      RCLONE_CONFIG_CDN_REGION: auto
+      RCLONE_CONFIG_CDN_ENDPOINT: ${{ vars.CDN_S3_ENDPOINT }}
+      RCLONE_CONFIG_CDN_ACCESS_KEY_ID: ${{ secrets.CDN_ACCESS_KEY_ID }}
+      RCLONE_CONFIG_CDN_SECRET_ACCESS_KEY: ${{ secrets.CDN_SECRET_ACCESS_KEY }}
+      RCLONE_CONFIG_CDN_ACL: private
+      RCLONE_CONFIG_CDN_NO_CHECK_BUCKET: "true"
+
+    steps:
+      - name: Validate S3 CDN configuration
+        run: |
+          set -euo pipefail
+          for req in CDN_S3_ENDPOINT CDN_BUCKET CDN_PUBLIC_URL; do
+            if [ -z "${!req:-}" ]; then
+              echo "ERROR: Missing GitHub repository variable: $req" >&2
+              exit 1
+            fi
+          done
+          if [ -z "${RCLONE_CONFIG_CDN_ACCESS_KEY_ID:-}" ] || [ -z "${RCLONE_CONFIG_CDN_SECRET_ACCESS_KEY:-}" ]; then
+            echo "ERROR: Missing GitHub Actions secrets CDN_ACCESS_KEY_ID / CDN_SECRET_ACCESS_KEY." >&2
+            echo "Add scoped S3 Object Read & Write credentials for bucket '${CDN_BUCKET}' to repository secrets." >&2
+            exit 1
+          fi
+
+      - name: Free runner disk space & install rclone
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/boost /opt/hostedtoolcache/CodeQL
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends rclone curl
+          df -h /
+
+      - name: Download ISO artifact(s) and multipart-upload to S3 CDN
+        env:
+          RUN_ID: ${{ inputs.run_id }}
+          PREFIX: ${{ inputs.release_prefix }}
+          TARGET_ARCH: ${{ inputs.arch }}
+        run: |
+          set -euo pipefail
+          CLEAN_PREFIX="${PREFIX#/}"
+          CLEAN_PREFIX="${CLEAN_PREFIX%/}"
+          PUB_BASE="${CDN_PUBLIC_URL%/}"
+
+          if [ "$TARGET_ARCH" = "both" ]; then
+            ARCHES=(arm64 amd64)
+          else
+            ARCHES=("$TARGET_ARCH")
+          fi
+
+          WORK_DIR="$(mktemp -d)"
+          trap 'rm -rf "$WORK_DIR"' EXIT
+          SHA_FILE="${WORK_DIR}/SHA256SUMS.txt"
+          : > "$SHA_FILE"
+
+          {
+            echo "### NidoOS ISO Mirror on Edge CDN (\`${CLEAN_PREFIX}\`)"
+            echo ""
+            echo "| Architecture | Direct Fast CDN Download | Size | SHA256 |"
+            echo "| :--- | :--- | :--- | :--- |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          for a in "${ARCHES[@]}"; do
+            ART_NAME="nidoos-iso-${a}"
+            ISO_NAME="NidoOS-desktop-${a}.iso"
+            OUT_DIR="${WORK_DIR}/${a}"
+            mkdir -p "$OUT_DIR"
+
+            echo "==> Downloading artifact ${ART_NAME} from run ${RUN_ID}..."
+            gh run download "$RUN_ID" -R "${GITHUB_REPOSITORY}" -n "$ART_NAME" -D "$OUT_DIR"
+            ISO_PATH="${OUT_DIR}/${ISO_NAME}"
+            test -s "$ISO_PATH" || { echo "ERROR: Missing ${ISO_PATH} after download" >&2; exit 1; }
+
+            ISO_BYTES="$(stat -c%s "$ISO_PATH")"
+            ISO_SIZE="$(du -h "$ISO_PATH" | cut -f1)"
+            ISO_SHA="$(sha256sum "$ISO_PATH" | cut -d' ' -f1)"
+            printf '%s  %s\n' "$ISO_SHA" "$ISO_NAME" >> "$SHA_FILE"
+
+            echo "==> Uploading ${ISO_NAME} (${ISO_SIZE}) to cdn:${CDN_BUCKET}/${CLEAN_PREFIX}/${ISO_NAME}..."
+            rclone copyto "$ISO_PATH" "cdn:${CDN_BUCKET}/${CLEAN_PREFIX}/${ISO_NAME}" \
+              --s3-chunk-size 64M \
+              --s3-upload-concurrency 8 \
+              --s3-no-check-bucket \
+              --header-upload "Content-Type: application/octet-stream" \
+              --header-upload "Content-Disposition: attachment; filename=\"${ISO_NAME}\"" \
+              --header-upload "Cache-Control: public, max-age=3600" \
+              --stats 10s \
+              --stats-one-line
+
+            rm -rf "$OUT_DIR"
+
+            ISO_URL="${PUB_BASE}/${CLEAN_PREFIX}/${ISO_NAME}"
+            REMOTE_LEN="$(curl -fsSI "$ISO_URL" | awk 'tolower($1)=="content-length:"{gsub("\r",""); print $2}' | tail -n1)"
+            if [ "$REMOTE_LEN" != "$ISO_BYTES" ]; then
+              echo "ERROR: Remote Content-Length (${REMOTE_LEN}) != local (${ISO_BYTES}) for ${ISO_URL}" >&2
+              exit 1
+            fi
+            echo "✅ Verified ${ISO_URL} (${REMOTE_LEN} bytes)"
+            echo "| \`${a}\` | [${ISO_NAME}](${ISO_URL}) | \`${ISO_SIZE}\` | \`${ISO_SHA}\` |" >> "$GITHUB_STEP_SUMMARY"
+          done
+
+          echo "==> Uploading SHA256SUMS.txt..."
+          rclone copyto "$SHA_FILE" "cdn:${CDN_BUCKET}/${CLEAN_PREFIX}/SHA256SUMS.txt" \
+            --s3-no-check-bucket \
+            --header-upload "Content-Type: text/plain; charset=utf-8" \
+            --header-upload "Cache-Control: no-cache"
+
+          SHA_URL="${PUB_BASE}/${CLEAN_PREFIX}/SHA256SUMS.txt"
+          curl -fsSI "$SHA_URL" >/dev/null
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Checksums: [SHA256SUMS.txt](${SHA_URL})" >> "$GITHUB_STEP_SUMMARY"
+          cat "$SHA_FILE"
