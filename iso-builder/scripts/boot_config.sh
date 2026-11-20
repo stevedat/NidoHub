@@ -12,7 +12,7 @@ step_boot_config() {
     info "[2.5/7] Configuring Ubuntu-Nido bootloader branding..."
   fi
 
-  local brand_name="Ubuntu-Nido"
+  local brand_name="NidoOS"
   local brand_title="${brand_name} ${NIDO_VERSION} (${TARGET_ARCH})"
   local boot_splash="$SCRIPT_DIR/config/includes.chroot/usr/share/backgrounds/ubuntu-nido/splash.png"
 
@@ -33,12 +33,12 @@ step_boot_config() {
         plucky)   release_codename="Plucky Puffin" ;;
         oracular) release_codename="Oracular Oriole" ;;
         questing) release_codename="Questing Quokka" ;;
-        *)        release_codename="${UBUNTU_CODENAME:-Ubuntu}" ;;
+        *)        release_codename="${UBUNTU_CODENAME:-LTS}" ;;
       esac
     fi
     local build_stamp
     build_stamp="$(date -u +%Y%m%d)"
-    printf 'Ubuntu-Nido %s LTS "%s" - Release %s (%s)\n' \
+    printf 'NidoOS %s LTS "%s" - Release %s (%s)\n' \
       "${UBUNTU_VERSION:-26.04}" "$release_codename" "$TARGET_ARCH" "$build_stamp" > "$iso_dir/.disk/info"
     ok "  Updated .disk/info release label ($(cat "$iso_dir/.disk/info"))"
   fi
@@ -62,13 +62,13 @@ for line in raw.splitlines():
     low = stripped.lower()
 
     if low.startswith(("menuentry ", "menuentry\t", "menu label ")):
-        # Normalize idempotently so repeated runs never produce Ubuntu-Nido-Nido
+        # Normalize idempotently so repeated runs never duplicate brand tokens
         norm = re.sub(
-            rf"{re.escape(brand_name)}(?:-Nido)*\s+{re.escape(nido_ver)}\s+\([^)]+\)",
+            rf"(?:{re.escape(brand_name)}|Ubuntu-Nido)(?:-Nido)*\s+{re.escape(nido_ver)}\s+\([^)]+\)",
             "Try or Install Ubuntu",
             line,
         )
-        norm = re.sub(rf"{re.escape(brand_name)}(?:-Nido)*", "Ubuntu", norm)
+        norm = re.sub(rf"(?:{re.escape(brand_name)}|Ubuntu-Nido)(?:-Nido)*", "Ubuntu", norm)
         norm = re.sub(r"Ubuntu(?:-Nido)+", "Ubuntu", norm)
 
         def _brand_repl(m: re.Match[str]) -> str:

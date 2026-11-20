@@ -126,7 +126,7 @@ def evaluate_ai_onboarding_gate(
             "statusBadge": f"ĐẠT YÊU CẦU ({len(signed_ids)} TÀI KHOẢN)",
             "reasonVi": (
                 f"Đã đăng nhập {joined}. Bạn có thể thêm API Key bên dưới (nếu có) "
-                "rồi bấm 'Hoàn tất & Bắt đầu dùng Ubuntu-Nido'."
+                "rồi bấm 'Hoàn tất & Bắt đầu dùng NidoOS'."
             ),
         }
 
@@ -297,8 +297,8 @@ class NidoHubBackend:
                 )
 
         if enabled:
-            return "Đã BẬT chế độ AI trên Ubuntu-Nido."
-        return "Đã TẮT chế độ AI trên Ubuntu-Nido (có thể bật lại bất cứ lúc nào trong NidoHub)."
+            return "Đã BẬT chế độ AI trên NidoOS."
+        return "Đã TẮT chế độ AI trên NidoOS (có thể bật lại bất cứ lúc nào trong NidoHub)."
 
     def complete_ai_onboarding(
         self,
@@ -1215,7 +1215,7 @@ def run_gtk_app(
             Gtk.Window.set_default_icon_name("com.nidoholdings.NidoHub")
             win = Adw.ApplicationWindow(application=self)
             win.set_icon_name("com.nidoholdings.NidoHub")
-            win.set_title("NidoHub — Ubuntu-Nido")
+            win.set_title("NidoHub — NidoOS")
             win.set_default_size(920, 720)
 
             root_stack = Gtk.Stack()
@@ -1247,7 +1247,7 @@ def run_gtk_app(
                 banner.set_use_markup(False)
             _, gw_msg = backend.probe_gateway_health()
             if not backend.is_ai_enabled():
-                gw_msg = "Chế độ AI đang TẮT trên Ubuntu-Nido — gạt công tắc Bật AI bên dưới để kích hoạt."
+                gw_msg = "Chế độ AI đang TẮT trên NidoOS — gạt công tắc Bật AI bên dưới để kích hoạt."
             banner.set_title(gw_msg if hasattr(banner, "set_use_markup") else escape_markup(gw_msg))
             banner.set_revealed(True)
             ai_box.append(banner)
@@ -1264,7 +1264,7 @@ def run_gtk_app(
             ai_master_guard = [False]
             ai_master_switch = _make_plain_row(
                 Adw.SwitchRow(),
-                "Kích hoạt Trợ lý AI Ubuntu-Nido (AI ON / OFF)",
+                "Kích hoạt Trợ lý AI NidoOS (AI ON / OFF)",
                 "Bật để dùng Google/Gemini, ChatGPT, Claude, NidoAgent & NidoOffice AI; Tắt để không chạy nền AI.",
             )
             ai_master_switch.set_active(backend.is_ai_enabled())
@@ -1377,7 +1377,7 @@ def run_gtk_app(
 
             def _format_banner_line(gw_line: str, agent_states_list: list[dict[str, Any]], caps: dict[str, Any]) -> str:
                 if not backend.is_ai_enabled():
-                    return "Chế độ AI đang TẮT trên Ubuntu-Nido — gạt công tắc Bật AI bên dưới để kích hoạt."
+                    return "Chế độ AI đang TẮT trên NidoOS — gạt công tắc Bật AI bên dưới để kích hoạt."
                 signed = [str(a.get("id", "")).upper() for a in agent_states_list if a.get("signedIn")]
                 if signed and "chưa cấu hình" in gw_line:
                     names = ", ".join(signed)
@@ -2159,7 +2159,7 @@ def run_gtk_app(
             ob_toolbar = Adw.ToolbarView()
             ob_header = Adw.HeaderBar()
             ob_title = Adw.WindowTitle(
-                title="Thiết lập AI ban đầu — Ubuntu-Nido",
+                title="Thiết lập AI ban đầu — NidoOS",
                 subtitle="Chọn bật/tắt AI và kết nối ít nhất 1 tài khoản AI để sẵn sàng sử dụng",
             )
             ob_header.set_title_widget(ob_title)
@@ -2179,7 +2179,7 @@ def run_gtk_app(
 
             # Onboarding Group 0: Mandatory AI ON / OFF switch
             ob_toggle_group = _make_group(
-                title="Chọn chế độ AI trên Ubuntu-Nido (Bắt buộc)",
+                title="Chọn chế độ AI trên NidoOS (Bắt buộc)",
                 description=(
                     "Nếu BẬT AI (ON), bạn bắt buộc đăng nhập ít nhất 1 tài khoản (Google/Gemini, ChatGPT hoặc Claude) "
                     "để NidoAgent & NidoOffice AI hoạt động ngay. Nếu chưa muốn dùng AI, hãy gạt sang TẮT AI (OFF)."
@@ -2187,7 +2187,7 @@ def run_gtk_app(
             )
             ob_ai_switch = _make_plain_row(
                 Adw.SwitchRow(),
-                "Sử dụng Trợ lý AI Ubuntu-Nido (AI ON / OFF)",
+                "Sử dụng Trợ lý AI NidoOS (AI ON / OFF)",
                 "BẬT (ON): yêu cầu đăng nhập ≥ 1 tài khoản AI bên dưới · TẮT (OFF): vào thẳng desktop không chạy AI.",
             )
             ob_ai_switch.set_active(True if backend.is_onboarding_required() else backend.is_ai_enabled())
@@ -2255,7 +2255,7 @@ def run_gtk_app(
             # Onboarding Group 3: AI OFF Confirmation (visible when AI OFF)
             ob_off_group = _make_group(
                 title="Chế độ TẮT AI (AI OFF)",
-                description="Ubuntu-Nido sẽ hoạt động hoàn toàn như máy tính để bàn truyền thống, không khởi chạy dịch vụ AI.",
+                description="NidoOS sẽ hoạt động hoàn toàn như máy tính để bàn truyền thống, không khởi chạy dịch vụ AI.",
             )
             ob_off_info_row = _make_plain_row(
                 Adw.ActionRow(),
@@ -2277,7 +2277,7 @@ def run_gtk_app(
 
             ob_action_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
             ob_action_row.set_halign(Gtk.Align.END)
-            ob_finish_btn = Gtk.Button(label="Hoàn tất & Bắt đầu dùng Ubuntu-Nido")
+            ob_finish_btn = Gtk.Button(label="Hoàn tất & Bắt đầu dùng NidoOS")
             ob_finish_btn.add_css_class("suggested-action")
             ob_finish_btn.add_css_class("pill")
             ob_action_row.append(ob_finish_btn)
@@ -2337,7 +2337,7 @@ def run_gtk_app(
                     ob_finish_btn.set_label("Hoàn tất (Tắt AI & vào màn hình chính)")
                     ob_finish_btn.set_sensitive(True)
                 elif gate["canComplete"]:
-                    ob_finish_btn.set_label("Hoàn tất & Bắt đầu dùng Ubuntu-Nido")
+                    ob_finish_btn.set_label("Hoàn tất & Bắt đầu dùng NidoOS")
                     ob_finish_btn.set_sensitive(True)
                     _stop_ob_poll()
                 else:
@@ -2516,7 +2516,7 @@ def run_gtk_app(
                         def done_off() -> bool:
                             _add_toast(toast_overlay, msg_t[:150])
                             banner.set_title(
-                                "Chế độ AI đang TẮT trên Ubuntu-Nido — gạt công tắc Bật AI bên dưới để kích hoạt."
+                                "Chế độ AI đang TẮT trên NidoOS — gạt công tắc Bật AI bên dưới để kích hoạt."
                             )
                             return False
 

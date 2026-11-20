@@ -278,6 +278,80 @@ def read_document(path: Path) -> tuple[str, str]:
     return ext.lstrip(".") or "text", text
 
 
+def inspect_document(path: Path) -> dict[str, Any]:
+    """Return lightweight structural metadata without dumping full document text."""
+    ext = path.suffix.lower()
+    size_bytes = path.stat().st_size
+    stats: dict[str, Any] = {}
+    doc_type = ext.lstrip(".") or "text"
+
+    if ext == ".docx":
+        doc_type = "docx"
+        with zipfile.ZipFile(path, "r") as zf:
+            if "word/document.xml" not in zf.namelist():
+                raise ValueError("Invalid DOCX: missing word/document.xml")
+            budget = [MAX_UNCOMPRESSED_BYTES]
+            root = ET.fromstring(_safe_zip_read(zf, "word/document.xml", budget))
+        body = root.find(f"{{{W_NS}}}body")
+        paragraphs = 0
+        tables = 0
+        if body is not None:
+            for child in body:
+                tag = child.tag.rsplit("}", 1)[-1]
+                if tag == "p" and _extract_w_p_text(child).strip():
+                    paragraphs += 1
+                elif tag == "tbl":
+                    tables += 1
+        stats = {"paragraphs": paragraphs, "tables": tables}
+    elif ext == ".xlsx":
+        doc_type = "xlsx"
+        with zipfile.ZipFile(path, "r") as zf:
+            names = zf.namelist()
+            budget = [MAX_UNCOMPRESSED_BYTES]
+            sheet_names: list[str] = []
+            if "xl/workbook.xml" in names:
+                wb_root = ET.fromstring(_safe_zip_read(zf, "xl/workbook.xml", budget))
+                for s in wb_root.iter(f"{{{S_NS}}}sheet"):
+                    if s.attrib.get("name"):
+                        sheet_names.append(s.attrib["name"])
+            sheet_files = sorted(
+                [n for n in names if re.match(r"^xl/worksheets/sheet[0-9]+\.xml$", n)],
+                key=_natural_key,
+            )
+            if not sheet_files:
+                raise ValueError("Invalid XLSX: no worksheets found")
+            total_rows = 0
+            for sf in sheet_files:
+                sroot = ET.fromstring(_safe_zip_read(zf, sf, budget))
+                total_rows += sum(1 for _ in sroot.iter(f"{{{S_NS}}}row"))
+        stats = {
+            "sheets": len(sheet_files),
+            "sheetNames": sheet_names or [f"Sheet{i}" for i in range(1, len(sheet_files) + 1)],
+            "rows": total_rows,
+        }
+    elif ext == ".pptx":
+        doc_type = "pptx"
+        with zipfile.ZipFile(path, "r") as zf:
+            slides = sorted(
+                [n for n in zf.namelist() if re.match(r"^ppt/slides/slide[0-9]+\.xml$", n)],
+                key=_natural_key,
+            )
+            if not slides:
+                raise ValueError("Invalid PPTX: no slides found")
+        stats = {"slides": len(slides)}
+    else:
+        raw_text = path.read_text(encoding="utf-8", errors="replace")
+        stats = {"lines": len(raw_text.splitlines()), "chars": len(raw_text)}
+
+    return {
+        "ok": True,
+        "path": str(path),
+        "type": doc_type,
+        "bytes": size_bytes,
+        "stats": stats,
+    }
+
+
 def _is_pipe_row(line: str) -> bool:
     s = line.strip()
     return "|" in s and (s.startswith("|") or s.count("|") >= 2)
@@ -670,6 +744,13 @@ def write_xlsx(out_path: Path, content: str, title: str | None = None, src_ext: 
         zf.writestr("xl/worksheets/sheet1.xml", sheet_xml)
 
 
+def _emit_error(message: str, as_json: bool) -> None:
+    if as_json:
+        print(json.dumps({"ok": False, "error": message}, ensure_ascii=False), file=sys.stderr)
+    else:
+        print(message, file=sys.stderr)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         prog="nidooffice",
@@ -677,6 +758,10 @@ def main() -> int:
     )
     parser.add_argument("--version", "-v", action="version", version=f"nidooffice {VERSION}")
     sub = parser.add_subparsers(dest="command")
+
+    p_info = sub.add_parser("info", help="Inspect document metadata without dumping full body text")
+    p_info.add_argument("file", type=Path, help="Path to .docx, .xlsx, .pptx, or text file")
+    p_info.add_argument("--json", action="store_true", help="Output structured JSON")
 
     p_read = sub.add_parser("read", help="Extract readable text/tables from a document")
     p_read.add_argument("file", type=Path, help="Path to .docx, .xlsx, .pptx, or text file")
@@ -687,16 +772,49 @@ def main() -> int:
     p_create.add_argument("--out", required=True, type=Path, help="Output file path")
     p_create.add_argument("--from", dest="src", default="-", help="Input file path or '-' for stdin")
     p_create.add_argument("--title", default=None, help="Optional document title or worksheet name")
+    p_create.add_argument("--json", action="store_true", help="Output structured JSON (always JSON; enables JSON errors)")
 
     args = parser.parse_args()
+    if args.command == "info":
+        target = args.file.resolve()
+        if not target.is_file():
+            _emit_error(f"nidooffice info: file not found: {target}", args.json)
+            return 1
+        try:
+            meta = inspect_document(target)
+        except Exception as exc:
+            _emit_error(f"nidooffice info: {exc}", args.json)
+            return 1
+        if args.json:
+            print(json.dumps(meta, ensure_ascii=False))
+        else:
+            stats_str = ", ".join(f"{k}={v}" for k, v in meta["stats"].items())
+            print(f"{meta['path']} ({meta['type']}, {meta['bytes']} bytes): {stats_str}")
+        return 0
+
     if args.command == "read":
         target = args.file.resolve()
         if not target.is_file():
-            print(f"nidooffice read: file not found: {target}", file=sys.stderr)
+            _emit_error(f"nidooffice read: file not found: {target}", args.json)
             return 1
-        doc_type, text = read_document(target)
+        try:
+            doc_type, text = read_document(target)
+        except Exception as exc:
+            _emit_error(f"nidooffice read: {exc}", args.json)
+            return 1
         if args.json:
-            print(json.dumps({"ok": True, "path": str(target), "type": doc_type, "text": text}, ensure_ascii=False))
+            print(
+                json.dumps(
+                    {
+                        "ok": True,
+                        "path": str(target),
+                        "type": doc_type,
+                        "bytes": target.stat().st_size,
+                        "text": text,
+                    },
+                    ensure_ascii=False,
+                )
+            )
         else:
             print(text)
         return 0
@@ -705,23 +823,37 @@ def main() -> int:
         src_ext = ""
         if args.src == "-":
             if sys.stdin.isatty():
-                print("nidooffice create: missing input (--from <file> or piped stdin)", file=sys.stderr)
+                _emit_error("nidooffice create: missing input (--from <file> or piped stdin)", args.json)
                 return 2
             raw_content = sys.stdin.read()
         else:
             src_path = Path(args.src).resolve()
             if not src_path.is_file():
-                print(f"nidooffice create: input file not found: {src_path}", file=sys.stderr)
+                _emit_error(f"nidooffice create: input file not found: {src_path}", args.json)
                 return 1
             src_ext = src_path.suffix.lower()
             raw_content = src_path.read_text(encoding="utf-8", errors="replace")
 
         out_path = args.out.resolve()
-        if args.type == "docx":
-            write_docx(out_path, raw_content, title=args.title)
-        else:
-            write_xlsx(out_path, raw_content, title=args.title, src_ext=src_ext)
-        print(json.dumps({"ok": True, "type": args.type, "out": str(out_path)}, ensure_ascii=False))
+        try:
+            if args.type == "docx":
+                write_docx(out_path, raw_content, title=args.title)
+            else:
+                write_xlsx(out_path, raw_content, title=args.title, src_ext=src_ext)
+        except Exception as exc:
+            _emit_error(f"nidooffice create: {exc}", args.json)
+            return 1
+        print(
+            json.dumps(
+                {
+                    "ok": True,
+                    "type": args.type,
+                    "out": str(out_path),
+                    "bytes": out_path.stat().st_size,
+                },
+                ensure_ascii=False,
+            )
+        )
         return 0
 
     parser.print_help()

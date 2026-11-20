@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate deterministic 24-bit RGB PNG branding assets for Ubuntu-Nido.
+"""Generate deterministic PNG/SVG branding assets for NidoOS.
 
 Uses Python standard library only (zlib + struct) so it runs cleanly on
 macOS, Ubuntu chroot, and CI runners without Pillow or ImageMagick.
@@ -26,6 +26,29 @@ OUT_DIR = (
     / "ubuntu-nido"
 )
 
+NIDOOS_LOGO_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <linearGradient id="nidoBg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1E293B" />
+      <stop offset="100%" stop-color="#0B1120" />
+    </linearGradient>
+    <linearGradient id="nidoAmber" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FBBF24" />
+      <stop offset="100%" stop-color="#EA580C" />
+    </linearGradient>
+    <linearGradient id="nidoEmerald" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#059669" />
+      <stop offset="100%" stop-color="#34D399" />
+    </linearGradient>
+  </defs>
+  <rect x="12" y="12" width="232" height="232" rx="54" fill="url(#nidoBg)" stroke="#334155" stroke-width="4" />
+  <rect x="64" y="64" width="28" height="128" rx="14" fill="url(#nidoEmerald)" />
+  <rect x="164" y="64" width="28" height="128" rx="14" fill="#E2E8F0" />
+  <path d="M78 78 L178 178" stroke="url(#nidoAmber)" stroke-width="30" stroke-linecap="round" />
+  <circle cx="178" cy="78" r="11" fill="#FBBF24" />
+</svg>
+"""
+
 
 def _png_chunk(tag: bytes, data: bytes) -> bytes:
     crc = zlib.crc32(tag + data) & 0xFFFFFFFF
@@ -40,11 +63,35 @@ def write_rgb_png(path: Path, width: int, height: int, rgb: bytearray) -> None:
 
     raw = bytearray()
     for y in range(height):
-        raw.append(0)  # Filter type 0 (None)
+        raw.append(0)
         start = y * stride
         raw.extend(rgb[start : start + stride])
 
     ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    idat = zlib.compress(bytes(raw), level=6)
+    png = (
+        b"\x89PNG\r\n\x1a\n"
+        + _png_chunk(b"IHDR", ihdr)
+        + _png_chunk(b"IDAT", idat)
+        + _png_chunk(b"IEND", b"")
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(png)
+
+
+def write_rgba_png(path: Path, width: int, height: int, rgba: bytearray) -> None:
+    """Write an RGBA32 (color type 6) PNG with valid headers and scanlines."""
+    stride = width * 4
+    if len(rgba) != stride * height:
+        raise ValueError(f"Expected {stride * height} bytes, got {len(rgba)}")
+
+    raw = bytearray()
+    for y in range(height):
+        raw.append(0)
+        start = y * stride
+        raw.extend(rgba[start : start + stride])
+
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)
     idat = zlib.compress(bytes(raw), level=6)
     png = (
         b"\x89PNG\r\n\x1a\n"
@@ -93,30 +140,81 @@ def blend_pixel(
     buf[idx + 2] = int(buf[idx + 2] * inv + color[2] * alpha)
 
 
-def draw_ring(
+def draw_rounded_box(
     buf: bytearray,
     width: int,
     height: int,
     cx: float,
     cy: float,
+    half_w: float,
+    half_h: float,
+    corner_r: float,
+    fill_color: tuple[int, int, int] | None = None,
+    fill_opacity: float = 1.0,
+    stroke_color: tuple[int, int, int] | None = None,
+    stroke_width: float = 0.0,
+    stroke_opacity: float = 1.0,
+) -> None:
+    pad = stroke_width + 3.0
+    x0 = max(0, int(math.floor(cx - half_w - pad)))
+    x1 = min(width - 1, int(math.ceil(cx + half_w + pad)))
+    y0 = max(0, int(math.floor(cy - half_h - pad)))
+    y1 = min(height - 1, int(math.ceil(cy + half_h + pad)))
+    bx = max(0.0, half_w - corner_r)
+    by = max(0.0, half_h - corner_r)
+    half_sw = stroke_width * 0.5
+    for y in range(y0, y1 + 1):
+        dy = abs(y - cy) - by
+        for x in range(x0, x1 + 1):
+            dx = abs(x - cx) - bx
+            dist = math.hypot(max(dx, 0.0), max(dy, 0.0)) + min(max(dx, dy), 0.0) - corner_r
+            if fill_color is not None and dist <= 1.0:
+                cov = max(0.0, min(1.0, 0.5 - dist)) * fill_opacity
+                blend_pixel(buf, width, x, y, fill_color, cov)
+            if stroke_color is not None and stroke_width > 0.0:
+                sdist = abs(dist) - half_sw
+                if sdist <= 1.0:
+                    scov = max(0.0, min(1.0, 0.5 - sdist)) * stroke_opacity
+                    blend_pixel(buf, width, x, y, stroke_color, scov)
+
+
+def draw_capsule(
+    buf: bytearray,
+    width: int,
+    height: int,
+    x_a: float,
+    y_a: float,
+    x_b: float,
+    y_b: float,
     radius: float,
-    thickness: float,
-    color: tuple[int, int, int],
+    color_a: tuple[int, int, int],
+    color_b: tuple[int, int, int] | None = None,
     opacity: float = 1.0,
 ) -> None:
-    half = thickness * 0.5
-    x0 = max(0, int(math.floor(cx - radius - half - 2)))
-    x1 = min(width - 1, int(math.ceil(cx + radius + half + 2)))
-    y0 = max(0, int(math.floor(cy - radius - half - 2)))
-    y1 = min(height - 1, int(math.ceil(cy + radius + half + 2)))
+    """Draw an anti-aliased rounded line segment (capsule) with optional linear gradient."""
+    c_b = color_b or color_a
+    vx = x_b - x_a
+    vy = y_b - y_a
+    len_sq = vx * vx + vy * vy
+    pad = radius + 2.0
+    x0 = max(0, int(math.floor(min(x_a, x_b) - pad)))
+    x1 = min(width - 1, int(math.ceil(max(x_a, x_b) + pad)))
+    y0 = max(0, int(math.floor(min(y_a, y_b) - pad)))
+    y1 = min(height - 1, int(math.ceil(max(y_a, y_b) + pad)))
     for y in range(y0, y1 + 1):
-        dy = y - cy
+        py = y - y_a
         for x in range(x0, x1 + 1):
-            dx = x - cx
-            dist = abs(math.hypot(dx, dy) - radius)
-            if dist <= half + 1.0:
-                cov = max(0.0, min(1.0, half + 0.5 - dist)) * opacity
-                blend_pixel(buf, width, x, y, color, cov)
+            px = x - x_a
+            t = 0.0 if len_sq <= 1e-6 else max(0.0, min(1.0, (px * vx + py * vy) / len_sq))
+            dist = math.hypot(px - vx * t, py - vy * t) - radius
+            if dist <= 1.0:
+                cov = max(0.0, min(1.0, 0.5 - dist)) * opacity
+                col = (
+                    int(color_a[0] + (c_b[0] - color_a[0]) * t),
+                    int(color_a[1] + (c_b[1] - color_a[1]) * t),
+                    int(color_a[2] + (c_b[2] - color_a[2]) * t),
+                )
+                blend_pixel(buf, width, x, y, col, cov)
 
 
 def draw_disc(
@@ -144,123 +242,64 @@ def draw_disc(
 
 
 def draw_nido_emblem(
-    buf: bytearray, width: int, height: int, cx: float, cy: float, scale: float
+    buf: bytearray,
+    width: int,
+    height: int,
+    cx: float,
+    cy: float,
+    scale: float,
+    with_badge: bool = True,
 ) -> None:
-    amber = (245, 158, 11)
-    emerald = (16, 185, 129)
+    """Draw the distinct geometric NidoOS 'N' crest emblem (zero Ubuntu resemblance)."""
+    emerald_bot = (5, 150, 105)
+    emerald_top = (52, 211, 153)
+    slate_light = (226, 232, 240)
+    amber_top = (251, 191, 36)
+    amber_bot = (234, 88, 12)
     gold = (251, 191, 36)
-    dark = (20, 24, 32)
 
-    r_ring = 68.0 * scale
-    draw_ring(buf, width, height, cx, cy, r_ring, 10.0 * scale, amber, 0.95)
-    draw_ring(buf, width, height, cx, cy, r_ring * 0.62, 6.0 * scale, emerald, 0.9)
+    if with_badge:
+        draw_rounded_box(
+            buf,
+            width,
+            height,
+            cx,
+            cy,
+            82.0 * scale,
+            82.0 * scale,
+            22.0 * scale,
+            fill_color=(17, 24, 39),
+            fill_opacity=0.96,
+            stroke_color=(51, 65, 85),
+            stroke_width=2.5 * scale,
+            stroke_opacity=0.95,
+        )
 
-    nodes = [
-        (0.0, -r_ring, amber),
-        (r_ring * math.cos(math.radians(30)), r_ring * math.sin(math.radians(30)), emerald),
-        (-r_ring * math.cos(math.radians(30)), r_ring * math.sin(math.radians(30)), amber),
-    ]
-    for nx, ny, col in nodes:
-        draw_disc(buf, width, height, cx + nx, cy + ny, 14.0 * scale, dark, 1.0)
-        draw_disc(buf, width, height, cx + nx, cy + ny, 9.5 * scale, col, 1.0)
+    dx = 36.0 * scale
+    dy = 36.0 * scale
+    stem_r = 10.0 * scale
+    diag_r = 10.8 * scale
 
-    draw_disc(buf, width, height, cx, cy, 10.0 * scale, gold, 1.0)
-
-
-def generate_all(out_dir: Path = OUT_DIR) -> list[Path]:
-    out_dir.mkdir(parents=True, exist_ok=True)
-    generated: list[Path] = []
-
-    # 1. Plymouth watermark.png (256x256, pure black bg matching BackgroundStartColor=0x000000)
-    w, h = 256, 256
-    wm = make_gradient_canvas(w, h, (0, 0, 0), (0, 0, 0))
-    draw_nido_emblem(wm, w, h, w / 2.0, h / 2.0, 1.25)
-    p_wm = out_dir / "watermark.png"
-    write_rgb_png(p_wm, w, h, wm)
-    generated.append(p_wm)
-
-    # 2. GRUB/ISOLINUX splash.png (640x480 required for vesamenu.c32 & GRUB padding)
-    w, h = 640, 480
-    sp = make_gradient_canvas(w, h, (15, 20, 27), (22, 32, 44))
-    draw_ring(sp, w, h, w / 2.0, h * 0.35, 130.0, 2.0, (245, 158, 11), 0.25)
-    draw_nido_emblem(sp, w, h, w / 2.0, h * 0.35, 1.0)
-    p_sp = out_dir / "splash.png"
-    write_rgb_png(p_sp, w, h, sp)
-    generated.append(p_sp)
-
-    # 3. GNOME desktop wallpaper.png (1920x1080)
-    w, h = 1920, 1080
-    wp = make_gradient_canvas(w, h, (15, 20, 27), (28, 25, 36))
-    draw_ring(wp, w, h, w / 2.0, h / 2.0, 290.0, 2.5, (245, 158, 11), 0.20)
-    draw_ring(wp, w, h, w / 2.0, h / 2.0, 430.0, 1.5, (16, 185, 129), 0.14)
-    draw_nido_emblem(wp, w, h, w / 2.0, h / 2.0, 1.85)
-    p_wp = out_dir / "wallpaper.png"
-    write_rgb_png(p_wp, w, h, wp)
-    generated.append(p_wp)
-
-    return generated
+    # Left vertical pillar (emerald gradient)
+    draw_capsule(buf, width, height, cx - dx, cy + dy, cx - dx, cy - dy, stem_r, emerald_bot, emerald_top, 1.0)
+    # Right vertical pillar (crisp silver-slate)
+    draw_capsule(buf, width, height, cx + dx, cy - dy, cx + dx, cy + dy, stem_r, slate_light, slate_light, 1.0)
+    # Diagonal N crossbar (warm amber-to-orange)
+    draw_capsule(buf, width, height, cx - dx, cy - dy, cx + dx, cy + dy, diag_r, amber_top, amber_bot, 1.0)
+    # Top-right spark accent
+    draw_disc(buf, width, height, cx + dx, cy - dy, 6.2 * scale, gold, 1.0)
 
 
-def write_rgba_png(path: Path, width: int, height: int, rgba: bytearray) -> None:
-    """Write an RGBA32 (color type 6) PNG with valid headers and scanlines."""
-    stride = width * 4
-    if len(rgba) != stride * height:
-        raise ValueError(f"Expected {stride * height} bytes, got {len(rgba)}")
-
-    raw = bytearray()
-    for y in range(height):
-        raw.append(0)
-        start = y * stride
-        raw.extend(rgba[start : start + stride])
-
-    ihdr = struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)
-    idat = zlib.compress(bytes(raw), level=6)
-    png = (
-        b"\x89PNG\r\n\x1a\n"
-        + _png_chunk(b"IHDR", ihdr)
-        + _png_chunk(b"IDAT", idat)
-        + _png_chunk(b"IEND", b"")
-    )
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(png)
-
-
-def generate_hub_icons(hicolor_dir: Path) -> list[Path]:
-    """Generate distinct scalable SVG and 256x256 RGBA PNG app icons for NidoHub."""
-    svg_path = hicolor_dir / "scalable" / "apps" / "com.nidoholdings.NidoHub.svg"
-    png_path = hicolor_dir / "256x256" / "apps" / "com.nidoholdings.NidoHub.png"
-    svg_path.parent.mkdir(parents=True, exist_ok=True)
-    svg_path.write_text(
-        """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
-  <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#1E293B"/>
-      <stop offset="100%" stop-color="#0F172A"/>
-    </linearGradient>
-    <linearGradient id="ring" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="#F59E0B"/>
-      <stop offset="100%" stop-color="#EA580C"/>
-    </linearGradient>
-  </defs>
-  <rect x="8" y="8" width="112" height="112" rx="26" fill="url(#bg)" stroke="#334155" stroke-width="2"/>
-  <circle cx="64" cy="64" r="34" fill="none" stroke="url(#ring)" stroke-width="5.5"/>
-  <circle cx="64" cy="64" r="21" fill="none" stroke="#10B981" stroke-width="3.5" stroke-opacity="0.92"/>
-  <circle cx="64" cy="30" r="6.5" fill="#0F172A" stroke="#F59E0B" stroke-width="3.5"/>
-  <circle cx="93.4" cy="81" r="6.5" fill="#0F172A" stroke="#10B981" stroke-width="3.5"/>
-  <circle cx="34.6" cy="81" r="6.5" fill="#0F172A" stroke="#F59E0B" stroke-width="3.5"/>
-  <circle cx="64" cy="64" r="6" fill="#FBBF24"/>
-</svg>
-""",
-        encoding="utf-8",
-    )
-
-    w, h = 256, 256
-    rgb = make_gradient_canvas(w, h, (30, 41, 59), (15, 23, 42))
-    draw_nido_emblem(rgb, w, h, w / 2.0, h / 2.0, 1.05)
+def render_nidoos_badge_rgba(size: int) -> bytearray:
+    """Render a transparent RGBA32 rounded squircle NidoOS crest icon."""
+    w = h = size
+    rgb = make_gradient_canvas(w, h, (30, 41, 59), (11, 17, 32))
+    scale = size / 256.0
+    draw_nido_emblem(rgb, w, h, w * 0.5, h * 0.5, scale * 1.38, with_badge=False)
 
     cx, cy = (w - 1) * 0.5, (h - 1) * 0.5
-    half_box = 112.0
-    corner_r = 28.0
+    half_box = 114.0 * scale
+    corner_r = 27.0 * scale
     rgba = bytearray(w * h * 4)
     for y in range(h):
         dy = abs(y - cy) - (half_box - corner_r)
@@ -271,9 +310,8 @@ def generate_hub_icons(hicolor_dir: Path) -> list[Path]:
             r_val = rgb[(y * w + x) * 3]
             g_val = rgb[(y * w + x) * 3 + 1]
             b_val = rgb[(y * w + x) * 3 + 2]
-            if -2.2 <= dist <= 0.5:
-                # Subtle slate rim inside rounded badge border
-                rim = max(0.0, 1.0 - abs(dist + 0.8) / 1.4) * 0.55
+            if -2.5 * scale <= dist <= 0.6 * scale:
+                rim = max(0.0, 1.0 - abs(dist + 0.9 * scale) / max(1.4 * scale, 0.5)) * 0.6
                 r_val = int(r_val * (1.0 - rim) + 51 * rim)
                 g_val = int(g_val * (1.0 - rim) + 65 * rim)
                 b_val = int(b_val * (1.0 - rim) + 85 * rim)
@@ -282,17 +320,78 @@ def generate_hub_icons(hicolor_dir: Path) -> list[Path]:
             rgba[oi + 1] = g_val
             rgba[oi + 2] = b_val
             rgba[oi + 3] = int(cov * 255)
-    write_rgba_png(png_path, w, h, rgba)
-    return [svg_path, png_path]
+    return rgba
+
+
+def generate_all(out_dir: Path = OUT_DIR) -> list[Path]:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    generated: list[Path] = []
+
+    # 1. Plymouth watermark.png (256x256, pure black bg matching BackgroundStartColor=0x000000)
+    w, h = 256, 256
+    wm = make_gradient_canvas(w, h, (0, 0, 0), (0, 0, 0))
+    draw_nido_emblem(wm, w, h, w / 2.0, h / 2.0, 1.15, with_badge=True)
+    p_wm = out_dir / "watermark.png"
+    write_rgb_png(p_wm, w, h, wm)
+    generated.append(p_wm)
+
+    # 2. GRUB/ISOLINUX splash.png (640x480 required for vesamenu.c32 & GRUB padding)
+    w, h = 640, 480
+    sp = make_gradient_canvas(w, h, (11, 17, 32), (20, 30, 48))
+    draw_rounded_box(
+        sp, w, h, w / 2.0, h * 0.36, 118.0, 118.0, 32.0,
+        stroke_color=(245, 158, 11), stroke_width=2.0, stroke_opacity=0.28,
+    )
+    draw_nido_emblem(sp, w, h, w / 2.0, h * 0.36, 0.96, with_badge=True)
+    p_sp = out_dir / "splash.png"
+    write_rgb_png(p_sp, w, h, sp)
+    generated.append(p_sp)
+
+    # 3. GNOME desktop wallpaper.png (1920x1080)
+    w, h = 1920, 1080
+    wp = make_gradient_canvas(w, h, (11, 17, 32), (24, 24, 37))
+    draw_rounded_box(
+        wp, w, h, w / 2.0, h / 2.0, 260.0, 260.0, 72.0,
+        stroke_color=(245, 158, 11), stroke_width=2.5, stroke_opacity=0.18,
+    )
+    draw_rounded_box(
+        wp, w, h, w / 2.0, h / 2.0, 380.0, 380.0, 102.0,
+        stroke_color=(16, 185, 129), stroke_width=1.8, stroke_opacity=0.12,
+    )
+    draw_nido_emblem(wp, w, h, w / 2.0, h / 2.0, 1.65, with_badge=True)
+    p_wp = out_dir / "wallpaper.png"
+    write_rgb_png(p_wp, w, h, wp)
+    generated.append(p_wp)
+
+    # 4. Transparent RGBA32 NidoOS logo (160x160) for initrd Plymouth overlay, GDM & About
+    p_logo = out_dir / "nidoos-logo.png"
+    write_rgba_png(p_logo, 160, 160, render_nidoos_badge_rgba(160))
+    generated.append(p_logo)
+
+    return generated
+
+
+def generate_hub_icons(hicolor_dir: Path) -> list[Path]:
+    """Generate scalable SVG and 256x256 RGBA PNG app & OS brand icons."""
+    generated: list[Path] = []
+    rgba_256 = render_nidoos_badge_rgba(256)
+    for icon_name in ("com.nidoholdings.NidoHub", "nidoos-logo", "distributor-logo"):
+        svg_path = hicolor_dir / "scalable" / "apps" / f"{icon_name}.svg"
+        png_path = hicolor_dir / "256x256" / "apps" / f"{icon_name}.png"
+        svg_path.parent.mkdir(parents=True, exist_ok=True)
+        svg_path.write_text(NIDOOS_LOGO_SVG, encoding="utf-8")
+        write_rgba_png(png_path, 256, 256, rgba_256)
+        generated.extend([svg_path, png_path])
+    return generated
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Generate Ubuntu-Nido branding PNG/SVG assets.")
+    parser = argparse.ArgumentParser(description="Generate NidoOS branding PNG/SVG assets.")
     parser.add_argument(
         "--hub-icon-dir",
         type=Path,
         default=None,
-        help="Optional hicolor icon theme root to write NidoHub app icons into.",
+        help="Optional hicolor icon theme root to write NidoHub & NidoOS icons into.",
     )
     args = parser.parse_args()
 

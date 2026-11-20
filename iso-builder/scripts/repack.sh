@@ -83,7 +83,7 @@ repack_layered_live_overlays() {
     done
     ldconfig
     if [ -f /var/lib/snapd/desktop/applications/ubuntu-desktop-bootstrap_ubuntu-desktop-bootstrap.desktop ]; then
-      sed -i "s/^Name=Install RELEASE/Name=Cài đặt Ubuntu-Nido/" \
+      sed -i "s/^Name=Install RELEASE/Name=Cài đặt NidoOS/" \
         /var/lib/snapd/desktop/applications/ubuntu-desktop-bootstrap_ubuntu-desktop-bootstrap.desktop || true
     fi
     if [ -d /usr/share/glib-2.0/schemas ]; then
@@ -91,6 +91,9 @@ repack_layered_live_overlays() {
     fi
     if [ -d /etc/dconf/db/local.d ]; then
       dconf compile /etc/dconf/db/local /etc/dconf/db/local.d || dconf update || true
+    fi
+    if [ -d /etc/dconf/db/gdm.d ]; then
+      dconf compile /etc/dconf/db/gdm /etc/dconf/db/gdm.d || dconf update || true
     fi
     if command -v ibus >/dev/null 2>&1; then
       ibus write-cache --system >/dev/null 2>&1 || true
@@ -191,23 +194,25 @@ step_repack_squashfs() {
       python3 "$SCRIPT_DIR/scripts/update_install_sources.py" \
         --yaml "$WORK_DIR/custom/casper/install-sources.yaml" \
         --squashfs "$out_sfs" \
-        --name "Ubuntu-Nido Desktop"
+        --name "NidoOS Desktop"
     fi
   else
     printf '%s' "$root_bytes" > "$WORK_DIR/custom/casper/filesystem.size"
   fi
 
-  # IMPORTANT: Do NOT overwrite casper/initrd with /boot/initrd.img-* from
-  # the squashfs rootfs. The original casper/initrd contains Casper live-boot
-  # hooks (casper/dracut-live modules) that know how to find, mount, and
-  # pivot-root into the SquashFS layers. The /boot/initrd.img-* is built for
-  # installed-system disk boot (dracut switch-root to UUID= partition) and
-  # completely breaks live boot if copied over casper/initrd.
-  #
-  # Plymouth theme changes are picked up from the rootfs at runtime; the
-  # early-boot splash in casper/initrd uses Ubuntu's default plymouth which
-  # is acceptable. The kernel+vmlinuz in casper/ are synced by customize.sh.
-  info "Preserving original Casper live-boot initrd (not overwriting)."
+  # IMPORTANT: Never replace casper/initrd with /boot/initrd.img-* from the
+  # rootfs (that strips Casper live-boot hooks). Instead, preserve 100% of
+  # casper/initrd intact and append a tiny 4-byte-aligned uncompressed CPIO
+  # overlay replacing Ubuntu's Plymouth boot logos with NidoOS assets.
+  local nido_logo="$SCRIPT_DIR/config/includes.chroot/usr/share/backgrounds/ubuntu-nido/nidoos-logo.png"
+  if [ -f "$WORK_DIR/custom/casper/initrd" ] && [ -f "$nido_logo" ] && [ -f "$SCRIPT_DIR/scripts/patch_initrd_branding.py" ]; then
+    info "  → Appending NidoOS Plymouth branding CPIO overlay to casper/initrd..."
+    python3 "$SCRIPT_DIR/scripts/patch_initrd_branding.py" \
+      --initrd "$WORK_DIR/custom/casper/initrd" \
+      --logo "$nido_logo"
+  else
+    warn "Skipping casper/initrd branding overlay (missing initrd or nidoos-logo.png)."
+  fi
 
   if [ "${CLEAN_OUTPUT:-false}" = "true" ]; then
     rm -rf "${WORK_DIR:?}/squashfs"
@@ -225,7 +230,7 @@ step_repack_iso() {
 
   cd "${WORK_DIR:?}/custom" || return 1
   if [ -f ".disk/info" ]; then
-    grep -Eq '^Ubuntu-Nido [0-9]+\.[0-9]+(\.[0-9]+)? LTS "[^"]+" - Release (amd64|arm64) \([0-9]{8}\)$' ".disk/info" || {
+    grep -Eq '^NidoOS [0-9]+\.[0-9]+(\.[0-9]+)? LTS "[^"]+" - Release (amd64|arm64) \([0-9]{8}\)$' ".disk/info" || {
       err "Invalid .disk/info format (breaks ubuntu-desktop-bootstrap): $(cat .disk/info)"
       return 1
     }
@@ -255,7 +260,7 @@ i = 0
 while i < len(tokens):
     tok = tokens[i]
     if tok in ("-V", "-volid") and i + 1 < len(tokens):
-        out.extend([tok, "Ubuntu-Nido"])
+        out.extend([tok, "NidoOS"])
         i += 2
         continue
     out.append(tok)
@@ -265,7 +270,7 @@ sys.stdout.buffer.write(b"\0".join(t.encode() for t in out) + b"\0")
   fi
 
   if [ "${#xorriso_args[@]}" -eq 0 ]; then
-    xorriso_args=(-as mkisofs -r -J -joliet-long -iso-level 3 -full-iso9660-filenames -volid "Ubuntu-Nido")
+    xorriso_args=(-as mkisofs -r -J -joliet-long -iso-level 3 -full-iso9660-filenames -volid "NidoOS")
     if [ -f "boot/grub/i386-pc/eltorito.img" ]; then
       xorriso_args+=(-b boot/grub/i386-pc/eltorito.img -no-emul-boot -boot-load-size 4 -boot-info-table)
     elif [ -f "isolinux/isolinux.bin" ]; then

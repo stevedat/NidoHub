@@ -84,6 +84,7 @@ expected = {
     "watermark.png": (256, 256),
     "splash.png": (640, 480),
     "wallpaper.png": (1920, 1080),
+    "nidoos-logo.png": (160, 160),
 }
 for name, dims in expected.items():
     p = asset_dir / name
@@ -92,7 +93,7 @@ for name, dims in expected.items():
     assert data[12:16] == b"IHDR", f"{name}: missing IHDR"
     w, h = struct.unpack(">II", data[16:24])
     assert (w, h) == dims, f"{name}: expected {dims}, got {(w, h)}"
-print("Verified PNG headers and exact dimensions for all 3 branding assets.")
+print("Verified PNG headers and exact dimensions for all 4 NidoOS branding assets.")
 PY
 pass "Branding PNGs generated and verified"
 
@@ -157,8 +158,16 @@ for fname in expected:
         elif fname == "nido-desktop-settings_0.2.0_all.deb":
             for req_cfg in (
                 "./etc/dconf/profile/user",
+                "./etc/dconf/profile/gdm",
                 "./etc/dconf/db/local.d/00-ubuntu-nido-settings",
+                "./etc/dconf/db/gdm.d/01-nidoos-logo",
+                "./etc/fonts/conf.d/52-ubuntu-nido-vietnamese.conf",
                 "./usr/share/backgrounds/ubuntu-nido/wallpaper.png",
+                "./usr/share/pixmaps/nidoos-logo.png",
+                "./usr/libexec/ubuntu-nido/ensure-vietnamese-ime",
+                "./usr/share/ubuntu-nido/skills/ubuntu-nido-office/SKILL.md",
+                "./usr/share/ubuntu-nido/skills/ubuntu-nido-box/SKILL.md",
+                "./usr/share/ubuntu-nido/skills/ubuntu-nido-agent/SKILL.md",
             ):
                 assert req_cfg in names, f"{fname}: missing {req_cfg}"
         elif fname == "nido-hub_0.2.0_all.deb":
@@ -172,6 +181,8 @@ for fname in expected:
                 "./usr/share/polkit-1/actions/com.nidoholdings.nidohub.pkg.policy",
                 "./usr/share/icons/hicolor/scalable/apps/com.nidoholdings.NidoHub.svg",
                 "./usr/share/icons/hicolor/256x256/apps/com.nidoholdings.NidoHub.png",
+                "./usr/share/icons/hicolor/scalable/apps/nidoos-logo.svg",
+                "./usr/share/icons/hicolor/scalable/apps/distributor-logo.svg",
             ):
                 assert req_hub in names, f"{fname}: missing {req_hub}"
         elif fname == "nido-desktop_0.2.0_all.deb":
@@ -296,6 +307,7 @@ extract_root.mkdir(parents=True, exist_ok=True)
 for deb_name in (
     "nidoai-gateway_0.2.0_all.deb",
     "nidoagent-cli_0.2.0_all.deb",
+    "nido-desktop-settings_0.2.0_all.deb",
     "nido-hub_0.2.0_all.deb",
     "nidooffice-cli_0.2.0_all.deb",
     "nidooffice-desktop_0.13.1_all.deb",
@@ -328,6 +340,7 @@ TEST_PORT=18991
 TEST_TOKEN="ubuntu_nido_smoke_test_token_0123456789abcdef"
 
 node --check "${ROOT_DIR}/packages/nidoai-gateway/src/cli.mjs"
+node --check "${ROOT_DIR}/packages/nidoagent-cli/files/usr/lib/nidoagent-cli/cli.mjs"
 
 env \
   HOME="${SANDBOX}/home" \
@@ -435,6 +448,7 @@ STATUS_OUT="$(env \
   NIDOAI_GATEWAY_PORT="${TEST_PORT}" \
   NIDOAI_CLIENT_TOKEN="${TEST_TOKEN}" \
   NIDOAGENT_CLI_ENTRY="${SANDBOX}/rootfs/usr/lib/nidoagent-cli/cli.mjs" \
+  NIDO_SKILLS_DIR="${SANDBOX}/rootfs/usr/share/ubuntu-nido/skills" \
   NIDOAGENT_STANDALONE=1 \
   "${SANDBOX}/rootfs/usr/bin/nidoagent" status)"
 
@@ -444,7 +458,10 @@ data = json.loads(sys.argv[1])
 assert data["ok"] is True, f"Expected ok=true, got {data}"
 assert data["tokenConfigured"] is True, "Expected tokenConfigured=true"
 assert data["gateway"]["status"] == "ok", f"Unexpected gateway payload: {data}"
-print("Verified nidoagent status output against live nidoai-gateway.")
+caps = data.get("capabilities") or {}
+assert caps.get("skills", {}).get("count") == 3, f"Expected 3 OS skills in capabilities: {caps}"
+assert set(caps.get("agents", {}).keys()) == {"agy", "codex", "claude"}, f"Unexpected agents cap: {caps}"
+print("Verified nidoagent status output + capabilities against live nidoai-gateway.")
 PY
 
 NIDOHUB_APP_ENTRY="${SANDBOX}/rootfs/usr/lib/nido-hub/app.py" \
@@ -461,12 +478,13 @@ bash -c '
   source "$3"
   step_boot_config >/dev/null
 ' _ "${ROOT_DIR}/iso-builder" "${ROOT_DIR}/iso-builder/scripts/utils.sh" "${ROOT_DIR}/iso-builder/scripts/boot_config.sh" "${BOOT_TMP}"
-grep -Eq '^Ubuntu-Nido 26\.04 LTS "Resolute Raccoon" - Release arm64 \([0-9]{8}\)$' "${BOOT_TMP}/custom/.disk/info" || {
+grep -Eq '^NidoOS 26\.04 LTS "Resolute Raccoon" - Release arm64 \([0-9]{8}\)$' "${BOOT_TMP}/custom/.disk/info" || {
   echo "ERROR: boot_config.sh produced invalid .disk/info: $(cat "${BOOT_TMP}/custom/.disk/info")" >&2
   rm -rf "${BOOT_TMP}"
   exit 1
 }
 rm -rf "${BOOT_TMP}"
+python3 "${ROOT_DIR}/iso-builder/scripts/patch_initrd_branding.py" --self-test
 grep -Fq "! -path './boot/boot.cat'" "${ROOT_DIR}/iso-builder/scripts/repack.sh" || {
   echo "ERROR: repack.sh must exclude ./boot/boot.cat from md5sum.txt" >&2
   exit 1
@@ -548,6 +566,153 @@ delegated_out = subprocess.run(
     capture_output=True,
 ).stdout.strip()
 assert delegated_out == f"delegated:read {docx_path}", f"Expected desktop CLI delegation, got: {delegated_out}"
+
+# Verify nidooffice info/create/read --json contracts & structured error JSON
+import json as _json
+docx_info = _json.loads(
+    subprocess.run(
+        [nidooffice_bin, "info", str(docx_path), "--json"],
+        text=True, check=True, env=env, capture_output=True,
+    ).stdout
+)
+assert docx_info["ok"] is True and docx_info["type"] == "docx" and docx_info["bytes"] > 0
+assert docx_info["stats"]["paragraphs"] >= 2 and docx_info["stats"]["tables"] == 1, f"Bad docx info: {docx_info}"
+
+xlsx_info = _json.loads(
+    subprocess.run(
+        [nidooffice_bin, "info", str(xlsx_path), "--json"],
+        text=True, check=True, env=env, capture_output=True,
+    ).stdout
+)
+assert xlsx_info["ok"] is True and xlsx_info["type"] == "xlsx" and xlsx_info["stats"]["sheets"] == 1 and xlsx_info["stats"]["rows"] >= 3
+
+create_json_out = _json.loads(
+    subprocess.run(
+        [nidooffice_bin, "create", "--type", "docx", "--out", str(sandbox / "json_test.docx"), "--from", "-", "--json"],
+        input="# Test JSON\n\nOK\n", text=True, check=True, env=env, capture_output=True,
+    ).stdout
+)
+assert create_json_out["ok"] is True and create_json_out["bytes"] > 0, f"Bad create --json output: {create_json_out}"
+
+missing_res = subprocess.run(
+    [nidooffice_bin, "info", str(sandbox / "does-not-exist.docx"), "--json"],
+    text=True, check=False, env=env, capture_output=True,
+)
+assert missing_res.returncode != 0
+missing_err = _json.loads(missing_res.stderr)
+assert missing_err["ok"] is False and "not found" in missing_err["error"].lower()
+
+# Verify nidoagent capabilities, skills list/sync (with user-override safety), and ask --json
+nidoagent_bin = str(sandbox / "rootfs/usr/bin/nidoagent")
+agent_env = dict(env)
+agent_env["HOME"] = str(sandbox / "home")
+agent_env["NIDOAI_HOME"] = str(sandbox / "home/.nidoai")
+agent_env["NIDOAGENT_CLI_ENTRY"] = str(sandbox / "rootfs/usr/lib/nidoagent-cli/cli.mjs")
+agent_env["NIDOAGENT_STANDALONE"] = "1"
+agent_env["NIDO_SKILLS_DIR"] = str(sandbox / "rootfs/usr/share/ubuntu-nido/skills")
+agent_env["NIDOOFFICE_BIN"] = nidooffice_bin
+
+caps_out = _json.loads(
+    subprocess.run(
+        [nidoagent_bin, "capabilities", "--json"],
+        text=True, check=True, env=agent_env, capture_output=True,
+    ).stdout
+)
+assert caps_out["ok"] is True and caps_out["capabilities"]["office"]["cli"] is True
+assert caps_out["capabilities"]["skills"]["count"] == 3
+
+skills_list = _json.loads(
+    subprocess.run(
+        [nidoagent_bin, "skills", "list", "--json"],
+        text=True, check=True, env=agent_env, capture_output=True,
+    ).stdout
+)
+skill_names = {s["name"] for s in skills_list["skills"]}
+assert skill_names == {"ubuntu-nido-office", "ubuntu-nido-box", "ubuntu-nido-agent"}, f"Unexpected skills: {skills_list}"
+assert all(s["description"] for s in skills_list["skills"]), f"Missing frontmatter description: {skills_list}"
+
+# Create a custom non-symlink user skill under ~/.claude/skills to verify sync NEVER overwrites user overrides
+user_override_dir = sandbox / "home/.claude/skills/ubuntu-nido-office"
+user_override_dir.mkdir(parents=True, exist_ok=True)
+(user_override_dir / "SKILL.md").write_text("# User Custom Override\n", encoding="utf-8")
+
+sync1 = _json.loads(
+    subprocess.run(
+        [nidoagent_bin, "skills", "sync", "--all", "--json"],
+        text=True, check=True, env=agent_env, capture_output=True,
+    ).stdout
+)
+assert sync1["ok"] is True and sync1["skillsCount"] == 3
+by_target = {t["target"]: {i["skill"]: i["status"] for i in t["items"]} for t in sync1["targets"]}
+assert by_target["agents"]["ubuntu-nido-office"] == "linked"
+assert by_target["agy"]["ubuntu-nido-box"] == "linked"
+assert by_target["codex"]["ubuntu-nido-agent"] == "linked"
+assert by_target["claude"]["ubuntu-nido-office"] == "skipped_user_override"
+assert (user_override_dir / "SKILL.md").read_text(encoding="utf-8") == "# User Custom Override\n"
+assert (sandbox / "home/.gemini/config/skills/ubuntu-nido-office/SKILL.md").is_file()
+
+sync2 = _json.loads(
+    subprocess.run(
+        [nidoagent_bin, "skills", "sync", "--all", "--json"],
+        text=True, check=True, env=agent_env, capture_output=True,
+    ).stdout
+)
+by_target2 = {t["target"]: {i["skill"]: i["status"] for i in t["items"]} for t in sync2["targets"]}
+assert by_target2["agents"]["ubuntu-nido-office"] == "unchanged"
+assert by_target2["claude"]["ubuntu-nido-office"] == "skipped_user_override"
+
+# Verify nidoagent ask --json against a lightweight loopback OpenAI-compatible mock server + DOCX->XLSX pipeline
+import http.server as _http_srv, threading as _threading
+class _MockChatHandler(_http_srv.BaseHTTPRequestHandler):
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length", "0"))
+        _ = self.rfile.read(length)
+        payload = _json.dumps({
+            "id": "chatcmpl-test",
+            "model": "mock-nido-model",
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": "| Metric | Value |\n| --- | --- |\n| Status | 100 |"},
+                "finish_reason": "stop",
+            }],
+        }).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+    def log_message(self, *args):
+        pass
+
+_chat_srv = _http_srv.HTTPServer(("127.0.0.1", 0), _MockChatHandler)
+_chat_port = _chat_srv.server_address[1]
+_chat_thr = _threading.Thread(target=_chat_srv.serve_forever, daemon=True)
+_chat_thr.start()
+try:
+    ask_env = dict(agent_env)
+    ask_env["NIDOAI_BASE_URL"] = f"http://127.0.0.1:{_chat_port}"
+    ask_env["NIDOAI_CLIENT_TOKEN"] = "ubuntu_nido_mock_chat_token_0123456789"
+    ask_out_xlsx = sandbox / "agent_report.xlsx"
+    ask_json = _json.loads(
+        subprocess.run(
+            [nidoagent_bin, "ask", "--json", "--file", str(docx_path), "--out", str(ask_out_xlsx), "Tong hop"],
+            text=True, check=True, env=ask_env, capture_output=True,
+        ).stdout
+    )
+    assert ask_json["ok"] is True and ask_json["backend"] == "gateway" and ask_json["model"] == "mock-nido-model"
+    assert Path(ask_json["outPath"]).resolve() == ask_out_xlsx.resolve() and ask_out_xlsx.is_file()
+    assert any(Path(p).resolve() == docx_path.resolve() for p in ask_json["attachedFiles"])
+    disabled_env = dict(ask_env)
+    disabled_env["NIDOAI_ENABLED"] = "0"
+    dis_res = subprocess.run(
+        [nidoagent_bin, "ask", "--json", "hello"],
+        text=True, check=False, env=disabled_env, capture_output=True,
+    )
+    assert dis_res.returncode != 0
+    assert _json.loads(dis_res.stderr)["ok"] is False
+finally:
+    _chat_srv.shutdown()
+    _chat_srv.server_close()
 
 # Verify nidooffice-desktop auto-latest resolver & --check-update using loopback mock metadata server
 import http.server, threading

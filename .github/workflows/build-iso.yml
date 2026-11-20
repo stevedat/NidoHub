@@ -1,4 +1,4 @@
-name: Build Ubuntu-Nido ISO
+name: Build NidoOS ISO
 
 on:
   push:
@@ -89,7 +89,7 @@ jobs:
       - name: Build assets, .deb packages & static APT repo
         run: make assets packages apt-repo
 
-      - name: Build Ubuntu-Nido ISO
+      - name: Build NidoOS ISO
         run: |
           cd iso-builder
           NIDO_VERSION="${GITHUB_REF_NAME#v}"
@@ -105,7 +105,7 @@ jobs:
       - name: Verify ISO Live Boot in QEMU
         run: |
           set -euo pipefail
-          ISO_PATH="iso-builder/Ubuntu-Nido-desktop-${{ matrix.arch }}.iso"
+          ISO_PATH="iso-builder/NidoOS-desktop-${{ matrix.arch }}.iso"
           TMP_BOOT="$(mktemp -d)"
           MNT_DIR="$TMP_BOOT/mnt"
           BOOT_LOG="$TMP_BOOT/boot.log"
@@ -122,9 +122,9 @@ jobs:
           mkdir -p "$MNT_DIR"
           sudo mount -o loop,ro "$ISO_PATH" "$MNT_DIR"
 
-          grep -q "Ubuntu-Nido" "$MNT_DIR/boot/grub/grub.cfg"
-          if grep -q "Ubuntu-Nido-Nido" "$MNT_DIR/boot/grub/grub.cfg"; then
-            echo "ERROR: Duplicate Ubuntu-Nido-Nido string found in grub.cfg" >&2
+          grep -q "NidoOS" "$MNT_DIR/boot/grub/grub.cfg"
+          if grep -q "NidoOS-Nido" "$MNT_DIR/boot/grub/grub.cfg"; then
+            echo "ERROR: Duplicate NidoOS-Nido string found in grub.cfg" >&2
             exit 1
           fi
           for req in \
@@ -138,8 +138,12 @@ jobs:
             .disk/casper-uuid-generic; do
             test -s "$MNT_DIR/$req" || { echo "ERROR: Missing or empty $req in ISO" >&2; exit 1; }
           done
-          grep -Eq "^Ubuntu-Nido [0-9]+\.[0-9]+(\.[0-9]+)? LTS \"[^\"]+\" - Release ${TARGET_ARCH} \([0-9]{8}\)\$" "$MNT_DIR/.disk/info" || {
+          grep -Eq "^NidoOS [0-9]+\.[0-9]+(\.[0-9]+)? LTS \"[^\"]+\" - Release ${TARGET_ARCH} \([0-9]{8}\)\$" "$MNT_DIR/.disk/info" || {
             echo "ERROR: Invalid .disk/info format: $(cat "$MNT_DIR/.disk/info")" >&2
+            exit 1
+          }
+          grep -qa "etc/nidoos-initrd-branded" "$MNT_DIR/casper/initrd" || {
+            echo "ERROR: casper/initrd is missing NidoOS Plymouth branding CPIO overlay" >&2
             exit 1
           }
           (cd "$MNT_DIR" && md5sum -c --quiet md5sum.txt) || {
@@ -270,12 +274,12 @@ jobs:
 
       - name: Record ISO checksum
         run: |
-          ISO_PATH="iso-builder/Ubuntu-Nido-desktop-${{ matrix.arch }}.iso"
+          ISO_PATH="iso-builder/NidoOS-desktop-${{ matrix.arch }}.iso"
           ISO_SIZE="$(du -h "$ISO_PATH" | cut -f1)"
           ISO_SHA="$(sha256sum "$ISO_PATH" | cut -d' ' -f1)"
           {
-            echo "### Ubuntu-Nido ISO (${{ matrix.arch }})"
-            echo "- File: \`Ubuntu-Nido-desktop-${{ matrix.arch }}.iso\`"
+            echo "### NidoOS ISO (${{ matrix.arch }})"
+            echo "- File: \`NidoOS-desktop-${{ matrix.arch }}.iso\`"
             echo "- Size: \`${ISO_SIZE}\`"
             echo "- SHA256: \`${ISO_SHA}\`"
           } >> "$GITHUB_STEP_SUMMARY"
@@ -283,15 +287,15 @@ jobs:
       - name: Upload ISO artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ubuntu-nido-iso-${{ matrix.arch }}
-          path: iso-builder/Ubuntu-Nido-desktop-${{ matrix.arch }}.iso
+          name: nidoos-iso-${{ matrix.arch }}
+          path: iso-builder/NidoOS-desktop-${{ matrix.arch }}.iso
           compression-level: 0
           retention-days: 7
 
       - name: Upload static APT repo artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ubuntu-nido-apt-repo-${{ matrix.arch }}
+          name: nidoos-apt-repo-${{ matrix.arch }}
           path: apt-repo/**
           retention-days: 7
 
@@ -303,19 +307,19 @@ jobs:
       - name: Download ISO artifacts
         uses: actions/download-artifact@v4
         with:
-          pattern: ubuntu-nido-iso-*
+          pattern: nidoos-iso-*
           path: release-assets
           merge-multiple: true
 
       - name: Generate installer-only SHA256SUMS.txt
         run: |
           cd release-assets
-          sha256sum Ubuntu-Nido-desktop-*.iso > SHA256SUMS.txt
+          sha256sum NidoOS-desktop-*.iso > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            release-assets/Ubuntu-Nido-desktop-*.iso
+            release-assets/NidoOS-desktop-*.iso
             release-assets/SHA256SUMS.txt

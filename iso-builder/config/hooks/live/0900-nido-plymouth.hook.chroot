@@ -1,16 +1,60 @@
 #!/usr/bin/env bash
-# Hook 0900: Install Ubuntu-Nido Plymouth boot splash theme and update initramfs
+# Hook 0900: Install NidoOS Plymouth boot splash theme, replace Ubuntu boot logos, and update initramfs
 set -euo pipefail
 
-THEME_DIR="/usr/share/plymouth/themes/ubuntu-nido"
-mkdir -p "$THEME_DIR"
-rm -f "$THEME_DIR"/*.png
-
-if [ -d /usr/share/backgrounds/ubuntu-nido ]; then
-  cp -a /usr/share/backgrounds/ubuntu-nido/*.png "$THEME_DIR/" 2>/dev/null || true
+THEME_DIR="/usr/share/plymouth/themes/nidoos"
+ASSETS_DIR="/usr/share/backgrounds/ubuntu-nido"
+LOGO_SRC=""
+if [ -f "${ASSETS_DIR}/nidoos-logo.png" ]; then
+  LOGO_SRC="${ASSETS_DIR}/nidoos-logo.png"
+elif [ -f "/usr/share/pixmaps/nidoos-logo.png" ]; then
+  LOGO_SRC="/usr/share/pixmaps/nidoos-logo.png"
 fi
 
-if [ -f "$THEME_DIR/watermark.png" ]; then
+mkdir -p "$THEME_DIR" /usr/share/pixmaps /etc/plymouth
+rm -f "$THEME_DIR"/*.png
+
+if [ -d "$ASSETS_DIR" ]; then
+  cp -a "$ASSETS_DIR"/*.png "$THEME_DIR/" 2>/dev/null || true
+fi
+
+if [ -n "$LOGO_SRC" ] && [ -f "$LOGO_SRC" ]; then
+  cp -f "$LOGO_SRC" /usr/share/pixmaps/nidoos-logo.png
+  cp -f "$LOGO_SRC" "$THEME_DIR/watermark.png"
+  chmod 0644 /usr/share/pixmaps/nidoos-logo.png "$THEME_DIR/watermark.png"
+fi
+
+# Permanently divert & replace upstream Ubuntu Plymouth logos so neither Live boot
+# nor future apt upgrades of plymouth-theme-spinner show Ubuntu's trademarked logo.
+divert_and_replace_logo() {
+  local target="$1"
+  if [ -z "$LOGO_SRC" ] || [ ! -f "$LOGO_SRC" ]; then
+    return 0
+  fi
+  mkdir -p "$(dirname "$target")"
+  if [ -e "$target" ] || [ -L "$target" ]; then
+    if ! dpkg-divert --list "$target" 2>/dev/null | grep -q "$target"; then
+      dpkg-divert --local --rename --add "$target" >/dev/null 2>&1 || true
+    fi
+  fi
+  rm -f "$target"
+  cp -f "$LOGO_SRC" "$target"
+  chmod 0644 "$target"
+}
+
+divert_and_replace_logo "/usr/share/plymouth/ubuntu-logo.png"
+divert_and_replace_logo "/usr/share/plymouth/themes/spinner/watermark.png"
+divert_and_replace_logo "/usr/share/plymouth/themes/bgrt/watermark.png"
+if [ -d /usr/share/plymouth/themes/ubuntu-logo ]; then
+  divert_and_replace_logo "/usr/share/plymouth/themes/ubuntu-logo/ubuntu-logo.png"
+  divert_and_replace_logo "/usr/share/plymouth/themes/ubuntu-logo/ubuntu-logo16.png"
+fi
+
+# Reuse smooth spinner animation frames if installed; fall back to static emblem
+if [ -d /usr/share/plymouth/themes/spinner ] && ls /usr/share/plymouth/themes/spinner/animation-*.png >/dev/null 2>&1; then
+  cp -f /usr/share/plymouth/themes/spinner/animation-*.png "$THEME_DIR/" 2>/dev/null || true
+  cp -f /usr/share/plymouth/themes/spinner/throbber-*.png "$THEME_DIR/" 2>/dev/null || true
+elif [ -f "$THEME_DIR/watermark.png" ]; then
   for i in $(seq 1 36); do
     frame=$(printf 'animation-%04d.png' "$i")
     [ -f "$THEME_DIR/$frame" ] || cp "$THEME_DIR/watermark.png" "$THEME_DIR/$frame"
@@ -21,16 +65,16 @@ if [ -f "$THEME_DIR/watermark.png" ]; then
   done
 fi
 
-cat > "$THEME_DIR/ubuntu-nido.plymouth" <<'PLY'
+cat > "$THEME_DIR/nidoos.plymouth" <<'PLY'
 [Plymouth Theme]
-Name=Ubuntu-Nido
-Description=Ubuntu-Nido AI-Native Desktop boot splash
+Name=NidoOS
+Description=NidoOS AI-Native Desktop boot splash
 ModuleName=two-step
 
 [two-step]
 Font=Be Vietnam Pro 12
 TitleFont=Be Vietnam Pro Light 30
-ImageDir=/usr/share/plymouth/themes/ubuntu-nido
+ImageDir=/usr/share/plymouth/themes/nidoos
 DialogHorizontalAlignment=.5
 DialogVerticalAlignment=.382
 TitleHorizontalAlignment=.5
@@ -38,7 +82,7 @@ TitleVerticalAlignment=.382
 HorizontalAlignment=.5
 VerticalAlignment=.5
 WatermarkHorizontalAlignment=.5
-WatermarkVerticalAlignment=-1
+WatermarkVerticalAlignment=.82
 Transition=none
 TransitionDuration=0.0
 BackgroundStartColor=0x000000
@@ -60,22 +104,42 @@ UseEndAnimation=false
 SuppressMessages=true
 ProgressBarShowPercentComplete=true
 UseProgressBar=true
-Title=Installing Ubuntu-Nido Updates...
-SubTitle=Do not turn off your computer
+Title=Đang cập nhật NidoOS...
+SubTitle=Vui lòng không tắt máy tính
 PLY
 
+cat > /etc/plymouth/plymouthd.conf <<'PCONF'
+[Daemon]
+Theme=nidoos
+ShowDelay=0
+DeviceTimeout=8
+PCONF
+
 rm -f /usr/share/plymouth/themes/default.plymouth
-ln -s "$THEME_DIR/ubuntu-nido.plymouth" /usr/share/plymouth/themes/default.plymouth
+ln -s "$THEME_DIR/nidoos.plymouth" /usr/share/plymouth/themes/default.plymouth
 
 update-alternatives --install \
   /usr/share/plymouth/themes/default.plymouth \
   default.plymouth \
-  "$THEME_DIR/ubuntu-nido.plymouth" \
+  "$THEME_DIR/nidoos.plymouth" \
   300 >/dev/null 2>&1 || true
-update-alternatives --set default.plymouth "$THEME_DIR/ubuntu-nido.plymouth" >/dev/null 2>&1 || true
+update-alternatives --set default.plymouth "$THEME_DIR/nidoos.plymouth" >/dev/null 2>&1 || true
+
+# Replace distributor-logo in Yaru theme if present so Settings -> About displays NidoOS
+if [ -f /usr/share/icons/hicolor/scalable/apps/nidoos-logo.svg ]; then
+  for yaru_dir in /usr/share/icons/Yaru/scalable/apps /usr/share/icons/Yaru-dark/scalable/apps; do
+    if [ -d "$yaru_dir" ]; then
+      cp -f /usr/share/icons/hicolor/scalable/apps/nidoos-logo.svg "${yaru_dir}/distributor-logo.svg" 2>/dev/null || true
+    fi
+  done
+  if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+    gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor || true
+    [ -d /usr/share/icons/Yaru ] && gtk-update-icon-cache -q -t -f /usr/share/icons/Yaru || true
+  fi
+fi
 
 if command -v update-initramfs >/dev/null 2>&1; then
   update-initramfs -u -k all || true
 fi
 
-echo "[Ubuntu-Nido] Plymouth hook completed."
+echo "[NidoOS] Plymouth hook completed."

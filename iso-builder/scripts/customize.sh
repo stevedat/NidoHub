@@ -282,7 +282,12 @@ step_customize() {
     ! dpkg -s shotwell >/dev/null 2>&1
     test -x /usr/bin/nidobox
     test -x /usr/lib/nidobox/nidobox-engine
-    test -f /usr/share/plymouth/themes/ubuntu-nido/ubuntu-nido.plymouth
+    test -f /usr/share/plymouth/themes/nidoos/nidoos.plymouth
+    test -f /usr/share/pixmaps/nidoos-logo.png
+    test -f /etc/dconf/db/gdm
+    test -f /etc/apt/apt.conf.d/51nidoos-unattended-upgrades
+    grep -q "^NAME=\"NidoOS\"\$" /etc/os-release
+    grep -q "^LOGO=nidoos-logo\$" /etc/os-release
     apt-get clean
     rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
     date -u +"%Y-%m-%dT%H:%M:%SZ" > /etc/ubuntu-nido-customized

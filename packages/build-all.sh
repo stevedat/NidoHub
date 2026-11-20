@@ -15,10 +15,14 @@ DEB_BUILDER="${ROOT_DIR}/scripts/build_deb_portable.py"
 
 rm -rf "$DIST_DIR" "$STAGE_DIR" "$NIDOHUB_STAGE_DIR" "$SETTINGS_STAGE_DIR"
 mkdir -p "$DIST_DIR" "${STAGE_DIR}/usr/lib/nidoai" "${NIDOHUB_STAGE_DIR}/usr/share/icons/hicolor" \
-  "${SETTINGS_STAGE_DIR}/usr/share/backgrounds/ubuntu-nido"
+  "${SETTINGS_STAGE_DIR}/usr/share/backgrounds/ubuntu-nido" \
+  "${SETTINGS_STAGE_DIR}/usr/share/pixmaps"
+python3 "${ROOT_DIR}/branding/generate-assets.py"
 python3 "${ROOT_DIR}/branding/generate-assets.py" --hub-icon-dir "${NIDOHUB_STAGE_DIR}/usr/share/icons/hicolor"
 cp "${ROOT_DIR}/iso-builder/config/includes.chroot/usr/share/backgrounds/ubuntu-nido/wallpaper.png" \
   "${SETTINGS_STAGE_DIR}/usr/share/backgrounds/ubuntu-nido/wallpaper.png"
+cp "${ROOT_DIR}/iso-builder/config/includes.chroot/usr/share/backgrounds/ubuntu-nido/nidoos-logo.png" \
+  "${SETTINGS_STAGE_DIR}/usr/share/pixmaps/nidoos-logo.png"
 
 if [[ -n "$NIDOAI_SRC_DIR" && -f "${NIDOAI_SRC_DIR}/build/cli.mjs" ]]; then
   echo "==> Staging compiled external NidoAI build from ${NIDOAI_SRC_DIR}/build (strict secret exclusion)"

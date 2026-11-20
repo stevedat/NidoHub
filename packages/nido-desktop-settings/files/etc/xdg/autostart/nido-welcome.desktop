@@ -1,9 +1,9 @@
 [Desktop Entry]
 Type=Application
-Name=Ubuntu-Nido Welcome
-Name[vi]=Chào mừng tới Ubuntu-Nido
-Comment=Configure NidoAI BYOK key and Vietnamese IME on first login
-Comment[vi]=Thiết lập NidoAI (BYOK) và hệ sinh thái Ubuntu-Nido lần đầu
+Name=NidoOS Welcome
+Name[vi]=Chào mừng tới NidoOS
+Comment=Configure NidoAI accounts and Vietnamese IME on first login
+Comment[vi]=Thiết lập AI và hệ sinh thái NidoOS lần đầu
 Exec=/usr/local/bin/nido-welcome
 Terminal=false
 Categories=System;Settings;

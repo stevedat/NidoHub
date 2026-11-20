@@ -19,8 +19,9 @@ rewrite_installer_desktop_name() {
   local target_file="$1"
   sed -i \
     -e '/^Name\[vi\]=/d' \
-    -e 's/^Name=Install .*/Name=Cài đặt Ubuntu-Nido/' \
-    -e 's/^Name=Cài đặt Ubuntu-Nido$/Name=Cài đặt Ubuntu-Nido\nName[vi]=Cài đặt Ubuntu-Nido/' \
+    -e 's/^Name=Install .*/Name=Cài đặt NidoOS/' \
+    -e 's/^Name=Cài đặt Ubuntu-Nido$/Name=Cài đặt NidoOS/' \
+    -e 's/^Name=Cài đặt NidoOS$/Name=Cài đặt NidoOS\nName[vi]=Cài đặt NidoOS/' \
     "$target_file" 2>/dev/null || true
 }
 
@@ -64,6 +65,10 @@ fix_live_installer_shortcuts
 
 if [[ -x /usr/libexec/ubuntu-nido/ensure-vietnamese-ime ]]; then
   /usr/libexec/ubuntu-nido/ensure-vietnamese-ime >/dev/null 2>&1 &
+fi
+
+if command -v nidoagent >/dev/null 2>&1; then
+  nidoagent skills sync >/dev/null 2>&1 &
 fi
 
 POLICY_FILE="${CONFIG_DIR}/ai-policy.json"
@@ -114,8 +119,8 @@ if ! grep -q '^NIDOAI_CLIENT_TOKEN=' "$ENV_FILE" 2>/dev/null; then
 fi
 
 CHOICE="$(zenity --list \
-  --title="Chào mừng tới Ubuntu-Nido" \
-  --text="• Bộ gõ Sen Việt (Telex, Super+Space) đã bật sẵn.\n• Nhấn Super+Shift+A để mở nhanh NidoAgent.\n\nChọn nguồn AI cho NidoAI Gateway:" \
+  --title="Chào mừng tới NidoOS" \
+  --text="• Bộ gõ Sen Việt (Telex & VNI, Super+Space) đã bật sẵn.\n• Nhấn Super+Shift+A để mở nhanh NidoAgent.\n\nChọn nguồn AI cho NidoAI Gateway:" \
   --radiolist \
   --column="Chọn" --column="Mã" --column="Nhà cung cấp" \
   TRUE "gemini" "Google Gemini API (BYOK — Có gói miễn phí)" \
@@ -168,6 +173,6 @@ fi
 date -u +"%Y-%m-%dT%H:%M:%SZ" > "$DONE_FILE"
 
 zenity --info \
-  --title="Ubuntu-Nido đã sẵn sàng" \
+  --title="NidoOS đã sẵn sàng" \
   --text="Thiết lập hoàn tất!\n\nMẹo sử dụng:\n• Nhấn Super+Shift+A để hỏi nhanh NidoAgent (Super+Space chuyển bộ gõ)\n• Chuột phải tệp trong Files → Scripts → Giao-cho-NidoAgent\n• Mở Terminal gõ: nidoagent status" \
   --width=480 || true

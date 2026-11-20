@@ -88,15 +88,270 @@ function resolveGatewayConnection() {
 }
 
 function printHelp() {
-  console.log(`NidoAgent CLI v${VERSION} (Ubuntu-Nido)
+  console.log(`NidoAgent CLI v${VERSION} (NidoOS)
 
 Usage:
-  nidoagent status | doctor                                            Kiểm tra kết nối NidoAI Gateway & Agent CLI
-  nidoagent ask [--model <id>] [--effort <lvl>] [--plain|--raw] [--file <p>] [--out <p>] <prompt>
+  nidoagent status | doctor                                            Kiểm tra kết nối NidoAI Gateway, Agent CLI & năng lực hệ thống
+  nidoagent capabilities [--json]                                      Liệt kê công cụ bản địa & OS Skills sẵn sàng cho AI Agent
+  nidoagent skills [list|sync] [--all] [--json]                        Liệt kê hoặc đồng bộ OS Skills cho agy / codex / claude
+  nidoagent ask [--model <id>] [--effort <lvl>] [--json|--plain|--raw] [--file <p>] [--out <p>] <prompt>
                                                                        Gửi câu hỏi / tệp (streaming nhanh) & xuất báo cáo
   nidoagent chat [--model <id>] [--effort <lvl>] [--plain|--raw]       Mở phiên hội thoại giữ ấm (warm session)
   nidoagent --version | --help                                         Hiện thông tin phiên bản / trợ giúp
 `);
+}
+
+const SKILL_NAME_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
+
+function whichBinary(name) {
+  if (!name) return null;
+  if (name.includes(path.sep)) {
+    try {
+      fs.accessSync(name, fs.constants.X_OK);
+      return fs.statSync(name).isFile() ? path.resolve(name) : null;
+    } catch {
+      return null;
+    }
+  }
+  const pathEnv = process.env.PATH || '';
+  const extraDirs = [
+    path.join(os.homedir(), '.local', 'bin'),
+    '/usr/local/bin',
+    '/usr/bin',
+    '/bin',
+  ];
+  const dirs = [...new Set([...pathEnv.split(path.delimiter).filter(Boolean), ...extraDirs])];
+  for (const dir of dirs) {
+    const candidate = path.join(dir, name);
+    try {
+      fs.accessSync(candidate, fs.constants.X_OK);
+      if (fs.statSync(candidate).isFile()) return candidate;
+    } catch {
+      // continue
+    }
+  }
+  return null;
+}
+
+function hasTesseractVie() {
+  const candidates = [
+    '/usr/share/tesseract-ocr/5/tessdata/vie.traineddata',
+    '/usr/share/tesseract-ocr/4.00/tessdata/vie.traineddata',
+    '/usr/share/tessdata/vie.traineddata',
+    '/opt/homebrew/share/tessdata/vie.traineddata',
+  ];
+  return candidates.some((p) => fs.existsSync(p));
+}
+
+function resolveOsSkillsDir() {
+  const override = (process.env.NIDO_SKILLS_DIR || '').trim();
+  if (override) return path.resolve(override);
+  return '/usr/share/ubuntu-nido/skills';
+}
+
+function parseSkillFrontmatter(raw) {
+  const meta = { name: '', description: '' };
+  const match = /^---\r?\n([\s\S]*?)\r?\n---/.exec(raw);
+  if (!match) return meta;
+  const lines = match[1].split(/\r?\n/);
+  let currentKey = '';
+  for (const line of lines) {
+    const kv = /^([A-Za-z0-9_-]+):\s*(.*)$/.exec(line);
+    if (kv) {
+      currentKey = kv[1].trim();
+      const val = kv[2].trim();
+      if (val && val !== '>' && val !== '>-' && val !== '|' && val !== '|-') {
+        meta[currentKey] = val.replace(/^["']|["']$/g, '');
+      }
+    } else if (currentKey === 'description' && /^\s+/.test(line)) {
+      const part = line.trim();
+      if (part) {
+        meta.description = meta.description ? `${meta.description} ${part}` : part;
+      }
+    }
+  }
+  return meta;
+}
+
+function listOsSkills() {
+  const skillsDir = resolveOsSkillsDir();
+  if (!fs.existsSync(skillsDir)) return { dir: skillsDir, skills: [] };
+  let entries = [];
+  try {
+    entries = fs.readdirSync(skillsDir, { withFileTypes: true });
+  } catch {
+    return { dir: skillsDir, skills: [] };
+  }
+  const skills = [];
+  for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+    if (!SKILL_NAME_RE.test(entry.name)) continue;
+    if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
+    const dir = path.join(skillsDir, entry.name);
+    const skillFile = path.join(dir, 'SKILL.md');
+    if (!fs.existsSync(skillFile)) continue;
+    let front = { name: '', description: '' };
+    try {
+      front = parseSkillFrontmatter(fs.readFileSync(skillFile, 'utf8'));
+    } catch {
+      // ignore unreadable frontmatter
+    }
+    skills.push({
+      name: front.name || entry.name,
+      dirName: entry.name,
+      description: front.description || '',
+      dir,
+      skillFile,
+    });
+  }
+  return { dir: skillsDir, skills };
+}
+
+function syncOsSkills(options = {}) {
+  const syncAll = Boolean(options.syncAll);
+  const home = os.homedir();
+  const { dir: skillsDir, skills } = listOsSkills();
+  const resolvedSkillsRoot = fs.existsSync(skillsDir) ? fs.realpathSync(skillsDir) : path.resolve(skillsDir);
+
+  const targets = [
+    {
+      id: 'agents',
+      parentDir: path.join(home, '.agents'),
+      skillsDir: path.join(home, '.agents', 'skills'),
+      always: true,
+    },
+    {
+      id: 'agy',
+      parentDir: path.join(home, '.gemini', 'config'),
+      skillsDir: path.join(home, '.gemini', 'config', 'skills'),
+      bin: 'agy',
+    },
+    {
+      id: 'claude',
+      parentDir: path.join(home, '.claude'),
+      skillsDir: path.join(home, '.claude', 'skills'),
+      bin: 'claude',
+    },
+    {
+      id: 'codex',
+      parentDir: path.join(home, '.codex'),
+      skillsDir: path.join(home, '.codex', 'skills'),
+      bin: 'codex',
+    },
+  ];
+
+  const results = [];
+  for (const target of targets) {
+    const active =
+      syncAll ||
+      Boolean(target.always) ||
+      fs.existsSync(target.parentDir) ||
+      Boolean(target.bin && whichBinary(target.bin));
+    if (!active) {
+      results.push({ target: target.id, dir: target.skillsDir, active: false, items: [] });
+      continue;
+    }
+    const items = [];
+    if (skills.length > 0) {
+      fs.mkdirSync(target.skillsDir, { recursive: true });
+    }
+    for (const skill of skills) {
+      const dest = path.join(target.skillsDir, skill.dirName);
+      const expectedTarget = path.resolve(skill.dir);
+      let stat = null;
+      try {
+        stat = fs.lstatSync(dest);
+      } catch {
+        stat = null;
+      }
+      if (!stat) {
+        fs.symlinkSync(expectedTarget, dest);
+        items.push({ skill: skill.dirName, status: 'linked', path: dest });
+        continue;
+      }
+      if (!stat.isSymbolicLink()) {
+        items.push({ skill: skill.dirName, status: 'skipped_user_override', path: dest });
+        continue;
+      }
+      const rawLink = fs.readlinkSync(dest);
+      const resolvedLink = path.resolve(path.dirname(dest), rawLink);
+      if (resolvedLink === expectedTarget) {
+        items.push({ skill: skill.dirName, status: 'unchanged', path: dest });
+        continue;
+      }
+      if (
+        resolvedLink === resolvedSkillsRoot ||
+        resolvedLink.startsWith(`${resolvedSkillsRoot}${path.sep}`)
+      ) {
+        fs.unlinkSync(dest);
+        fs.symlinkSync(expectedTarget, dest);
+        items.push({ skill: skill.dirName, status: 'updated', path: dest });
+      } else {
+        items.push({ skill: skill.dirName, status: 'skipped_user_override', path: dest });
+      }
+    }
+    results.push({ target: target.id, dir: target.skillsDir, active: true, items });
+  }
+
+  return {
+    ok: true,
+    sourceDir: skillsDir,
+    skillsCount: skills.length,
+    targets: results,
+  };
+}
+
+function collectCapabilities() {
+  const officeCliPath = whichBinary(process.env.NIDOOFFICE_BIN || 'nidooffice');
+  const nidoboxPath = whichBinary('nidobox');
+  const tesseractPath = whichBinary('tesseract');
+  const signedInMap = new Map(readSignedInAgentClis().map((a) => [a.id, a]));
+  const agents = {};
+  for (const id of ['agy', 'codex', 'claude']) {
+    const signed = signedInMap.get(id);
+    const binPath = signed?.binaryPath || whichBinary(id);
+    agents[id] = {
+      installed: Boolean(binPath),
+      signedIn: Boolean(signed),
+      ...(binPath ? { binaryPath: binPath } : {}),
+    };
+  }
+  const { dir: skillsDir, skills } = listOsSkills();
+  return {
+    office: {
+      cli: Boolean(officeCliPath),
+      ...(officeCliPath ? { cliPath: officeCliPath } : {}),
+      desktop:
+        fs.existsSync('/opt/NidoOffice/genoffice') ||
+        fs.existsSync('/opt/NidoOffice/nidooffice') ||
+        Boolean(whichBinary('nidooffice-desktop')),
+    },
+    utilities: {
+      nidobox: Boolean(nidoboxPath),
+      ...(nidoboxPath ? { nidoboxPath } : {}),
+      nidoboxEngine: fs.existsSync('/usr/lib/nidobox/nidobox-engine'),
+      tesseract: Boolean(tesseractPath),
+      tesseractVie: hasTesseractVie(),
+    },
+    input: {
+      ibus: Boolean(whichBinary('ibus')),
+      vielotus:
+        fs.existsSync('/usr/libexec/ibus-engine-vielotus') ||
+        fs.existsSync('/usr/lib/ibus-vielotus') ||
+        Boolean(whichBinary('vielotus-setup')),
+    },
+    agents,
+    multimedia: {
+      ffmpeg: Boolean(whichBinary('ffmpeg')),
+      imagemagick: Boolean(whichBinary('magick') || whichBinary('convert')),
+      pandoc: Boolean(whichBinary('pandoc')),
+      inkscape: Boolean(whichBinary('inkscape')),
+    },
+    skills: {
+      dir: skillsDir,
+      count: skills.length,
+      available: skills.map((s) => ({ name: s.name, skillFile: s.skillFile })),
+    },
+  };
 }
 
 const INLINE_MD_TOKEN_RE =
@@ -628,10 +883,11 @@ function isAiEnabledByPolicy() {
 }
 
 const AI_DISABLED_MESSAGE =
-  'Chế độ AI trên Ubuntu-Nido hiện đang TẮT. Mở NidoHub (`nido-hub --onboarding` hoặc `nido-welcome --force`) để bật lại AI và đăng nhập ít nhất 1 tài khoản (Google/Gemini, ChatGPT hoặc Claude).';
+  'Chế độ AI trên NidoOS hiện đang TẮT. Mở NidoHub (`nido-hub --onboarding` hoặc `nido-welcome --force`) để bật lại AI và đăng nhập ít nhất 1 tài khoản (Google/Gemini, ChatGPT hoặc Claude).';
 
 async function cmdStatus() {
   const aiEnabled = isAiEnabledByPolicy();
+  const capabilities = collectCapabilities();
   if (!aiEnabled) {
     console.log(
       JSON.stringify(
@@ -640,6 +896,7 @@ async function cmdStatus() {
           version: VERSION,
           aiEnabled: false,
           aiReady: false,
+          capabilities,
           setupHint: AI_DISABLED_MESSAGE,
         },
         null,
@@ -679,6 +936,7 @@ async function cmdStatus() {
           gatewayReady,
           signedInAgents: signedInAgents.map((a) => a.id),
           aiReady,
+          capabilities,
           ...(aiReady
             ? {}
             : {
@@ -699,6 +957,70 @@ async function cmdStatus() {
     );
     console.error('Gợi ý: chạy `systemctl --user start nidoai-gateway` hoặc `nidoai serve`.');
     process.exit(1);
+  }
+}
+
+function cmdCapabilities() {
+  console.log(
+    JSON.stringify(
+      {
+        ok: true,
+        version: VERSION,
+        aiEnabled: isAiEnabledByPolicy(),
+        capabilities: collectCapabilities(),
+      },
+      null,
+      2
+    )
+  );
+}
+
+function cmdSkills(args = []) {
+  let sub = 'list';
+  let flagJson = false;
+  let flagAll = false;
+  for (const arg of args) {
+    if (arg === 'list' || arg === 'sync') {
+      sub = arg;
+    } else if (arg === '--json') {
+      flagJson = true;
+    } else if (arg === '--all') {
+      flagAll = true;
+    }
+  }
+  if (sub === 'sync') {
+    const res = syncOsSkills({ syncAll: flagAll });
+    if (flagJson) {
+      console.log(JSON.stringify(res, null, 2));
+      return;
+    }
+    const activeTargets = res.targets.filter((t) => t.active);
+    console.log(`Ubuntu-Nido OS Skills (${res.skillsCount} skill từ ${res.sourceDir}):`);
+    for (const t of activeTargets) {
+      const counts = t.items.reduce((acc, item) => {
+        acc[item.status] = (acc[item.status] || 0) + 1;
+        return acc;
+      }, {});
+      const summary = Object.entries(counts)
+        .map(([k, v]) => `${k}=${v}`)
+        .join(', ');
+      console.log(`  - [${t.target}] ${t.dir}: ${summary || 'none'}`);
+    }
+    return;
+  }
+
+  const { dir, skills } = listOsSkills();
+  if (flagJson) {
+    console.log(JSON.stringify({ ok: true, dir, count: skills.length, skills }, null, 2));
+    return;
+  }
+  if (skills.length === 0) {
+    console.log(`Không tìm thấy Ubuntu-Nido OS Skills trong ${dir}.`);
+    return;
+  }
+  console.log(`Ubuntu-Nido OS Skills (${skills.length} từ ${dir}):`);
+  for (const s of skills) {
+    console.log(`  - ${s.name}: ${s.description || s.skillFile}`);
   }
 }
 
@@ -778,13 +1100,19 @@ async function sendChatCompletion(conn, messages, options = {}) {
         if (typeof content !== 'string') {
           throw new Error('Phản hồi từ Gateway không chứa choices[0].message.content');
         }
-        return { reply: content, streamed: false };
+        return {
+          reply: content,
+          streamed: false,
+          backend: 'gateway',
+          model: typeof data?.model === 'string' ? data.model : options.model || process.env.NIDO_MODEL || 'auto',
+        };
       }
 
       const msg = data?.error?.message || `HTTP ${res.status}`;
       const unconfigured = res.status === 503 || /not configured|not responding|missing.*key/i.test(msg);
       if (unconfigured && fallbackAgents.length > 0) {
-        return executeViaOfficialAgentCli(fallbackAgents[0], messages, options);
+        const cliRes = await executeViaOfficialAgentCli(fallbackAgents[0], messages, options);
+        return { ...cliRes, backend: fallbackAgents[0].id, model: options.model || 'default' };
       }
       if (unconfigured) {
         throw new Error(
@@ -795,24 +1123,35 @@ async function sendChatCompletion(conn, messages, options = {}) {
       throw new Error(`Lỗi NidoAI Gateway: ${msg}`);
     } catch (err) {
       if (fallbackAgents.length > 0 && err instanceof TypeError) {
-        return executeViaOfficialAgentCli(fallbackAgents[0], messages, options);
+        const cliRes = await executeViaOfficialAgentCli(fallbackAgents[0], messages, options);
+        return { ...cliRes, backend: fallbackAgents[0].id, model: options.model || 'default' };
       }
       throw err;
     }
   }
 
   if (fallbackAgents.length > 0) {
-    return executeViaOfficialAgentCli(fallbackAgents[0], messages, options);
+    const cliRes = await executeViaOfficialAgentCli(fallbackAgents[0], messages, options);
+    return { ...cliRes, backend: fallbackAgents[0].id, model: options.model || 'default' };
   }
   throw new Error(
     'Chưa có khóa AI hay tài khoản Agent đã đăng nhập. Hãy mở NidoHub (`nido-hub --page welcome`) để đăng nhập Google Antigravity (Ultra/Pro/Free), dán Google AI Studio GEMINI_API_KEY miễn phí ($0) hoặc đăng nhập OpenAI Codex / Claude Code.'
   );
 }
 
+function emitAskError(message, asJson, exitCode = 1) {
+  if (asJson) {
+    console.error(JSON.stringify({ ok: false, error: message }));
+  } else {
+    console.error(message);
+  }
+  process.exit(exitCode);
+}
+
 async function cmdAsk(args) {
+  const flagJsonEarly = args.includes('--json');
   if (!isAiEnabledByPolicy()) {
-    console.error(AI_DISABLED_MESSAGE);
-    process.exit(1);
+    emitAskError(AI_DISABLED_MESSAGE, flagJsonEarly, 1);
   }
   const files = [];
   const promptParts = [];
@@ -821,36 +1160,35 @@ async function cmdAsk(args) {
   let effort = '';
   let flagPlain = false;
   let flagRaw = false;
+  let flagJson = false;
 
   for (let i = 0; i < args.length; i += 1) {
     if (args[i] === '--file' || args[i] === '-f') {
       i += 1;
       if (!args[i]) {
-        console.error('nidoagent ask: thiếu đường dẫn sau --file');
-        process.exit(2);
+        emitAskError('nidoagent ask: thiếu đường dẫn sau --file', flagJsonEarly, 2);
       }
       files.push(args[i]);
     } else if (args[i] === '--out' || args[i] === '-o') {
       i += 1;
       if (!args[i]) {
-        console.error('nidoagent ask: thiếu đường dẫn sau --out');
-        process.exit(2);
+        emitAskError('nidoagent ask: thiếu đường dẫn sau --out', flagJsonEarly, 2);
       }
       outPath = args[i];
     } else if (args[i] === '--model' || args[i] === '-m') {
       i += 1;
       if (!args[i]) {
-        console.error('nidoagent ask: thiếu tên model sau --model');
-        process.exit(2);
+        emitAskError('nidoagent ask: thiếu tên model sau --model', flagJsonEarly, 2);
       }
       model = args[i];
     } else if (args[i] === '--effort') {
       i += 1;
       if (!args[i]) {
-        console.error('nidoagent ask: thiếu mức suy luận sau --effort (low|medium|high|xhigh|max)');
-        process.exit(2);
+        emitAskError('nidoagent ask: thiếu mức suy luận sau --effort (low|medium|high|xhigh|max)', flagJsonEarly, 2);
       }
       effort = args[i];
+    } else if (args[i] === '--json') {
+      flagJson = true;
     } else if (args[i] === '--plain') {
       flagPlain = true;
     } else if (args[i] === '--raw') {
@@ -862,21 +1200,27 @@ async function cmdAsk(args) {
 
   const prompt = promptParts.join(' ').trim();
   if (!prompt && files.length === 0) {
-    console.error(
-      'Usage: nidoagent ask [--model <id>] [--effort <lvl>] [--plain|--raw] [--file <path>] [--out <path>] <prompt>'
+    emitAskError(
+      'Usage: nidoagent ask [--model <id>] [--effort <lvl>] [--json|--plain|--raw] [--file <path>] [--out <path>] <prompt>',
+      flagJson,
+      2
     );
-    process.exit(2);
   }
 
-  const sections = [];
-  for (const f of files) {
-    sections.push(readAttachedFile(f));
+  let sections;
+  try {
+    sections = [];
+    for (const f of files) {
+      sections.push(readAttachedFile(f));
+    }
+    sections.push(prompt || 'Hãy tóm tắt và phân tích nội dung các tệp đính kèm.');
+  } catch (err) {
+    emitAskError(err instanceof Error ? err.message : String(err), flagJson, 1);
   }
-  sections.push(prompt || 'Hãy tóm tắt và phân tích nội dung các tệp đính kèm.');
 
   const outExt = outPath ? path.extname(outPath).toLowerCase() : '';
   let systemPrompt =
-    'Bạn là NidoAgent — trợ lý điều phối công việc mặc định trên hệ điều hành Ubuntu-Nido. Trả lời ngắn gọn, chính xác, ưu tiên tiếng Việt khi người dùng hỏi bằng tiếng Việt.';
+    'Bạn là NidoAgent — trợ lý điều phối công việc mặc định trên hệ điều hành NidoOS. Trả lời ngắn gọn, chính xác, ưu tiên tiếng Việt khi người dùng hỏi bằng tiếng Việt.';
   if (outExt === '.xlsx') {
     systemPrompt +=
       ' Khi xuất báo cáo bảng tính (.xlsx), hãy trình bày dữ liệu chính dưới dạng bảng Markdown (| Cột | Giá trị |) để hệ thống trích xuất sang Excel chính xác.';
@@ -885,21 +1229,67 @@ async function cmdAsk(args) {
   const conn = resolveGatewayConnection();
   const outMode = resolveOutputMode(flagPlain, flagRaw);
   const writer = new MarkdownStreamWriter(outMode, (s) => process.stdout.write(s));
-  const { reply, streamed } = await sendChatCompletion(
-    conn,
-    [
+  let completion;
+  try {
+    completion = await sendChatCompletion(
+      conn,
+      [
+        {
+          role: 'system',
+          content: systemPrompt,
+        },
+        { role: 'user', content: sections.join('\n\n') },
+      ],
       {
-        role: 'system',
-        content: systemPrompt,
-      },
-      { role: 'user', content: sections.join('\n\n') },
-    ],
-    {
-      model,
-      effort,
-      onDelta: (delta) => writer.push(delta),
+        model,
+        effort,
+        ...(flagJson ? {} : { onDelta: (delta) => writer.push(delta) }),
+      }
+    );
+  } catch (err) {
+    emitAskError(err instanceof Error ? err.message : String(err), flagJson, 1);
+  }
+
+  const { reply, streamed, backend, model: resolvedModel } = completion;
+
+  let resolvedOut = '';
+  if (outPath) {
+    try {
+      resolvedOut = path.resolve(outPath);
+      fs.mkdirSync(path.dirname(resolvedOut), { recursive: true });
+      if (outExt === '.docx' || outExt === '.xlsx') {
+        const officeBin = process.env.NIDOOFFICE_BIN || 'nidooffice';
+        execFileSync(officeBin, ['create', '--type', outExt.slice(1), '--out', resolvedOut, '--from', '-'], {
+          input: reply,
+          encoding: 'utf8',
+          env: process.env,
+        });
+      } else {
+        fs.writeFileSync(resolvedOut, `${reply}\n`, 'utf8');
+      }
+    } catch (err) {
+      emitAskError(err instanceof Error ? err.message : String(err), flagJson, 1);
     }
-  );
+  }
+
+  if (flagJson) {
+    console.log(
+      JSON.stringify(
+        {
+          ok: true,
+          version: VERSION,
+          backend: backend || 'gateway',
+          model: resolvedModel || model || 'auto',
+          reply,
+          attachedFiles: files.map((f) => path.resolve(f)),
+          ...(resolvedOut ? { outPath: resolvedOut } : {}),
+        },
+        null,
+        2
+      )
+    );
+    return;
+  }
 
   if (streamed) {
     writer.flush();
@@ -907,19 +1297,7 @@ async function cmdAsk(args) {
     console.log(renderMarkdownFull(reply, outMode));
   }
 
-  if (outPath) {
-    const resolvedOut = path.resolve(outPath);
-    fs.mkdirSync(path.dirname(resolvedOut), { recursive: true });
-    if (outExt === '.docx' || outExt === '.xlsx') {
-      const officeBin = process.env.NIDOOFFICE_BIN || 'nidooffice';
-      execFileSync(officeBin, ['create', '--type', outExt.slice(1), '--out', resolvedOut, '--from', '-'], {
-        input: reply,
-        encoding: 'utf8',
-        env: process.env,
-      });
-    } else {
-      fs.writeFileSync(resolvedOut, `${reply}\n`, 'utf8');
-    }
+  if (resolvedOut) {
     console.log(`\n[Đã xuất báo cáo: ${resolvedOut}]`);
   }
 }
@@ -962,7 +1340,7 @@ async function cmdChat(args = []) {
     {
       role: 'system',
       content:
-        'Bạn là NidoAgent — trợ lý điều phối công việc trên Ubuntu-Nido. Trả lời rõ ràng, hữu ích.',
+        'Bạn là NidoAgent — trợ lý điều phối công việc trên NidoOS. Trả lời rõ ràng, hữu ích.',
     },
   ];
   const rl = readline.createInterface({
@@ -986,7 +1364,7 @@ async function cmdChat(args = []) {
   const modeNote = warmAgy
     ? `Google Antigravity Warm Session (${model || process.env.NIDO_AGY_MODEL || 'gemini-3.8-flash-low'})`
     : conn.baseUrl;
-  console.log(`Ubuntu-Nido Agent Chat (${modeNote}) — gõ "exit" để thoát.`);
+  console.log(`NidoOS Agent Chat (${modeNote}) — gõ "exit" để thoát.`);
   safePrompt();
 
   const cleanup = () => {
@@ -1060,6 +1438,14 @@ async function main() {
   }
   if (cmd === 'status' || cmd === 'doctor') {
     await cmdStatus();
+    return;
+  }
+  if (cmd === 'capabilities' || cmd === 'caps') {
+    cmdCapabilities();
+    return;
+  }
+  if (cmd === 'skills') {
+    cmdSkills(rest);
     return;
   }
   if (cmd === 'ask') {

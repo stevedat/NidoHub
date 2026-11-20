@@ -37,7 +37,7 @@ else
   UBUNTU_ISO_URL="https://mirror.bizflycloud.vn/ubuntu-releases/${UBUNTU_VERSION}/${UBUNTU_ISO_NAME}"
 fi
 
-OUTPUT_ISO="Ubuntu-Nido-desktop-${TARGET_ARCH}.iso"
+OUTPUT_ISO="NidoOS-desktop-${TARGET_ARCH}.iso"
 OUTPUT_DIR="${OUTPUT_DIR:-$SCRIPT_DIR}"
 BASE_ISO_CACHE_DIR="${BASE_ISO_CACHE_DIR:-$SCRIPT_DIR}"
 WORK_DIR="${WORK_DIR:-$SCRIPT_DIR/build}"

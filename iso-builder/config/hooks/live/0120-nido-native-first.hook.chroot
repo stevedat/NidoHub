@@ -39,6 +39,17 @@ APT::Periodic::Unattended-Upgrade "1";
 AUTOUP
 fi
 
+# Preserve upstream Ubuntu security updates when os-release/lsb-release reports ID=nidoos
+cat > /etc/apt/apt.conf.d/51nidoos-unattended-upgrades <<'UNATT'
+Unattended-Upgrade::Allowed-Origins {
+  "Ubuntu:${distro_codename}";
+  "Ubuntu:${distro_codename}-security";
+  "Ubuntu:${distro_codename}-updates";
+  "UbuntuESMApps:${distro_codename}-apps-security";
+  "UbuntuESM:${distro_codename}-infra-security";
+};
+UNATT
+
 echo "[Ubuntu-Nido] Registering optional Flathub remote (zero preloaded Flatpak apps or runtimes)..."
 if command -v flatpak >/dev/null 2>&1; then
   flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo || true

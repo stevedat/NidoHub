@@ -2,8 +2,8 @@
 Type=Application
 Name=Nido Welcome & AI Setup
 Name[vi]=Thiết lập NidoAI & Chào mừng
-Comment=Configure NidoAI BYOK API keys and inspect Ubuntu-Nido services
-Comment[vi]=Cấu hình API key NidoAI (BYOK) và kiểm tra dịch vụ Ubuntu-Nido
+Comment=Configure NidoAI accounts, API keys and inspect NidoOS services
+Comment[vi]=Cấu hình tài khoản AI, API key và kiểm tra dịch vụ NidoOS
 Exec=/usr/local/bin/nido-welcome --force
 Icon=com.nidoholdings.NidoHub
 Terminal=false

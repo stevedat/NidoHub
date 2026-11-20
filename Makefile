@@ -7,19 +7,19 @@ APT_GPG_KEY        ?= AC980631CB8BA9D2602A0990528AF2083F61DC2F
 APT_PAGES_PROJECT  ?= ubuntu-nido-apt
 
 help:
-	@echo "Ubuntu-Nido (NidoHub) Build & Verification Targets"
+	@echo "NidoOS (NidoHub) Build & Verification Targets"
 	@echo ""
 	@echo "  make check              Run full static analysis, packaging, APT repo, and runtime smoke tests"
-	@echo "  make assets             Generate branding PNG assets (watermark, GRUB splash, wallpaper)"
-	@echo "  make packages           Build Ubuntu-Nido .deb packages into packages/dist/"
+	@echo "  make assets             Generate NidoOS branding PNG assets (watermark, GRUB splash, wallpaper, logo)"
+	@echo "  make packages           Build NidoOS .deb packages into packages/dist/"
 	@echo "  make apt-repo           Build static APT repository into apt-repo/"
 	@echo "  make dev-apt            Build & GPG-sign dev packages (+dev...) in apt-repo/ for fast UTM apt upgrade"
 	@echo "  make dev-apt-deploy     Build, sign, and deploy dev apt-repo/ to $(APT_PAGES_PROJECT) via wrangler"
 	@echo "  make release-apt        Build & GPG-sign clean release packages (no +dev suffix) in apt-repo/"
 	@echo "  make release-apt-deploy Build, sign, and deploy clean release apt-repo/ to $(APT_PAGES_PROJECT)"
-	@echo "  make iso            Build Ubuntu-Nido amd64 ISO (Linux host/root)"
-	@echo "  make iso-arm64      Build Ubuntu-Nido arm64 ISO (Linux host/root)"
-	@echo "  make iso-arm64-fast Build Ubuntu-Nido arm64 ISO locally (FAST_ISO=1 + ext4 workspace/cache)"
+	@echo "  make iso            Build NidoOS amd64 ISO (Linux host/root)"
+	@echo "  make iso-arm64      Build NidoOS arm64 ISO (Linux host/root)"
+	@echo "  make iso-arm64-fast Build NidoOS arm64 ISO locally (FAST_ISO=1 + ext4 workspace/cache)"
 	@echo "  make docker-iso     Build ISO inside Docker container (macOS/Linux)"
 	@echo "  make clean          Remove generated artifacts (dist, apt-repo, ISO build dirs)"
 
@@ -87,4 +87,4 @@ docker-iso: assets packages
 clean:
 	rm -rf packages/dist packages/*/stage apt-repo
 	rm -f iso-builder/config/includes.chroot/usr/share/backgrounds/ubuntu-nido/*.png
-	rm -rf iso-builder/build iso-builder/Ubuntu-Nido-*.iso
+	rm -rf iso-builder/build iso-builder/Ubuntu-Nido-*.iso iso-builder/NidoOS-*.iso
