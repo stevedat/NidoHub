@@ -1,0 +1,304 @@
+#!/usr/bin/env python3
+"""Ensure Sen Viet (VieLotusIM) Telex + VNI are pre-activated in GNOME Input Sources.
+
+Runs once per user on first desktop login (both Live ISO and newly installed Ubuntu-Nido),
+preventing Ubuntu Desktop Installer (Subiquity) or GNOME Initial Setup from leaving the user
+with only ('xkb', 'us') or ('xkb', 'vn'). Respects subsequent user edits once initialized.
+"""
+
+from __future__ import annotations
+
+import argparse
+import ast
+import glob
+import os
+import shutil
+import subprocess
+import sys
+import time
+from pathlib import Path
+from typing import Any
+
+TELEX_SOURCE = ("ibus", "vielotus")
+VNI_SOURCE = ("ibus", "vielotus-vni")
+US_SOURCE = ("xkb", "us")
+
+DEFAULT_VIELOTUS_CONF = (
+    "INPUT_METHOD=telex\n"
+    "GRAMMAR_PROFILE=classic\n"
+    "SMART_BILINGUAL=true\n"
+    "MODERN_ORTHOGRAPHY=true\n"
+)
+
+
+def parse_gsettings_sources(raw: str) -> list[tuple[str, str]]:
+    text = (raw or "").strip()
+    if text.startswith("@a(ss) "):
+        text = text[len("@a(ss) ") :].strip()
+    if not text:
+        return []
+    try:
+        parsed = ast.literal_eval(text)
+    except (SyntaxError, ValueError):
+        return []
+    out: list[tuple[str, str]] = []
+    if isinstance(parsed, (list, tuple)):
+        for item in parsed:
+            if (
+                isinstance(item, (list, tuple))
+                and len(item) == 2
+                and isinstance(item[0], str)
+                and isinstance(item[1], str)
+            ):
+                out.append((item[0], item[1]))
+    return out
+
+
+def format_gsettings_sources(sources: list[tuple[str, str]]) -> str:
+    return "[" + ", ".join(f"('{kind}', '{ident}')" for kind, ident in sources) + "]"
+
+
+def build_target_input_sources(
+    existing: list[tuple[str, str]],
+) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+    """Return ``(sources, mru_sources)`` with Sen Viet Telex + VNI + English US ready."""
+    extras: list[tuple[str, str]] = []
+    for src in existing:
+        if src in (TELEX_SOURCE, VNI_SOURCE, US_SOURCE):
+            continue
+        # Subiquity writes legacy ('xkb', 'vn') (1=ă, 2=â number-row layout) when user selects
+        # Vietnamese keyboard during install; replace it with clean ('xkb', 'us') + Sen Viet.
+        if src == ("xkb", "vn"):
+            continue
+        if src not in extras:
+            extras.append(src)
+
+    sources = [TELEX_SOURCE, VNI_SOURCE, US_SOURCE, *extras]
+    mru_sources = [TELEX_SOURCE, US_SOURCE, VNI_SOURCE, *extras]
+    return sources, mru_sources
+
+
+def discover_ibus_env(home_dir: Path, base_env: dict[str, str]) -> dict[str, str]:
+    env = dict(base_env)
+    bus_dir = home_dir / ".config" / "ibus" / "bus"
+    if not bus_dir.is_dir():
+        return env
+    try:
+        files = sorted(bus_dir.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True)
+    except OSError:
+        return env
+    for bfile in files:
+        if not bfile.is_file():
+            continue
+        try:
+            for line in bfile.read_text(encoding="utf-8", errors="replace").splitlines():
+                if line.startswith("IBUS_ADDRESS="):
+                    addr = line.split("=", 1)[1].strip().strip("'\"")
+                    if addr:
+                        env["IBUS_ADDRESS"] = addr
+                        return env
+        except OSError:
+            continue
+    return env
+
+
+def _run(argv: list[str], env: dict[str, str], timeout: float = 5.0) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(
+            argv,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return subprocess.CompletedProcess(argv, 127, "", str(exc))
+
+
+def ensure_vielotus_config(home_dir: Path) -> None:
+    cfg_dir = home_dir / ".config" / "vielotus"
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    cfg_file = cfg_dir / "config.env"
+    if not cfg_file.is_file():
+        cfg_file.write_text(DEFAULT_VIELOTUS_CONF, encoding="utf-8")
+
+
+def refresh_ibus_registry_if_needed(home_dir: Path, env: dict[str, str]) -> tuple[bool, bool]:
+    """Ensure IBus lists both ``vielotus`` and ``vielotus-vni``.
+
+    Returns ``(engines_visible, was_reloaded)``.
+    """
+    ibus_bin = shutil.which("ibus")
+    if not ibus_bin:
+        return False, False
+
+    def _has_both(cur_env: dict[str, str]) -> bool:
+        res = _run([ibus_bin, "list-engine"], cur_env, timeout=4.0)
+        if res.returncode != 0:
+            return False
+        lines = {ln.strip().split()[0].rstrip(":") for ln in res.stdout.splitlines() if ln.strip()}
+        return "vielotus" in lines and "vielotus-vni" in lines
+
+    cur_env = discover_ibus_env(home_dir, env)
+    if _has_both(cur_env):
+        return True, False
+
+    # Refresh user IBus component cache so GNOME Shell resolves 'Sen Việt - Telex' / 'Sen Việt - VNI'
+    cache_dir = home_dir / ".cache" / "ibus" / "bus"
+    if cache_dir.is_dir():
+        for reg_path in glob.glob(str(cache_dir / "registry*")):
+            try:
+                os.unlink(reg_path)
+            except OSError:
+                pass
+    _run([ibus_bin, "write-cache"], cur_env, timeout=4.0)
+
+    systemctl = shutil.which("systemctl")
+    reloaded = False
+    if systemctl:
+        st = _run(
+            [systemctl, "--user", "is-active", "--quiet", "org.freedesktop.IBus.session.GNOME.service"],
+            env,
+            timeout=3.0,
+        )
+        if st.returncode == 0:
+            _run([systemctl, "--user", "restart", "org.freedesktop.IBus.session.GNOME.service"], env, timeout=5.0)
+            reloaded = True
+            time.sleep(0.8)
+
+    cur_env = discover_ibus_env(home_dir, env)
+    if _has_both(cur_env):
+        return True, reloaded
+
+    _run([ibus_bin, "restart", "--type=direct"], cur_env, timeout=4.0)
+    time.sleep(0.8)
+    cur_env = discover_ibus_env(home_dir, env)
+    return _has_both(cur_env), True
+
+
+def sync_gnome_input_sources(
+    home_dir: Path,
+    force: bool = False,
+    wait_seconds: float = 12.0,
+) -> bool:
+    if not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+        return False
+
+    cfg_dir = home_dir / ".config" / "ubuntu-nido"
+    marker = cfg_dir / "ime-telex-vni-ready"
+    if marker.is_file() and not force:
+        return True
+
+    gsettings = shutil.which("gsettings")
+    if not gsettings:
+        return False
+
+    env = dict(os.environ)
+    ensure_vielotus_config(home_dir)
+
+    # Wait briefly for GNOME session & IBus to finish booting so Subiquity/GNOME doesn't race us
+    deadline = time.monotonic() + max(0.0, wait_seconds)
+    ibus_visible = False
+    was_reloaded = False
+    while True:
+        ibus_visible, reloaded_now = refresh_ibus_registry_if_needed(home_dir, env)
+        was_reloaded = was_reloaded or reloaded_now
+        if ibus_visible or time.monotonic() >= deadline:
+            break
+        time.sleep(0.5)
+
+    cur_res = _run(
+        [gsettings, "get", "org.gnome.desktop.input-sources", "sources"],
+        env,
+        timeout=4.0,
+    )
+    if cur_res.returncode != 0:
+        return False
+
+    existing = parse_gsettings_sources(cur_res.stdout)
+    target_sources, target_mru = build_target_input_sources(existing)
+
+    sources_str = format_gsettings_sources(target_sources)
+    mru_str = format_gsettings_sources(target_mru)
+
+    if was_reloaded:
+        # Force GNOME Shell to re-query IBusEngineDesc labels ('🇻🇳 tex' & '🇻🇳 vni')
+        _run(
+            [gsettings, "set", "org.gnome.desktop.input-sources", "sources", format_gsettings_sources([US_SOURCE])],
+            env,
+            timeout=4.0,
+        )
+        time.sleep(0.2)
+
+    _run([gsettings, "set", "org.gnome.desktop.input-sources", "sources", sources_str], env, timeout=4.0)
+    _run([gsettings, "set", "org.gnome.desktop.input-sources", "mru-sources", mru_str], env, timeout=4.0)
+    _run([gsettings, "set", "org.gnome.desktop.input-sources", "current", "uint32 0"], env, timeout=4.0)
+    _run([gsettings, "set", "org.gnome.desktop.input-sources", "per-window", "false"], env, timeout=4.0)
+
+    # Activate Sen Viet Telex immediately in live ibus-daemon if running
+    ibus_bin = shutil.which("ibus")
+    if ibus_bin and ibus_visible:
+        live_env = discover_ibus_env(home_dir, env)
+        _run([ibus_bin, "engine", "vielotus"], live_env, timeout=4.0)
+
+    # Verify both Telex and VNI were persisted before marking initialized
+    verify_res = _run(
+        [gsettings, "get", "org.gnome.desktop.input-sources", "sources"],
+        env,
+        timeout=4.0,
+    )
+    final_sources = parse_gsettings_sources(verify_res.stdout)
+    if TELEX_SOURCE in final_sources and VNI_SOURCE in final_sources:
+        cfg_dir.mkdir(parents=True, exist_ok=True)
+        marker.write_text("vielotus+vielotus-vni\n", encoding="utf-8")
+        # Also mark vendor vielotus-onboard as complete so it won't overwrite VNI on next login
+        vl_marker = home_dir / ".config" / "vielotus" / ".onboarded"
+        vl_marker.parent.mkdir(parents=True, exist_ok=True)
+        vl_marker.write_text("ubuntu-nido\n", encoding="utf-8")
+        return True
+    return False
+
+
+def run_self_test() -> int:
+    # 1. Subiquity default English install -> adds Telex + VNI ahead of US
+    s1, m1 = build_target_input_sources([("xkb", "us")])
+    assert s1 == [("ibus", "vielotus"), ("ibus", "vielotus-vni"), ("xkb", "us")], s1
+    assert m1 == [("ibus", "vielotus"), ("xkb", "us"), ("ibus", "vielotus-vni")], m1
+
+    # 2. Subiquity Vietnamese keyboard selection -> replaces awkward ('xkb', 'vn') with clean US + Telex + VNI
+    s2, _ = build_target_input_sources([("xkb", "vn")])
+    assert s2 == [("ibus", "vielotus"), ("ibus", "vielotus-vni"), ("xkb", "us")], s2
+
+    # 3. Empty / unset sources -> still sets Telex + VNI + US
+    s3, _ = build_target_input_sources(parse_gsettings_sources("@a(ss) []"))
+    assert s3 == [("ibus", "vielotus"), ("ibus", "vielotus-vni"), ("xkb", "us")], s3
+
+    # 4. Preserves additional user keyboards (e.g. Japanese/French) while placing Telex + VNI first
+    s4, _ = build_target_input_sources([("xkb", "us"), ("xkb", "jp"), ("ibus", "vielotus")])
+    assert s4 == [("ibus", "vielotus"), ("ibus", "vielotus-vni"), ("xkb", "us"), ("xkb", "jp")], s4
+
+    # 5. Formatting round-trip
+    formatted = format_gsettings_sources(s4)
+    assert parse_gsettings_sources(formatted) == s4, formatted
+    print("ensure-vietnamese-ime self-test passed.")
+    return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Pre-activate Sen Viet Telex & VNI in GNOME")
+    parser.add_argument("--force", action="store_true", help="Re-apply even if marker exists")
+    parser.add_argument("--wait", type=float, default=12.0, help="Max seconds to wait for IBus")
+    parser.add_argument("--self-test", action="store_true", help="Run headless unit tests")
+    args = parser.parse_args()
+
+    if args.self_test:
+        return run_self_test()
+
+    home_dir = Path(os.environ.get("HOME", str(Path.home())))
+    sync_gnome_input_sources(home_dir, force=args.force, wait_seconds=args.wait)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

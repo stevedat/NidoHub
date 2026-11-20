@@ -43,6 +43,11 @@ STALE_LIVE_CACHES = (
     "var/cache/ldconfig/aux-cache",
     "usr/share/glib-2.0/schemas/gschemas.compiled",
     "usr/share/icons/hicolor/icon-theme.cache",
+    "etc/default/locale",
+)
+
+STALE_LIVE_CACHE_DIRS = (
+    "var/cache/fontconfig",
 )
 
 
@@ -193,6 +198,19 @@ def reconcile_live_layer(
         if stat.S_ISREG(st.st_mode):
             target.unlink()
             unlinked += 1
+
+    for rel_dir in STALE_LIVE_CACHE_DIRS:
+        target_dir = live_delta / rel_dir
+        if not target_dir.is_dir() or target_dir.is_symlink():
+            continue
+        for entry in target_dir.iterdir():
+            try:
+                st = os.lstat(entry)
+            except OSError:
+                continue
+            if stat.S_ISREG(st.st_mode):
+                entry.unlink()
+                unlinked += 1
 
     return len(removed_pkgs), len(live_added_pkgs), unlinked
 

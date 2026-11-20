@@ -722,6 +722,44 @@ assert hook_120.is_file() and "--allow-downgrades" in hook_120.read_text(encodin
 )
 print("Verified nido-pkg-helper GPG fingerprint enforcement, DEB822 .sources, package-specific APT pinning, --allow-downgrades, and protected-package guard.")
 PY
+
+# Verify Vietnamese fontconfig XML, Sen Viet Telex+VNI IME sync, and AI OFF CLI policy
+python3 - "${ROOT_DIR}" <<'PY'
+import json
+import os
+import subprocess
+import sys
+import xml.etree.ElementTree as ET
+from pathlib import Path
+
+root = Path(sys.argv[1])
+
+# 1. Validate Vietnamese Fontconfig rules XML
+fc_xml = root / "packages/nido-desktop-settings/files/etc/fonts/conf.d/52-ubuntu-nido-vietnamese.conf"
+assert fc_xml.is_file(), "Missing 52-ubuntu-nido-vietnamese.conf"
+fc_text = fc_xml.read_text(encoding="utf-8")
+ET.fromstring(fc_text)
+for token in ("Ubuntu", "Ubuntu Sans", "Be Vietnam Pro", "Noto Sans", "Noto Sans Mono"):
+    assert token in fc_text, f"Missing expected font family {token!r} in 52-ubuntu-nido-vietnamese.conf"
+
+# 2. Validate dconf defaults & ensure-vietnamese-ime --self-test
+dconf_txt = (root / "packages/nido-desktop-settings/files/etc/dconf/db/local.d/00-ubuntu-nido-settings").read_text(encoding="utf-8")
+assert "('ibus', 'vielotus')" in dconf_txt and "('ibus', 'vielotus-vni')" in dconf_txt, (
+    "00-ubuntu-nido-settings must pre-activate both Sen Viet Telex and VNI"
+)
+ime_script = root / "packages/nido-desktop-settings/files/usr/libexec/ubuntu-nido/ensure-vietnamese-ime"
+subprocess.run([sys.executable, str(ime_script), "--self-test"], check=True)
+
+# 3. Verify nidoagent respects NIDOAI_ENABLED=0 (AI OFF policy)
+cli_mjs = root / "packages/nidoagent-cli/files/usr/lib/nidoagent-cli/cli.mjs"
+env_off = dict(os.environ, NIDOAI_ENABLED="0")
+st_off = subprocess.run(["node", str(cli_mjs), "status"], env=env_off, capture_output=True, text=True, check=True)
+st_json = json.loads(st_off.stdout)
+assert st_json.get("ok") is True and st_json.get("aiEnabled") is False and st_json.get("aiReady") is False, st_json
+ask_off = subprocess.run(["node", str(cli_mjs), "ask", "Xin chào"], env=env_off, capture_output=True, text=True, check=False)
+assert ask_off.returncode != 0 and "đang TẮT" in ask_off.stderr, (ask_off.returncode, ask_off.stderr)
+print("Verified Vietnamese Fontconfig XML, Sen Viet Telex+VNI sync self-test, and AI OFF CLI guard.")
+PY
 pass "Live nidoai-gateway <-> nidoagent-cli, nido-hub, and nidooffice smoke tests passed"
 
 echo "=== 6. Layered Casper Updater & Live-Layer Reconciliation Unit Tests ==="
@@ -853,17 +891,25 @@ with tempfile.TemporaryDirectory() as td:
     # Stale monolithic caches inside live_delta
     stale_ld = live_dir / "etc/ld.so.cache"
     stale_schemas = live_dir / "usr/share/glib-2.0/schemas/gschemas.compiled"
+    stale_locale = live_dir / "etc/default/locale"
+    (live_dir / "etc/default").mkdir(parents=True)
+    (live_dir / "var/cache/fontconfig").mkdir(parents=True)
+    stale_fc = live_dir / "var/cache/fontconfig/deadbeef-le64.cache-9"
     stale_ld.write_bytes(b"stale-ld")
     stale_schemas.write_bytes(b"stale-schemas")
+    stale_locale.write_text("LANG=C.UTF-8\n", encoding="utf-8")
+    stale_fc.write_bytes(b"stale-fc")
 
     rem, add, unlinked = rec.reconcile_live_layer(
         base_dir,
         live_dir,
         whiteout_predicate=lambda p: p.name in ("dracut.list", "dracut-core.list"),
     )
-    assert rem == 2 and add == 2 and unlinked == 2, f"Unexpected counts: {(rem, add, unlinked)}"
+    assert rem == 2 and add == 2 and unlinked == 4, f"Unexpected counts: {(rem, add, unlinked)}"
     assert not stale_ld.exists(), "Stale ld.so.cache was not unlinked"
     assert not stale_schemas.exists(), "Stale gschemas.compiled was not unlinked"
+    assert not stale_locale.exists(), "Stale live etc/default/locale was not unlinked"
+    assert not stale_fc.exists(), "Stale live var/cache/fontconfig cache was not unlinked"
 
     merged = (live_dir / "var/lib/dpkg/status").read_text(encoding="utf-8")
     assert "nidobox" in rec.PROTECTED_CUSTOM_PREFIXES, "nidobox missing from PROTECTED_CUSTOM_PREFIXES"

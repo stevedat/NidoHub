@@ -76,6 +76,73 @@ PROVIDERS = [
 
 GEMINI_FREE_KEY_URL = "https://aistudio.google.com/apikey"
 
+REQUIRED_AGENT_PROVIDER_IDS = ("agy", "codex", "claude")
+REQUIRED_AGENT_LABELS = {
+    "agy": "Google / Gemini (agy)",
+    "codex": "ChatGPT / OpenAI (codex)",
+    "claude": "Claude / Anthropic (claude)",
+}
+
+
+def evaluate_ai_onboarding_gate(
+    ai_enabled: bool,
+    agent_states: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Evaluate whether mandatory first-run AI onboarding may complete.
+
+    Policy:
+    - AI OFF -> allowed to complete immediately without signing in.
+    - AI ON  -> requires at least 1 signed-in AI account among Google/Gemini (agy),
+      ChatGPT (codex), or Claude (claude); API keys may be added optionally.
+    """
+    signed_ids: list[str] = []
+    for entry in agent_states:
+        pid = str(entry.get("id") or "")
+        if pid in REQUIRED_AGENT_PROVIDER_IDS and bool(entry.get("signedIn")):
+            if pid not in signed_ids:
+                signed_ids.append(pid)
+    signed_labels = [REQUIRED_AGENT_LABELS.get(pid, pid) for pid in signed_ids]
+
+    if not ai_enabled:
+        return {
+            "aiEnabled": False,
+            "signedInProviders": signed_ids,
+            "signedInLabels": signed_labels,
+            "canComplete": True,
+            "statusBadge": "AI ĐANG TẮT",
+            "reasonVi": (
+                "Chế độ AI đang TẮT — bấm 'Hoàn tất (Tắt AI)' để vào thẳng màn hình chính. "
+                "Bạn có thể bật lại AI bất cứ lúc nào trong NidoHub."
+            ),
+        }
+
+    if signed_ids:
+        joined = ", ".join(signed_labels)
+        return {
+            "aiEnabled": True,
+            "signedInProviders": signed_ids,
+            "signedInLabels": signed_labels,
+            "canComplete": True,
+            "statusBadge": f"ĐẠT YÊU CẦU ({len(signed_ids)} TÀI KHOẢN)",
+            "reasonVi": (
+                f"Đã đăng nhập {joined}. Bạn có thể thêm API Key bên dưới (nếu có) "
+                "rồi bấm 'Hoàn tất & Bắt đầu dùng Ubuntu-Nido'."
+            ),
+        }
+
+    return {
+        "aiEnabled": True,
+        "signedInProviders": [],
+        "signedInLabels": [],
+        "canComplete": False,
+        "statusBadge": "BẮT BUỘC — 0/1 TÀI KHOẢN",
+        "reasonVi": (
+            "Chế độ AI đang BẬT: bắt buộc đăng nhập ít nhất 1 tài khoản "
+            "(Google/Gemini, ChatGPT hoặc Claude) ở Bước 1 trước khi hoàn tất, "
+            "hoặc gạt công tắc sang TẮT AI."
+        ),
+    }
+
 
 def escape_markup(text: str) -> str:
     """Escape text for GTK/Libadwaita widgets whose labels parse Pango markup."""
@@ -116,6 +183,174 @@ class NidoHubBackend:
     def welcome_done_file(self) -> Path:
         return self.config_dir / "welcome-done"
 
+    @property
+    def ai_policy_file(self) -> Path:
+        return self.config_dir / "ai-policy.json"
+
+    def load_ai_policy(self) -> dict[str, Any]:
+        if self.ai_policy_file.is_file():
+            try:
+                raw = json.loads(self.ai_policy_file.read_text(encoding="utf-8"))
+                if isinstance(raw, dict):
+                    return {
+                        "schemaVersion": 1,
+                        "setupCompleted": bool(raw.get("setupCompleted", False)),
+                        "aiEnabled": bool(raw.get("aiEnabled", True)),
+                        "signedInProviders": list(raw.get("signedInProviders") or []),
+                        "updatedAt": str(raw.get("updatedAt") or ""),
+                    }
+            except (OSError, ValueError):
+                pass
+
+        env = self.load_env_file_only()
+        flag = env.get("NIDOAI_ENABLED", "").strip().lower()
+        ai_enabled = flag not in {"0", "false", "off", "no"}
+        return {
+            "schemaVersion": 1,
+            "setupCompleted": self.welcome_done_file.is_file(),
+            "aiEnabled": ai_enabled,
+            "signedInProviders": [],
+            "updatedAt": "",
+        }
+
+    def is_ai_enabled(self) -> bool:
+        return bool(self.load_ai_policy().get("aiEnabled", True))
+
+    def is_onboarding_required(self) -> bool:
+        return not bool(self.load_ai_policy().get("setupCompleted", False))
+
+    def _write_ai_policy(
+        self,
+        setup_completed: bool,
+        ai_enabled: bool,
+        signed_in_providers: list[str] | None = None,
+    ) -> dict[str, Any]:
+        self.config_dir.mkdir(parents=True, exist_ok=True)
+        now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        payload = {
+            "schemaVersion": 1,
+            "setupCompleted": bool(setup_completed),
+            "aiEnabled": bool(ai_enabled),
+            "signedInProviders": list(signed_in_providers or []),
+            "updatedAt": now_iso,
+        }
+        fd, tmp_name = tempfile.mkstemp(dir=str(self.config_dir), prefix=".ai-policy.")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
+            os.chmod(tmp_name, 0o600)
+            os.replace(tmp_name, self.ai_policy_file)
+            os.chmod(self.ai_policy_file, 0o600)
+        finally:
+            if os.path.exists(tmp_name):
+                os.unlink(tmp_name)
+        return payload
+
+    def set_ai_enabled(
+        self,
+        enabled: bool,
+        restart_service: bool = True,
+        mark_completed: bool = False,
+        signed_in_providers: list[str] | None = None,
+    ) -> str:
+        cur = self.load_ai_policy()
+        env = self.load_env_file_only()
+        if enabled and len(env.get("NIDOAI_CLIENT_TOKEN", "")) < 16:
+            env["NIDOAI_CLIENT_TOKEN"] = f"nidoai_{secrets.token_hex(24)}"
+        env["NIDOAI_ENABLED"] = "1" if enabled else "0"
+        self._write_env_file(env)
+
+        completed = bool(mark_completed or cur.get("setupCompleted", False))
+        providers = (
+            list(signed_in_providers)
+            if signed_in_providers is not None
+            else list(cur.get("signedInProviders") or [])
+        )
+        self._write_ai_policy(completed, enabled, providers)
+        if completed:
+            self.welcome_done_file.write_text(
+                datetime.datetime.now(datetime.timezone.utc).isoformat() + "\n",
+                encoding="utf-8",
+            )
+
+        if restart_service and shutil.which("systemctl"):
+            if enabled:
+                res = subprocess.run(
+                    ["systemctl", "--user", "restart", "nidoai-gateway.service"],
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                if res.returncode != 0:
+                    subprocess.run(
+                        ["systemctl", "--user", "enable", "--now", "nidoai-gateway.service"],
+                        check=False,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+            else:
+                subprocess.run(
+                    ["systemctl", "--user", "stop", "nidoai-gateway.service"],
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+
+        if enabled:
+            return "Đã BẬT chế độ AI trên Ubuntu-Nido."
+        return "Đã TẮT chế độ AI trên Ubuntu-Nido (có thể bật lại bất cứ lúc nào trong NidoHub)."
+
+    def complete_ai_onboarding(
+        self,
+        ai_enabled: bool,
+        primary_backend: str = "gemini",
+        gemini_key: str = "",
+        openai_key: str = "",
+        anthropic_key: str = "",
+        local_base_url: str = "",
+        local_model: str = "",
+        restart_service: bool = True,
+        verify_live: bool = False,
+        agent_states: list[dict[str, Any]] | None = None,
+    ) -> tuple[bool, str]:
+        if not ai_enabled:
+            msg = self.set_ai_enabled(
+                False,
+                restart_service=restart_service,
+                mark_completed=True,
+                signed_in_providers=[],
+            )
+            return True, msg
+
+        states = agent_states if agent_states is not None else self.probe_agent_accounts(persist=True)
+        gate = evaluate_ai_onboarding_gate(True, states)
+        if not gate["canComplete"]:
+            return False, gate["reasonVi"]
+
+        has_any_api_key = any(
+            k.strip() for k in (gemini_key, openai_key, anthropic_key, local_base_url)
+        )
+        should_verify = bool(verify_live and has_any_api_key)
+        save_msg = self.save_ai_settings(
+            primary_backend=primary_backend,
+            gemini_key=gemini_key,
+            openai_key=openai_key,
+            anthropic_key=anthropic_key,
+            local_base_url=local_base_url,
+            local_model=local_model,
+            restart_service=restart_service,
+            verify_live=should_verify,
+        )
+        # Ensure NIDOAI_ENABLED=1 & ai-policy.json reflect completed ON state
+        env = self.load_env_file_only()
+        env["NIDOAI_ENABLED"] = "1"
+        self._write_env_file(env)
+        self._write_ai_policy(True, True, gate["signedInProviders"])
+        joined = ", ".join(gate["signedInLabels"])
+        if has_any_api_key:
+            return True, f"Hoàn tất thiết lập AI ({joined}). {save_msg}"
+        return True, f"Hoàn tất thiết lập AI với tài khoản {joined}!"
+
     def load_env_file_only(self) -> dict[str, str]:
         if not self.env_file.is_file():
             return {}
@@ -153,6 +388,8 @@ class NidoHubBackend:
                 os.unlink(tmp_name)
 
     def ensure_gateway_ready(self, start_service: bool = True) -> None:
+        if not self.is_ai_enabled():
+            return
         env = self.load_env_file_only()
         if len(env.get("NIDOAI_CLIENT_TOKEN", "")) < 16:
             env["NIDOAI_CLIENT_TOKEN"] = f"nidoai_{secrets.token_hex(24)}"
@@ -807,6 +1044,82 @@ def run_self_test() -> int:
         assert "  ◦ Chuẩn: PAdES (ETSI.CAdES.detached)" in plain_md
         assert "2 * 3 * 4 = 24" in plain_md and "*.deb và *.rpm" in plain_md and "snake_case_var" in plain_md
         assert "def f(**kwargs):" in plain_md, "Fenced code block must stay verbatim"
+
+        # Verify mandatory AI ON/OFF onboarding gate policy
+        gate_on_empty = evaluate_ai_onboarding_gate(
+            True,
+            [
+                {"id": "agy", "installed": True, "signedIn": False},
+                {"id": "codex", "installed": False, "signedIn": False},
+                {"id": "claude", "installed": False, "signedIn": False},
+            ],
+        )
+        assert not gate_on_empty["canComplete"], "AI ON with 0 signed-in accounts must be blocked"
+
+        gate_on_agy = evaluate_ai_onboarding_gate(
+            True,
+            [
+                {"id": "agy", "installed": True, "signedIn": True},
+                {"id": "codex", "installed": False, "signedIn": False},
+            ],
+        )
+        assert gate_on_agy["canComplete"] and gate_on_agy["signedInProviders"] == ["agy"]
+
+        gate_on_codex = evaluate_ai_onboarding_gate(
+            True,
+            [{"id": "codex", "installed": True, "signedIn": True}],
+        )
+        assert gate_on_codex["canComplete"] and gate_on_codex["signedInProviders"] == ["codex"]
+
+        gate_on_claude = evaluate_ai_onboarding_gate(
+            True,
+            [{"id": "claude", "installed": True, "signedIn": True}],
+        )
+        assert gate_on_claude["canComplete"] and gate_on_claude["signedInProviders"] == ["claude"]
+
+        gate_off = evaluate_ai_onboarding_gate(False, [])
+        assert gate_off["canComplete"] and not gate_off["aiEnabled"]
+
+        ob_home = root / "onboarding_home"
+        ob_home.mkdir()
+        ob_backend = NidoHubBackend(home_dir=ob_home, catalog_path=cat_file)
+        assert ob_backend.is_onboarding_required(), "Fresh user must require AI onboarding"
+
+        # AI ON without signed-in account MUST fail even if API key is provided
+        ok_block, msg_block = ob_backend.complete_ai_onboarding(
+            ai_enabled=True,
+            gemini_key="test-gemini-key-placeholder-01",
+            restart_service=False,
+            agent_states=[{"id": "agy", "installed": True, "signedIn": False}],
+        )
+        assert not ok_block and "bắt buộc đăng nhập" in msg_block.lower()
+        assert ob_backend.is_onboarding_required(), "Blocked onboarding must not mark complete"
+
+        # AI OFF must succeed immediately and write NIDOAI_ENABLED=0
+        ok_off, _ = ob_backend.complete_ai_onboarding(
+            ai_enabled=False,
+            restart_service=False,
+            agent_states=[],
+        )
+        assert ok_off
+        assert not ob_backend.is_onboarding_required()
+        assert not ob_backend.is_ai_enabled()
+        assert ob_backend.load_env_file_only().get("NIDOAI_ENABLED") == "0"
+
+        # Switching to AI ON with >=1 signed-in account + optional API key must succeed
+        ok_on, _ = ob_backend.complete_ai_onboarding(
+            ai_enabled=True,
+            primary_backend="gemini",
+            gemini_key="test-gemini-key-placeholder-02",
+            restart_service=False,
+            verify_live=False,
+            agent_states=[{"id": "agy", "installed": True, "signedIn": True}],
+        )
+        assert ok_on
+        assert not ob_backend.is_onboarding_required()
+        assert ob_backend.is_ai_enabled()
+        assert ob_backend.load_env_file_only().get("NIDOAI_ENABLED") == "1"
+        assert ob_backend.load_ai_policy()["signedInProviders"] == ["agy"]
     print("nido-hub self-test passed.")
     return 0
 
@@ -857,6 +1170,8 @@ def run_gtk_app(
     backend: NidoHubBackend,
     initial_page: str,
     package_file: Path | None = None,
+    onboarding_mode: bool = False,
+    first_login_launch: bool = False,
 ) -> int:
     import gi  # type: ignore
 
@@ -901,7 +1216,14 @@ def run_gtk_app(
             win = Adw.ApplicationWindow(application=self)
             win.set_icon_name("com.nidoholdings.NidoHub")
             win.set_title("NidoHub — Ubuntu-Nido")
-            win.set_default_size(900, 680)
+            win.set_default_size(920, 720)
+
+            root_stack = Gtk.Stack()
+            root_stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
+            onboarding_active = [bool(onboarding_mode)]
+            allow_close = [False]
+            ob_poll_source_id: list[int] = [0]
+            ob_poll_ticks = [0]
 
             toolbar = Adw.ToolbarView()
             header = Adw.HeaderBar()
@@ -924,6 +1246,8 @@ def run_gtk_app(
             if hasattr(banner, "set_use_markup"):
                 banner.set_use_markup(False)
             _, gw_msg = backend.probe_gateway_health()
+            if not backend.is_ai_enabled():
+                gw_msg = "Chế độ AI đang TẮT trên Ubuntu-Nido — gạt công tắc Bật AI bên dưới để kích hoạt."
             banner.set_title(gw_msg if hasattr(banner, "set_use_markup") else escape_markup(gw_msg))
             banner.set_revealed(True)
             ai_box.append(banner)
@@ -932,11 +1256,29 @@ def run_gtk_app(
             env = backend.load_env()
             initial_report = backend.get_ai_readiness_report(persist_agents=False)
 
-            # Group 0 (Pinned Top): Hardware-Aware AI Discovery & 3-App Capability Matrix
+            # Group 0 (Pinned Top): Master AI ON/OFF Switch + Hardware-Aware AI Discovery
             diag_group = _make_group(
                 title="Trạng thái AI & Đề xuất theo cấu hình máy",
                 description=initial_report["recommendationVi"],
             )
+            ai_master_guard = [False]
+            ai_master_switch = _make_plain_row(
+                Adw.SwitchRow(),
+                "Kích hoạt Trợ lý AI Ubuntu-Nido (AI ON / OFF)",
+                "Bật để dùng Google/Gemini, ChatGPT, Claude, NidoAgent & NidoOffice AI; Tắt để không chạy nền AI.",
+            )
+            ai_master_switch.set_active(backend.is_ai_enabled())
+            diag_group.add(ai_master_switch)
+
+            reopen_ob_row = _make_plain_row(
+                Adw.ActionRow(),
+                "Trình hướng dẫn thiết lập AI ban đầu (ON/OFF & Đăng nhập tài khoản)",
+                "Mở lại màn hình thiết lập tài khoản Google/Gemini, ChatGPT, Claude và API Key tùy chọn.",
+            )
+            reopen_ob_btn = Gtk.Button(label="Mở màn hình thiết lập", valign=Gtk.Align.CENTER)
+            reopen_ob_row.add_suffix(reopen_ob_btn)
+            diag_group.add(reopen_ob_row)
+
             hw_row = _make_plain_row(
                 Adw.ActionRow(),
                 "Phần cứng & Môi trường AI phát hiện được",
@@ -1034,6 +1376,8 @@ def run_gtk_app(
             agent_rows: dict[str, tuple[Any, Gtk.Button, Any]] = {}
 
             def _format_banner_line(gw_line: str, agent_states_list: list[dict[str, Any]], caps: dict[str, Any]) -> str:
+                if not backend.is_ai_enabled():
+                    return "Chế độ AI đang TẮT trên Ubuntu-Nido — gạt công tắc Bật AI bên dưới để kích hoạt."
                 signed = [str(a.get("id", "")).upper() for a in agent_states_list if a.get("signedIn")]
                 if signed and "chưa cấu hình" in gw_line:
                     names = ", ".join(signed)
@@ -1811,7 +2155,458 @@ def run_gtk_app(
             if initial_page in {"welcome", "apps", "agent"}:
                 stack.set_visible_child_name(initial_page)
 
-            win.set_content(toolbar)
+            # --- Dedicated Mandatory AI Onboarding Gate (AI ON/OFF + >=1 Required Account + Optional API Key) ---
+            ob_toolbar = Adw.ToolbarView()
+            ob_header = Adw.HeaderBar()
+            ob_title = Adw.WindowTitle(
+                title="Thiết lập AI ban đầu — Ubuntu-Nido",
+                subtitle="Chọn bật/tắt AI và kết nối ít nhất 1 tài khoản AI để sẵn sàng sử dụng",
+            )
+            ob_header.set_title_widget(ob_title)
+            ob_toolbar.add_top_bar(ob_header)
+
+            ob_toast_overlay = Adw.ToastOverlay()
+            ob_outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+
+            ob_banner = Adw.Banner()
+            if hasattr(ob_banner, "set_use_markup"):
+                ob_banner.set_use_markup(False)
+            ob_banner.set_revealed(True)
+            ob_outer.append(ob_banner)
+
+            ob_page = Adw.PreferencesPage()
+            ob_page.set_vexpand(True)
+
+            # Onboarding Group 0: Mandatory AI ON / OFF switch
+            ob_toggle_group = _make_group(
+                title="Chọn chế độ AI trên Ubuntu-Nido (Bắt buộc)",
+                description=(
+                    "Nếu BẬT AI (ON), bạn bắt buộc đăng nhập ít nhất 1 tài khoản (Google/Gemini, ChatGPT hoặc Claude) "
+                    "để NidoAgent & NidoOffice AI hoạt động ngay. Nếu chưa muốn dùng AI, hãy gạt sang TẮT AI (OFF)."
+                ),
+            )
+            ob_ai_switch = _make_plain_row(
+                Adw.SwitchRow(),
+                "Sử dụng Trợ lý AI Ubuntu-Nido (AI ON / OFF)",
+                "BẬT (ON): yêu cầu đăng nhập ≥ 1 tài khoản AI bên dưới · TẮT (OFF): vào thẳng desktop không chạy AI.",
+            )
+            ob_ai_switch.set_active(True if backend.is_onboarding_required() else backend.is_ai_enabled())
+            ob_toggle_group.add(ob_ai_switch)
+
+            # Onboarding Group 1: Mandatory Sign-In (visible when AI ON)
+            ob_accounts_group = _make_group(
+                title="1. Đăng nhập tài khoản AI (Bắt buộc — chọn ít nhất 1 tài khoản)",
+                description="Bấm 1 chạm để tự tải CLI chính chủ (không cần root) và đăng nhập OAuth qua trình duyệt.",
+            )
+            ob_agent_rows: dict[str, tuple[Any, Gtk.Button, Any]] = {}
+            ob_latest_states: list[dict[str, Any]] = list(initial_states_list)
+
+            ob_check_row = _make_plain_row(
+                Adw.ActionRow(),
+                "Trạng thái xác thực tài khoản AI",
+                "Sau khi hoàn tất đăng nhập trên trình duyệt / cửa sổ dòng lệnh, bấm kiểm tra hoặc đợi tự cập nhật.",
+            )
+            ob_check_btn = Gtk.Button(label="Kiểm tra đăng nhập", valign=Gtk.Align.CENTER)
+            ob_check_row.add_suffix(ob_check_btn)
+
+            # Onboarding Group 2: Optional API Key (visible when AI ON)
+            ob_apikey_group = _make_group(
+                title="2. Nhập API Key bổ sung (Tùy chọn, nếu có)",
+                description=(
+                    "Không bắt buộc nếu đã đăng nhập tài khoản ở Bước 1. Thêm API Key giúp kích hoạt thêm "
+                    "NidoBox Vision OCR và NidoAI Gateway cục bộ (lưu an toàn trong OS Keyring)."
+                ),
+            )
+            ob_prov_model = Gtk.StringList.new([label for _, label in PROVIDERS])
+            ob_prov_row = _make_plain_row(Adw.ComboRow(model=ob_prov_model), "Nguồn API Gateway ưu tiên")
+            ob_prov_row.set_selected(prov_idx)
+            ob_apikey_group.add(ob_prov_row)
+
+            ob_free_key_row = _make_plain_row(
+                Adw.ActionRow(),
+                "Lấy Google Gemini API Key miễn phí ($0 — tùy chọn)",
+                "Mở Google AI Studio trên trình duyệt nếu bạn muốn thêm khóa dự phòng cho NidoBox OCR.",
+            )
+            ob_get_key_btn = Gtk.Button(label="Mở AI Studio", valign=Gtk.Align.CENTER)
+            ob_get_key_btn.connect(
+                "clicked",
+                lambda _b: _add_toast(
+                    ob_toast_overlay,
+                    "Đã mở Google AI Studio trong trình duyệt."
+                    if backend.open_external_url(GEMINI_FREE_KEY_URL)
+                    else f"Mở trình duyệt truy cập: {GEMINI_FREE_KEY_URL}",
+                ),
+            )
+            ob_free_key_row.add_suffix(ob_get_key_btn)
+            ob_apikey_group.add(ob_free_key_row)
+
+            ob_gemini_row = _make_plain_row(Adw.PasswordEntryRow(), "Google Gemini API Key (tùy chọn)")
+            ob_gemini_row.set_text(env.get("GEMINI_API_KEY", ""))
+            ob_apikey_group.add(ob_gemini_row)
+
+            ob_openai_row = _make_plain_row(Adw.PasswordEntryRow(), "OpenAI API Key (tùy chọn)")
+            ob_openai_row.set_text(env.get("OPENAI_API_KEY", ""))
+            ob_apikey_group.add(ob_openai_row)
+
+            ob_anthropic_row = _make_plain_row(Adw.PasswordEntryRow(), "Anthropic API Key (tùy chọn)")
+            ob_anthropic_row.set_text(env.get("ANTHROPIC_API_KEY", ""))
+            ob_apikey_group.add(ob_anthropic_row)
+
+            # Onboarding Group 3: AI OFF Confirmation (visible when AI OFF)
+            ob_off_group = _make_group(
+                title="Chế độ TẮT AI (AI OFF)",
+                description="Ubuntu-Nido sẽ hoạt động hoàn toàn như máy tính để bàn truyền thống, không khởi chạy dịch vụ AI.",
+            )
+            ob_off_info_row = _make_plain_row(
+                Adw.ActionRow(),
+                "Tạm tắt NidoAI Gateway, NidoAgent và NidoOffice AI",
+                "Bạn có thể mở NidoHub bất cứ lúc nào để gạt AI sang BẬT (ON) và đăng nhập tài khoản AI sau.",
+            )
+            ob_off_group.add(ob_off_info_row)
+
+            # Pinned Bottom Action Bar for Onboarding
+            ob_footer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+            ob_footer.set_margin_top(10)
+            ob_footer.set_margin_bottom(14)
+            ob_footer.set_margin_start(24)
+            ob_footer.set_margin_end(24)
+
+            ob_gate_lbl = Gtk.Label(xalign=0.0, wrap=True)
+            ob_gate_lbl.add_css_class("dim-label")
+            ob_footer.append(ob_gate_lbl)
+
+            ob_action_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+            ob_action_row.set_halign(Gtk.Align.END)
+            ob_finish_btn = Gtk.Button(label="Hoàn tất & Bắt đầu dùng Ubuntu-Nido")
+            ob_finish_btn.add_css_class("suggested-action")
+            ob_finish_btn.add_css_class("pill")
+            ob_action_row.append(ob_finish_btn)
+            ob_footer.append(ob_action_row)
+
+            def _stop_ob_poll() -> None:
+                if ob_poll_source_id[0]:
+                    try:
+                        GLib.source_remove(ob_poll_source_id[0])
+                    except Exception:
+                        pass
+                    ob_poll_source_id[0] = 0
+
+            def _update_onboarding_ui() -> None:
+                ai_on = bool(ob_ai_switch.get_active())
+                gate = evaluate_ai_onboarding_gate(ai_on, ob_latest_states)
+                states_map = {e["id"]: e for e in ob_latest_states}
+
+                ob_accounts_group.set_visible(ai_on)
+                ob_apikey_group.set_visible(ai_on)
+                ob_off_group.set_visible(not ai_on)
+
+                banner_txt = f"[{gate['statusBadge']}] {gate['reasonVi']}"
+                ob_banner.set_title(
+                    banner_txt if hasattr(ob_banner, "set_use_markup") else escape_markup(banner_txt)
+                )
+                ob_gate_lbl.set_text(gate["reasonVi"])
+                ob_check_row.set_subtitle(
+                    f"Trạng thái: {gate['statusBadge']} — "
+                    + (
+                        ", ".join(gate["signedInLabels"])
+                        if gate["signedInLabels"]
+                        else "chưa phát hiện tài khoản nào đã đăng nhập."
+                    )
+                )
+
+                for spec in MANAGED_AGENT_SPECS:
+                    if spec.id not in ob_agent_rows:
+                        continue
+                    st = states_map.get(spec.id, {"installed": False, "signedIn": False})
+                    row_w, btn_w, _ = ob_agent_rows[spec.id]
+                    row_w.set_subtitle(_format_agent_status_subtitle(spec, st))
+                    if st.get("signedIn"):
+                        btn_w.set_label("Đã đăng nhập ✓")
+                        btn_w.remove_css_class("suggested-action")
+                        btn_w.set_sensitive(True)
+                    elif st.get("installed"):
+                        btn_w.set_label("Đăng nhập ngay")
+                        btn_w.add_css_class("suggested-action")
+                        btn_w.set_sensitive(True)
+                    else:
+                        btn_w.set_label("Cài & Đăng nhập")
+                        btn_w.add_css_class("suggested-action")
+                        btn_w.set_sensitive(True)
+
+                if not ai_on:
+                    ob_finish_btn.set_label("Hoàn tất (Tắt AI & vào màn hình chính)")
+                    ob_finish_btn.set_sensitive(True)
+                elif gate["canComplete"]:
+                    ob_finish_btn.set_label("Hoàn tất & Bắt đầu dùng Ubuntu-Nido")
+                    ob_finish_btn.set_sensitive(True)
+                    _stop_ob_poll()
+                else:
+                    ob_finish_btn.set_label("Hoàn tất (Cần đăng nhập ≥ 1 tài khoản AI)")
+                    ob_finish_btn.set_sensitive(False)
+
+            def _refresh_onboarding_accounts(show_toast: bool = False) -> None:
+                def worker() -> None:
+                    fresh_states = backend.probe_agent_accounts(persist=True)
+
+                    def apply() -> bool:
+                        ob_latest_states[:] = fresh_states
+                        _update_onboarding_ui()
+                        if show_toast:
+                            g = evaluate_ai_onboarding_gate(bool(ob_ai_switch.get_active()), ob_latest_states)
+                            _add_toast(ob_toast_overlay, f"{g['statusBadge']}: {g['reasonVi']}"[:150])
+                        return False
+
+                    GLib.idle_add(apply)
+
+                threading.Thread(target=worker, daemon=True).start()
+
+            def _start_ob_poll() -> None:
+                _stop_ob_poll()
+                ob_poll_ticks[0] = 0
+
+                def _tick() -> bool:
+                    if not onboarding_active[0] or not ob_ai_switch.get_active():
+                        ob_poll_source_id[0] = 0
+                        return False
+                    ob_poll_ticks[0] += 1
+                    if ob_poll_ticks[0] > 45:  # Stop after ~3 minutes
+                        ob_poll_source_id[0] = 0
+                        return False
+                    _refresh_onboarding_accounts(show_toast=False)
+                    return True
+
+                ob_poll_source_id[0] = int(GLib.timeout_add_seconds(4, _tick))
+
+            for spec in MANAGED_AGENT_SPECS:
+                st = initial_states.get(spec.id, {"installed": False, "signedIn": False})
+                ob_row = _make_plain_row(
+                    Adw.ActionRow(),
+                    spec.display_name,
+                    _format_agent_status_subtitle(spec, st),
+                )
+                ob_btn = Gtk.Button(label="Cài & Đăng nhập", valign=Gtk.Align.CENTER)
+
+                def on_ob_agent_clicked(_b: Gtk.Button, pid: str = spec.id) -> None:
+                    cur_st = next((x for x in ob_latest_states if x.get("id") == pid), {})
+                    if cur_st.get("signedIn"):
+                        _add_toast(
+                            ob_toast_overlay,
+                            f"{REQUIRED_AGENT_LABELS.get(pid, pid)} đã đăng nhập sẵn sàng!",
+                        )
+                        return
+                    _b.set_sensitive(False)
+                    _b.set_label("Đang mở đăng nhập...")
+
+                    def worker() -> None:
+                        ok_c, msg_c = backend.connect_agent(pid)
+                        fresh = backend.probe_agent_accounts(persist=True)
+
+                        def done() -> bool:
+                            ob_latest_states[:] = fresh
+                            _add_toast(ob_toast_overlay, msg_c[:150])
+                            _update_onboarding_ui()
+                            if ok_c and not evaluate_ai_onboarding_gate(True, ob_latest_states)["canComplete"]:
+                                _start_ob_poll()
+                            return False
+
+                        GLib.idle_add(done)
+
+                    threading.Thread(target=worker, daemon=True).start()
+
+                ob_btn.connect("clicked", on_ob_agent_clicked)
+                ob_row.add_suffix(ob_btn)
+                ob_accounts_group.add(ob_row)
+                ob_agent_rows[spec.id] = (ob_row, ob_btn, spec)
+
+            ob_accounts_group.add(ob_check_row)
+            ob_check_btn.connect("clicked", lambda _b: _refresh_onboarding_accounts(show_toast=True))
+            ob_ai_switch.connect("notify::active", lambda *_a: _update_onboarding_ui())
+
+            def _sync_main_from_onboarding(ai_on: bool) -> None:
+                ai_master_guard[0] = True
+                try:
+                    ai_master_switch.set_active(ai_on)
+                finally:
+                    ai_master_guard[0] = False
+                if ob_gemini_row.get_text().strip():
+                    gemini_row.set_text(ob_gemini_row.get_text().strip())
+                if ob_openai_row.get_text().strip():
+                    openai_row.set_text(ob_openai_row.get_text().strip())
+                if ob_anthropic_row.get_text().strip():
+                    anthropic_row.set_text(ob_anthropic_row.get_text().strip())
+                prov_row.set_selected(ob_prov_row.get_selected())
+
+            def on_ob_finish_clicked(_b: Gtk.Button) -> None:
+                ai_on = bool(ob_ai_switch.get_active())
+                sel = ob_prov_row.get_selected()
+                kind = PROVIDERS[sel][0] if 0 <= sel < len(PROVIDERS) else "gemini"
+                g_key = ob_gemini_row.get_text()
+                o_key = ob_openai_row.get_text()
+                a_key = ob_anthropic_row.get_text()
+                _b.set_sensitive(False)
+                _b.set_label("Đang hoàn tất thiết lập...")
+
+                def worker() -> None:
+                    fresh = backend.probe_agent_accounts(persist=True) if ai_on else []
+                    ok_f, msg_f = backend.complete_ai_onboarding(
+                        ai_enabled=ai_on,
+                        primary_backend=kind,
+                        gemini_key=g_key,
+                        openai_key=o_key,
+                        anthropic_key=a_key,
+                        restart_service=True,
+                        verify_live=True,
+                        agent_states=fresh,
+                    )
+
+                    def done() -> bool:
+                        if fresh:
+                            ob_latest_states[:] = fresh
+                        if not ok_f:
+                            _add_toast(ob_toast_overlay, msg_f[:160])
+                            _update_onboarding_ui()
+                            return False
+                        _stop_ob_poll()
+                        onboarding_active[0] = False
+                        _sync_main_from_onboarding(ai_on)
+                        if not ai_on and first_login_launch:
+                            allow_close[0] = True
+                            win.close()
+                            return False
+                        root_stack.set_visible_child_name("main")
+                        stack.set_visible_child_name("welcome")
+                        _add_toast(toast_overlay, msg_f[:160])
+                        refresh_readiness_ui(persist_agents=False)
+                        return False
+
+                    GLib.idle_add(done)
+
+                threading.Thread(target=worker, daemon=True).start()
+
+            ob_finish_btn.connect("clicked", on_ob_finish_clicked)
+
+            ob_page.add(ob_toggle_group)
+            ob_page.add(ob_accounts_group)
+            ob_page.add(ob_apikey_group)
+            ob_page.add(ob_off_group)
+            ob_outer.append(ob_page)
+            ob_toast_overlay.set_child(ob_outer)
+            ob_toolbar.set_content(ob_toast_overlay)
+            ob_toolbar.add_bottom_bar(ob_footer)
+            _update_onboarding_ui()
+
+            def _enter_onboarding_view() -> None:
+                onboarding_active[0] = True
+                ob_ai_switch.set_active(True)
+                root_stack.set_visible_child_name("onboarding")
+                _update_onboarding_ui()
+                _refresh_onboarding_accounts(show_toast=False)
+
+            reopen_ob_btn.connect("clicked", lambda _b: _enter_onboarding_view())
+
+            def on_master_ai_toggled(sw: Any, _pspec: Any) -> None:
+                if ai_master_guard[0]:
+                    return
+                want_on = bool(sw.get_active())
+
+                def worker() -> None:
+                    if not want_on:
+                        msg_t = backend.set_ai_enabled(False, restart_service=True)
+
+                        def done_off() -> bool:
+                            _add_toast(toast_overlay, msg_t[:150])
+                            banner.set_title(
+                                "Chế độ AI đang TẮT trên Ubuntu-Nido — gạt công tắc Bật AI bên dưới để kích hoạt."
+                            )
+                            return False
+
+                        GLib.idle_add(done_off)
+                        return
+
+                    fresh_agents = backend.probe_agent_accounts(persist=True)
+                    gate_now = evaluate_ai_onboarding_gate(True, fresh_agents)
+                    if not gate_now["canComplete"]:
+                        def open_gate() -> bool:
+                            ob_latest_states[:] = fresh_agents
+                            _enter_onboarding_view()
+                            _add_toast(
+                                ob_toast_overlay,
+                                "Bật AI yêu cầu đăng nhập ít nhất 1 tài khoản (Google/Gemini, ChatGPT hoặc Claude).",
+                            )
+                            return False
+
+                        GLib.idle_add(open_gate)
+                        return
+
+                    msg_t = backend.set_ai_enabled(
+                        True,
+                        restart_service=True,
+                        signed_in_providers=gate_now["signedInProviders"],
+                    )
+
+                    def done_on() -> bool:
+                        _add_toast(toast_overlay, msg_t[:150])
+                        refresh_readiness_ui(persist_agents=False)
+                        return False
+
+                    GLib.idle_add(done_on)
+
+                threading.Thread(target=worker, daemon=True).start()
+
+            ai_master_switch.connect("notify::active", on_master_ai_toggled)
+
+            def on_window_close_request(_w: Any) -> bool:
+                if allow_close[0] or not onboarding_active[0]:
+                    _stop_ob_poll()
+                    return False
+
+                def _confirm_disable_and_exit() -> None:
+                    _stop_ob_poll()
+                    backend.set_ai_enabled(
+                        False,
+                        restart_service=True,
+                        mark_completed=True,
+                        signed_in_providers=[],
+                    )
+                    onboarding_active[0] = False
+                    allow_close[0] = True
+                    win.close()
+
+                if hasattr(Adw, "AlertDialog"):
+                    dlg = Adw.AlertDialog(
+                        heading="Chưa hoàn tất thiết lập AI",
+                        body=(
+                            "Chế độ AI yêu cầu đăng nhập ít nhất 1 tài khoản (Google/Gemini, ChatGPT hoặc Claude) "
+                            "hoặc chọn Tắt AI trước khi vào màn hình chính."
+                        ),
+                    )
+                    dlg.add_response("stay", "Quay lại thiết lập")
+                    dlg.add_response("disable", "Tắt AI & Thoát")
+                    dlg.set_default_response("stay")
+                    dlg.set_close_response("stay")
+                    if hasattr(Adw, "ResponseAppearance"):
+                        dlg.set_response_appearance("disable", Adw.ResponseAppearance.DESTRUCTIVE)
+
+                    def _on_dlg_resp(_d: Any, resp: str) -> None:
+                        if resp == "disable":
+                            _confirm_disable_and_exit()
+
+                    dlg.connect("response", _on_dlg_resp)
+                    dlg.present(win)
+                else:
+                    _add_toast(
+                        ob_toast_overlay,
+                        "Vui lòng đăng nhập ≥ 1 tài khoản AI hoặc gạt công tắc sang TẮT AI rồi bấm Hoàn tất.",
+                    )
+                return True
+
+            win.connect("close-request", on_window_close_request)
+
+            root_stack.add_named(ob_toolbar, "onboarding")
+            root_stack.add_named(toolbar, "main")
+            root_stack.set_visible_child_name("onboarding" if onboarding_mode else "main")
+
+            win.set_content(root_stack)
             win.present()
 
     app = NidoHubApp()
@@ -1829,7 +2624,12 @@ def main() -> int:
     parser.add_argument(
         "--first-login",
         action="store_true",
-        help="Exit immediately if initial welcome setup was already completed",
+        help="Launch mandatory AI ON/OFF onboarding if not yet completed, else exit immediately",
+    )
+    parser.add_argument(
+        "--onboarding",
+        action="store_true",
+        help="Open the mandatory AI ON/OFF & Account Sign-in onboarding screen",
     )
     parser.add_argument(
         "--self-test",
@@ -1848,7 +2648,7 @@ def main() -> int:
         return run_self_test()
 
     backend = NidoHubBackend()
-    if args.first_login and backend.welcome_done_file.is_file():
+    if args.first_login and not backend.is_onboarding_required():
         return 0
 
     if not can_launch_gtk():
@@ -1856,7 +2656,16 @@ def main() -> int:
 
     opened_pkg = _resolve_opened_package_path(args.package_file)
     start_page = "apps" if opened_pkg is not None else args.page
-    return run_gtk_app(backend, start_page, package_file=opened_pkg)
+    open_onboarding = bool(
+        opened_pkg is None and (args.onboarding or (args.first_login and backend.is_onboarding_required()))
+    )
+    return run_gtk_app(
+        backend,
+        start_page,
+        package_file=opened_pkg,
+        onboarding_mode=open_onboarding,
+        first_login_launch=bool(args.first_login),
+    )
 
 
 if __name__ == "__main__":

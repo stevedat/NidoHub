@@ -4,6 +4,10 @@ clock-format='24h'
 clock-show-weekday=true
 cursor-theme='Bibata-Modern-Classic'
 font-name='Be Vietnam Pro 10'
+document-font-name='Be Vietnam Pro 11'
+monospace-font-name='Noto Sans Mono 10'
+font-antialiasing='rgba'
+font-hinting='slight'
 
 [org/gnome/desktop/background]
 picture-uri='file:///usr/share/backgrounds/ubuntu-nido/wallpaper.png'
@@ -18,7 +22,9 @@ picture-options='zoom'
 favorite-apps=['firefox.desktop', 'org.gnome.Nautilus.desktop', 'com.nidoholdings.NidoHub.desktop', 'nidooffice.desktop', 'com.nidoholdings.NidoBox.desktop', 'org.gnome.Terminal.desktop', 'org.gnome.Settings.desktop']
 
 [org/gnome/desktop/input-sources]
-sources=[('ibus', 'vielotus'), ('xkb', 'us')]
+sources=[('ibus', 'vielotus'), ('ibus', 'vielotus-vni'), ('xkb', 'us')]
+mru-sources=[('ibus', 'vielotus'), ('xkb', 'us'), ('ibus', 'vielotus-vni')]
+per-window=false
 
 [org/gnome/desktop/wm/keybindings]
 switch-input-source=['<Super>space']

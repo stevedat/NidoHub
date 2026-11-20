@@ -62,13 +62,27 @@ fix_live_installer_shortcuts() {
 
 fix_live_installer_shortcuts
 
-if [[ "$FORCE" -eq 0 && -f "$DONE_FILE" ]]; then
+if [[ -x /usr/libexec/ubuntu-nido/ensure-vietnamese-ime ]]; then
+  /usr/libexec/ubuntu-nido/ensure-vietnamese-ime >/dev/null 2>&1 &
+fi
+
+POLICY_FILE="${CONFIG_DIR}/ai-policy.json"
+SETUP_DONE=0
+if [[ -f "$POLICY_FILE" ]]; then
+  if grep -q '"setupCompleted"[[:space:]]*:[[:space:]]*true' "$POLICY_FILE" 2>/dev/null; then
+    SETUP_DONE=1
+  fi
+elif [[ -f "$DONE_FILE" ]]; then
+  SETUP_DONE=1
+fi
+
+if [[ "$FORCE" -eq 0 && "$SETUP_DONE" -eq 1 ]]; then
   exit 0
 fi
 
 if command -v nido-hub >/dev/null 2>&1 && python3 -c 'import gi; gi.require_version("Gtk", "4.0"); gi.require_version("Adw", "1")' >/dev/null 2>&1; then
   if [[ "$FORCE" -eq 1 ]]; then
-    exec nido-hub --page welcome
+    exec nido-hub --onboarding
   fi
   exec nido-hub --page welcome --first-login
 fi

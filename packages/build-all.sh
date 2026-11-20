@@ -63,6 +63,7 @@ chmod 755 \
   "${SCRIPT_DIR}/nidoagent-cli/files/usr/bin/nidoagent" \
   "${SCRIPT_DIR}/nidoagent-cli/files/usr/lib/nidoagent-cli/cli.mjs" \
   "${SCRIPT_DIR}/nido-desktop-settings/DEBIAN/postinst" \
+  "${SCRIPT_DIR}/nido-desktop-settings/files/usr/libexec/ubuntu-nido/ensure-vietnamese-ime" \
   "${SCRIPT_DIR}/nido-desktop-settings/files/usr/local/bin/nido-welcome" \
   "${SCRIPT_DIR}/nido-desktop-settings/files/usr/local/bin/nidoagent-quicklaunch" \
   "${SCRIPT_DIR}/nido-desktop-settings/files/etc/skel/.local/share/nautilus/scripts/Giao-cho-NidoAgent" \

@@ -229,6 +229,15 @@ step_customize() {
   HOME=/root chroot "$WORK_DIR/squashfs" /bin/bash -c '
     set -e
     test -f /etc/dconf/db/local
+    test -f /etc/fonts/conf.d/52-ubuntu-nido-vietnamese.conf
+    test -f /usr/share/fonts/truetype/be-vietnam-pro/BeVietnamPro-Regular.ttf
+    ! ls /usr/share/fonts/truetype/be-vietnam-pro/*\[wght\]*.ttf >/dev/null 2>&1
+    fc-match -f "%{family}\n" ":charset=1ec7" | grep -Eq "Be Vietnam Pro|Noto Sans"
+    fc-match -f "%{family}\n" "Ubuntu:charset=1ec7" | grep -Eq "Be Vietnam Pro|Noto Sans"
+    test -x /usr/libexec/ubuntu-nido/ensure-vietnamese-ime
+    /usr/libexec/ubuntu-nido/ensure-vietnamese-ime --self-test >/dev/null
+    test -f /etc/xdg/autostart/ubuntu-nido-ime-sync.desktop
+    grep -q "vielotus-vni" /etc/dconf/db/local.d/00-ubuntu-nido-settings
     test -x /usr/bin/nidoai
     test -x /usr/bin/nidoagent
     test -x /usr/bin/nido-hub

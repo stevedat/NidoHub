@@ -28,8 +28,8 @@ Description=Ubuntu-Nido AI-Native Desktop boot splash
 ModuleName=two-step
 
 [two-step]
-Font=Cantarell 12
-TitleFont=Cantarell Light 30
+Font=Be Vietnam Pro 12
+TitleFont=Be Vietnam Pro Light 30
 ImageDir=/usr/share/plymouth/themes/ubuntu-nido
 DialogHorizontalAlignment=.5
 DialogVerticalAlignment=.382

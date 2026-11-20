@@ -95,6 +95,9 @@ repack_layered_live_overlays() {
     if command -v ibus >/dev/null 2>&1; then
       ibus write-cache --system >/dev/null 2>&1 || true
     fi
+    if command -v fc-cache >/dev/null 2>&1; then
+      fc-cache -rf >/dev/null 2>&1 || true
+    fi
     if command -v gtk-update-icon-cache >/dev/null 2>&1; then
       gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor || true
     fi
@@ -103,6 +106,15 @@ repack_layered_live_overlays() {
     fi
     apt-get check
     test -x /sbin/init
+    test -f /etc/fonts/conf.d/52-ubuntu-nido-vietnamese.conf
+    test -f /usr/share/fonts/truetype/be-vietnam-pro/BeVietnamPro-Regular.ttf
+    ! ls /usr/share/fonts/truetype/be-vietnam-pro/*\[wght\]*.ttf >/dev/null 2>&1
+    fc-match -f "%{family}\n" ":charset=1ec7" | grep -Eq "Be Vietnam Pro|Noto Sans"
+    fc-match -f "%{family}\n" "Ubuntu:charset=1ec7" | grep -Eq "Be Vietnam Pro|Noto Sans"
+    test -x /usr/libexec/ubuntu-nido/ensure-vietnamese-ime
+    /usr/libexec/ubuntu-nido/ensure-vietnamese-ime --self-test >/dev/null
+    test -f /etc/xdg/autostart/ubuntu-nido-ime-sync.desktop
+    grep -q "vielotus-vni" /etc/dconf/db/local.d/00-ubuntu-nido-settings
     test -x /usr/bin/nidoai
     test -x /usr/bin/nidoagent
     test -x /usr/bin/nido-hub

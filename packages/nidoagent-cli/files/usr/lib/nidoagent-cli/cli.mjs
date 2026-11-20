@@ -594,7 +594,60 @@ async function executeViaOfficialAgentCli(agent, messages, options = {}) {
   throw new Error(`Không hỗ trợ chạy trực tiếp Agent CLI: ${agent.id}`);
 }
 
+function isAiEnabledByPolicy() {
+  const envFlag = String(process.env.NIDOAI_ENABLED ?? '').trim().toLowerCase();
+  if (envFlag === '0' || envFlag === 'false' || envFlag === 'off' || envFlag === 'no') {
+    return false;
+  }
+  if (envFlag === '1' || envFlag === 'true' || envFlag === 'on' || envFlag === 'yes') {
+    return true;
+  }
+  const xdgConfig = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config');
+  const policyPath = path.join(xdgConfig, 'ubuntu-nido', 'ai-policy.json');
+  if (fs.existsSync(policyPath)) {
+    try {
+      const policy = JSON.parse(fs.readFileSync(policyPath, 'utf8'));
+      if (policy && typeof policy.aiEnabled === 'boolean') {
+        return policy.aiEnabled;
+      }
+    } catch {
+      // ignore malformed policy file
+    }
+  }
+  for (const dir of stateDirCandidates()) {
+    const envLocal = parseEnvFile(path.join(dir, '.env.local'));
+    const f = String(envLocal.NIDOAI_ENABLED ?? '').trim().toLowerCase();
+    if (f === '0' || f === 'false' || f === 'off' || f === 'no') {
+      return false;
+    }
+    if (f === '1' || f === 'true' || f === 'on' || f === 'yes') {
+      return true;
+    }
+  }
+  return true;
+}
+
+const AI_DISABLED_MESSAGE =
+  'Chế độ AI trên Ubuntu-Nido hiện đang TẮT. Mở NidoHub (`nido-hub --onboarding` hoặc `nido-welcome --force`) để bật lại AI và đăng nhập ít nhất 1 tài khoản (Google/Gemini, ChatGPT hoặc Claude).';
+
 async function cmdStatus() {
+  const aiEnabled = isAiEnabledByPolicy();
+  if (!aiEnabled) {
+    console.log(
+      JSON.stringify(
+        {
+          ok: true,
+          version: VERSION,
+          aiEnabled: false,
+          aiReady: false,
+          setupHint: AI_DISABLED_MESSAGE,
+        },
+        null,
+        2
+      )
+    );
+    return;
+  }
   const conn = resolveGatewayConnection();
   const signedInAgents = readSignedInAgentClis();
   const healthUrl = `${conn.baseUrl}/healthz`;
@@ -619,6 +672,7 @@ async function cmdStatus() {
         {
           ok: true,
           version: VERSION,
+          aiEnabled: true,
           healthUrl,
           runtimeFound: conn.runtimeFound,
           tokenConfigured: conn.clientToken.length >= 16,
@@ -756,6 +810,10 @@ async function sendChatCompletion(conn, messages, options = {}) {
 }
 
 async function cmdAsk(args) {
+  if (!isAiEnabledByPolicy()) {
+    console.error(AI_DISABLED_MESSAGE);
+    process.exit(1);
+  }
   const files = [];
   const promptParts = [];
   let outPath = '';
@@ -867,6 +925,10 @@ async function cmdAsk(args) {
 }
 
 async function cmdChat(args = []) {
+  if (!isAiEnabledByPolicy()) {
+    console.error(AI_DISABLED_MESSAGE);
+    process.exit(1);
+  }
   let model = '';
   let effort = '';
   let flagPlain = false;

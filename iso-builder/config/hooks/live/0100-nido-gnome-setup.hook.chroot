@@ -3,7 +3,7 @@
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 
-NIDO_VERSION="${NIDO_VERSION:-0.1.0}"
+NIDO_VERSION="${NIDO_VERSION:-0.2.0}"
 BASE_UBUNTU_VERSION="${UBUNTU_VERSION:-}"
 UBUNTU_CODENAME="${UBUNTU_CODENAME:-resolute}"
 
@@ -20,6 +20,7 @@ UBUNTU_VERSION="${BASE_UBUNTU_VERSION:-26.04}"
 
 echo "[Ubuntu-Nido] Configuring Vietnamese locale & Asia/Ho_Chi_Minh timezone..."
 sed -i 's/^# *vi_VN.UTF-8 UTF-8/vi_VN.UTF-8 UTF-8/' /etc/locale.gen 2>/dev/null || true
+sed -i 's/^# *en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen 2>/dev/null || true
 locale-gen vi_VN.UTF-8 en_US.UTF-8 >/dev/null 2>&1 || locale-gen >/dev/null 2>&1 || true
 
 cat > /etc/default/locale <<'LOCALE'
@@ -30,19 +31,41 @@ LOCALE
 ln -snf /usr/share/zoneinfo/Asia/Ho_Chi_Minh /etc/localtime
 printf 'Asia/Ho_Chi_Minh\n' > /etc/timezone
 
-echo "[Ubuntu-Nido] Installing Be Vietnam Pro font & Bibata cursor (with offline resilience)..."
-mkdir -p /usr/share/fonts/truetype/be-vietnam-pro
-if wget -q --timeout=15 -O /tmp/be-vietnam-pro.zip "https://github.com/bettergui/BeVietnamPro/archive/refs/heads/master.zip"; then
-  if file /tmp/be-vietnam-pro.zip | grep -q "Zip"; then
+echo "[Ubuntu-Nido] Installing Be Vietnam Pro static TTF fonts & Bibata cursor..."
+FONT_DIR="/usr/share/fonts/truetype/be-vietnam-pro"
+rm -rf "$FONT_DIR"
+mkdir -p "$FONT_DIR"
+if curl -fsSL --retry 3 --connect-timeout 15 --max-time 60 \
+  "https://github.com/bettergui/BeVietnamPro/archive/refs/heads/main.zip" \
+  -o /tmp/be-vietnam-pro.zip; then
+  if file /tmp/be-vietnam-pro.zip | grep -qi "zip"; then
+    rm -rf /tmp/be-vietnam-pro-extract
     unzip -qo /tmp/be-vietnam-pro.zip -d /tmp/be-vietnam-pro-extract/
-    find /tmp/be-vietnam-pro-extract/ -name "*.ttf" -exec cp {} /usr/share/fonts/truetype/be-vietnam-pro/ \;
-    fc-cache -f >/dev/null 2>&1 || true
+    # Install ONLY static TTFs (fonts/ttf/*.ttf); exclude variable *[wght].ttf to prevent
+    # Fontconfig/Pango/Skia weight-matching conflicts with Vietnamese diacritics.
+    find /tmp/be-vietnam-pro-extract/ -path '*/fonts/ttf/*.ttf' ! -name '*[[]*' -exec cp {} "$FONT_DIR/" \;
+    if ! ls "$FONT_DIR"/*.ttf >/dev/null 2>&1; then
+      find /tmp/be-vietnam-pro-extract/ -name '*.ttf' ! -path '*/variable/*' ! -name '*[[]*' -exec cp {} "$FONT_DIR/" \;
+    fi
+    chmod 0644 "$FONT_DIR"/*.ttf 2>/dev/null || true
   fi
   rm -rf /tmp/be-vietnam-pro.zip /tmp/be-vietnam-pro-extract
 fi
 
+if command -v fc-cache >/dev/null 2>&1; then
+  fc-cache -rf >/dev/null 2>&1 || true
+fi
+
+if command -v fc-match >/dev/null 2>&1; then
+  MATCH_VI="$(fc-match -f '%{family}' ':charset=1ec7' 2>/dev/null || true)"
+  MATCH_UBUNTU_VI="$(fc-match -f '%{family}' 'Ubuntu:charset=1ec7' 2>/dev/null || true)"
+  echo "[Ubuntu-Nido] Fontconfig U+1EC7 ('ệ') match: default='${MATCH_VI}' ubuntu='${MATCH_UBUNTU_VI}'"
+fi
+
 BIBATA_VER="2.0.6"
-if wget -q --timeout=15 -O /tmp/bibata.tar.xz "https://github.com/ful1e5/Bibata_Cursor/releases/download/v${BIBATA_VER}/Bibata-Modern-Classic.tar.xz"; then
+if curl -fsSL --retry 3 --connect-timeout 15 --max-time 60 \
+  "https://github.com/ful1e5/Bibata_Cursor/releases/download/v${BIBATA_VER}/Bibata-Modern-Classic.tar.xz" \
+  -o /tmp/bibata.tar.xz; then
   tar -xf /tmp/bibata.tar.xz -C /usr/share/icons/ || true
   rm -f /tmp/bibata.tar.xz
 fi
