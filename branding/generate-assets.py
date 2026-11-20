@@ -50,6 +50,132 @@ NIDOOS_LOGO_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 25
 """
 
 
+def _nidoos_wordmark_svg(dark: bool) -> str:
+    """Horizontal NidoOS crest + wordmark SVG for installer white-label screens."""
+    title_fill = "#F8FAFC" if dark else "#0F172A"
+    sub_fill = "#94A3B8" if dark else "#475569"
+    badge_stroke = "#334155" if dark else "#CBD5E1"
+    return f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 380 120" width="380" height="120">
+  <defs>
+    <linearGradient id="wlBg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1E293B" />
+      <stop offset="100%" stop-color="#0B1120" />
+    </linearGradient>
+    <linearGradient id="wlAmber" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FBBF24" />
+      <stop offset="100%" stop-color="#EA580C" />
+    </linearGradient>
+    <linearGradient id="wlEmerald" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#059669" />
+      <stop offset="100%" stop-color="#34D399" />
+    </linearGradient>
+  </defs>
+  <g transform="translate(8 10) scale(0.39)">
+    <rect x="12" y="12" width="232" height="232" rx="54" fill="url(#wlBg)" stroke="{badge_stroke}" stroke-width="5" />
+    <rect x="64" y="64" width="28" height="128" rx="14" fill="url(#wlEmerald)" />
+    <rect x="164" y="64" width="28" height="128" rx="14" fill="#E2E8F0" />
+    <path d="M78 78 L178 178" stroke="url(#wlAmber)" stroke-width="30" stroke-linecap="round" />
+    <circle cx="178" cy="78" r="11" fill="#FBBF24" />
+  </g>
+  <text x="128" y="66" font-family="Noto Sans, Be Vietnam Pro, sans-serif" font-size="44" font-weight="700" fill="{title_fill}" letter-spacing="-0.5">NidoOS</text>
+  <text x="130" y="92" font-family="Noto Sans, Be Vietnam Pro, sans-serif" font-size="14" font-weight="500" fill="{sub_fill}" letter-spacing="0.4">AI-Native Minimal Desktop</text>
+</svg>
+"""
+
+
+NIDOOS_STORAGE_ICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <rect x="4" y="4" width="56" height="56" rx="14" fill="#0F172A" stroke="#10B981" stroke-width="2.5" />
+  <rect x="17" y="17" width="7" height="30" rx="3.5" fill="#10B981" />
+  <rect x="40" y="17" width="7" height="30" rx="3.5" fill="#E2E8F0" />
+  <path d="M20.5 20.5 L43.5 43.5" stroke="#F59E0B" stroke-width="7.5" stroke-linecap="round" />
+</svg>
+"""
+
+
+INSTALLER_SLIDES = [
+    (
+        "Chào mừng đến với NidoOS",
+        "Hệ điều hành tối giản, hiện đại trên nền tảng Ubuntu LTS 26.04.",
+        "Giao diện GNOME tinh gọn với thanh Dock nổi ở đáy, bảng màu Xanh ngọc – Tối dịu mắt và tối ưu sẵn cho người dùng Việt Nam.",
+        "Welcome to NidoOS",
+        "A clean, modern AI-native desktop built on Ubuntu 26.04 LTS.",
+        "Thoughtfully arranged GNOME layout with floating dock, emerald accents, and zero preinstalled bloat.",
+    ),
+    (
+        "Tiếng Việt chuẩn ngay từ lần mở máy",
+        "Bộ gõ Sen Việt (Telex & VNI) và font Be Vietnam Pro được cấu hình sẵn.",
+        "Chuyển nhanh Telex / VNI / Tiếng Anh bằng phím Super+Space trên cả Wayland và X11 mà không cần cài đặt thêm.",
+        "Vietnamese ready out of the box",
+        "Sen Viet (Telex & VNI) input method and Be Vietnam Pro typography pre-configured.",
+        "Switch seamlessly with Super+Space across native desktop apps, browsers, and terminals.",
+    ),
+    (
+        "NidoAgent AI & Email thông minh",
+        "Bật hoặc tắt AI hoàn toàn theo quyền kiểm soát của bạn.",
+        "Tích hợp NidoAI Gateway cục bộ, Geary Mail gọn nhẹ cùng Himalaya CLI Skill giúp AI hỗ trợ tóm tắt và soạn thảo thư an toàn.",
+        "NidoAgent AI & lightweight Email",
+        "Full user control over AI ON/OFF and personal provider accounts.",
+        "Includes local NidoAI Gateway, lightweight Geary Mail, and Himalaya CLI skill for AI-assisted inbox workflows.",
+    ),
+    (
+        "NidoOffice & NidoBox sẵn sàng làm việc",
+        "Soạn thảo tài liệu Word, Excel, Slide, PDF và công cụ hệ thống Việt hóa.",
+        "Hoàn thiện với NidoHub để quản lý ứng dụng bản địa .deb, cập nhật hệ thống và đồng bộ kỹ năng cho trợ lý AI.",
+        "NidoOffice & NidoBox ready to work",
+        "Native Office documents, OCR capture, LAN sharing, and Vietnamese archive tools.",
+        "Manage native apps, updates, and AI skills from one place in NidoHub.",
+    ),
+]
+
+
+def _render_slide_html(title: str, lead: str, body: str) -> str:
+    return f"""<html>
+  <head>
+    <style>
+body {{
+  height: 600px;
+  font-family: "Noto Sans", "Be Vietnam Pro", sans-serif;
+}}
+img {{
+  height: 280px;
+  width: 280px;
+}}
+table {{
+  padding: 16% 80px;
+  height: 600px;
+}}
+p {{
+  margin-bottom: 12px;
+  line-height: 1.5;
+}}
+.h1 {{
+  font-size: 34px;
+  font-weight: 700;
+}}
+.lead {{
+  font-size: 18px;
+  font-weight: 600;
+}}
+    </style>
+  </head>
+  <body>
+    <table>
+      <tr>
+        <td style="padding-right: 36px;">
+          <p class="h1">{title}</p>
+          <p class="lead">{lead}</p>
+          <p>{body}</p>
+        </td>
+        <td>
+          <img src="nidoos-emblem.svg" />
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>
+"""
+
+
 def _png_chunk(tag: bytes, data: bytes) -> bytes:
     crc = zlib.crc32(tag + data) & 0xFFFFFFFF
     return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", crc)
@@ -347,16 +473,16 @@ def generate_all(out_dir: Path = OUT_DIR) -> list[Path]:
     write_rgb_png(p_sp, w, h, sp)
     generated.append(p_sp)
 
-    # 3. GNOME desktop wallpaper.png (1920x1080)
+    # 3. GNOME desktop wallpaper.png (1920x1080) with Teal/Emerald NidoOS glow
     w, h = 1920, 1080
-    wp = make_gradient_canvas(w, h, (11, 17, 32), (24, 24, 37))
+    wp = make_gradient_canvas(w, h, (9, 17, 29), (15, 23, 42))
     draw_rounded_box(
         wp, w, h, w / 2.0, h / 2.0, 260.0, 260.0, 72.0,
-        stroke_color=(245, 158, 11), stroke_width=2.5, stroke_opacity=0.18,
+        stroke_color=(16, 185, 129), stroke_width=2.5, stroke_opacity=0.22,
     )
     draw_rounded_box(
         wp, w, h, w / 2.0, h / 2.0, 380.0, 380.0, 102.0,
-        stroke_color=(16, 185, 129), stroke_width=1.8, stroke_opacity=0.12,
+        stroke_color=(13, 148, 136), stroke_width=1.8, stroke_opacity=0.14,
     )
     draw_nido_emblem(wp, w, h, w / 2.0, h / 2.0, 1.65, with_badge=True)
     p_wp = out_dir / "wallpaper.png"
@@ -385,6 +511,40 @@ def generate_hub_icons(hicolor_dir: Path) -> list[Path]:
     return generated
 
 
+def generate_desktop_provision_assets(provision_dir: Path) -> list[Path]:
+    """Generate white-label SVG logos & localized HTML slides for ubuntu-desktop-bootstrap."""
+    generated: list[Path] = []
+    images_dir = provision_dir / "images"
+    images_dir.mkdir(parents=True, exist_ok=True)
+
+    image_files = {
+        "nidoos-logo-light.svg": _nidoos_wordmark_svg(dark=False),
+        "nidoos-logo-dark.svg": _nidoos_wordmark_svg(dark=True),
+        "nidoos-mascot-light.svg": NIDOOS_LOGO_SVG,
+        "nidoos-mascot-dark.svg": NIDOOS_LOGO_SVG,
+        "nidoos-storage-icon.svg": NIDOOS_STORAGE_ICON_SVG,
+    }
+    for fname, svg_text in image_files.items():
+        p = images_dir / fname
+        p.write_text(svg_text, encoding="utf-8")
+        generated.append(p)
+
+    for idx, (vi_title, vi_lead, vi_body, en_title, en_lead, en_body) in enumerate(
+        INSTALLER_SLIDES, start=1
+    ):
+        sdir = provision_dir / "slides" / str(idx)
+        sdir.mkdir(parents=True, exist_ok=True)
+        emblem = sdir / "nidoos-emblem.svg"
+        emblem.write_text(NIDOOS_LOGO_SVG, encoding="utf-8")
+        vi_html = sdir / "slide_vi_VN.html"
+        vi_html.write_text(_render_slide_html(vi_title, vi_lead, vi_body), encoding="utf-8")
+        en_html = sdir / "slide_en_US.html"
+        en_html.write_text(_render_slide_html(en_title, en_lead, en_body), encoding="utf-8")
+        generated.extend([emblem, vi_html, en_html])
+
+    return generated
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Generate NidoOS branding PNG/SVG assets.")
     parser.add_argument(
@@ -393,10 +553,18 @@ def main() -> None:
         default=None,
         help="Optional hicolor icon theme root to write NidoHub & NidoOS icons into.",
     )
+    parser.add_argument(
+        "--desktop-provision-dir",
+        type=Path,
+        default=None,
+        help="Optional /usr/share/desktop-provision staging dir for installer white-label SVGs & slides.",
+    )
     args = parser.parse_args()
 
     if args.hub_icon_dir is not None:
         files = generate_hub_icons(args.hub_icon_dir)
+    elif args.desktop_provision_dir is not None:
+        files = generate_desktop_provision_assets(args.desktop_provision_dir)
     else:
         target = Path(os.environ.get("NIDO_ASSETS_DIR", str(OUT_DIR)))
         files = generate_all(target)

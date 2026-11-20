@@ -26,9 +26,10 @@ fi
 
 # Permanently divert & replace upstream Ubuntu Plymouth logos so neither Live boot
 # nor future apt upgrades of plymouth-theme-spinner show Ubuntu's trademarked logo.
-divert_and_replace_logo() {
-  local target="$1"
-  if [ -z "$LOGO_SRC" ] || [ ! -f "$LOGO_SRC" ]; then
+divert_and_replace_file() {
+  local src="$1"
+  local target="$2"
+  if [ -z "$src" ] || [ ! -f "$src" ]; then
     return 0
   fi
   mkdir -p "$(dirname "$target")"
@@ -38,16 +39,47 @@ divert_and_replace_logo() {
     fi
   fi
   rm -f "$target"
-  cp -f "$LOGO_SRC" "$target"
+  cp -f "$src" "$target"
   chmod 0644 "$target"
 }
 
-divert_and_replace_logo "/usr/share/plymouth/ubuntu-logo.png"
-divert_and_replace_logo "/usr/share/plymouth/themes/spinner/watermark.png"
-divert_and_replace_logo "/usr/share/plymouth/themes/bgrt/watermark.png"
+TRANSPARENT_PNG="${THEME_DIR}/transparent-1x1.png"
+python3 - "$TRANSPARENT_PNG" <<'PY'
+import struct, sys, zlib
+from pathlib import Path
+def chunk(tag, data):
+    return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+ihdr = struct.pack(">IIBBBBB", 1, 1, 8, 6, 0, 0, 0)
+idat = zlib.compress(b"\x00\x00\x00\x00\x00", level=6)
+Path(sys.argv[1]).write_bytes(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", idat) + chunk(b"IEND", b""))
+PY
+chmod 0644 "$TRANSPARENT_PNG"
+
+divert_and_replace_file "$LOGO_SRC" "/usr/share/plymouth/ubuntu-logo.png"
+divert_and_replace_file "$LOGO_SRC" "/usr/share/plymouth/themes/spinner/bgrt-fallback.png"
+divert_and_replace_file "$LOGO_SRC" "/usr/share/pixmaps/ubuntu-logo-text-dark.png"
+divert_and_replace_file "$LOGO_SRC" "/usr/share/pixmaps/ubuntu-logo-text.png"
+divert_and_replace_file "$TRANSPARENT_PNG" "/usr/share/plymouth/themes/spinner/watermark.png"
+divert_and_replace_file "$TRANSPARENT_PNG" "/usr/share/plymouth/themes/bgrt/watermark.png"
 if [ -d /usr/share/plymouth/themes/ubuntu-logo ]; then
-  divert_and_replace_logo "/usr/share/plymouth/themes/ubuntu-logo/ubuntu-logo.png"
-  divert_and_replace_logo "/usr/share/plymouth/themes/ubuntu-logo/ubuntu-logo16.png"
+  divert_and_replace_file "$LOGO_SRC" "/usr/share/plymouth/themes/ubuntu-logo/ubuntu-logo.png"
+  divert_and_replace_file "$LOGO_SRC" "/usr/share/plymouth/themes/ubuntu-logo/ubuntu-logo16.png"
+fi
+if [ -d /usr/share/plymouth/themes/ubuntu-text ]; then
+  cat > "${THEME_DIR}/nidoos-text.plymouth" <<'TPLY'
+[Plymouth Theme]
+Name=NidoOS Text
+Description=NidoOS text-mode boot splash
+ModuleName=ubuntu-text
+
+[ubuntu-text]
+title=NidoOS
+black=0x000000
+white=0xf8fafc
+brown=0x10b981
+blue=0x0d9488
+TPLY
+  divert_and_replace_file "${THEME_DIR}/nidoos-text.plymouth" "/usr/share/plymouth/themes/ubuntu-text/ubuntu-text.plymouth"
 fi
 
 # Reuse smooth spinner animation frames if installed; fall back to static emblem
@@ -88,7 +120,7 @@ TransitionDuration=0.0
 BackgroundStartColor=0x000000
 BackgroundEndColor=0x000000
 ProgressBarBackgroundColor=0x374151
-ProgressBarForegroundColor=0xf59e0b
+ProgressBarForegroundColor=0x10b981
 MessageBelowAnimation=true
 
 [boot-up]

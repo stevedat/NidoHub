@@ -15,6 +15,22 @@ if [[ -z "${DISPLAY:-}" && -z "${WAYLAND_DISPLAY:-}" ]]; then
   exit 0
 fi
 
+is_live_session() {
+  if [[ "${NIDO_TEST_LIVE_SESSION:-0}" == "1" ]]; then
+    return 0
+  fi
+  if [[ -r /proc/cmdline ]] && grep -qw 'boot=casper' /proc/cmdline 2>/dev/null; then
+    return 0
+  fi
+  if [[ -d /run/casper ]]; then
+    return 0
+  fi
+  if command -v pgrep >/dev/null 2>&1 && pgrep -f 'ubuntu-desktop-bootstrap' >/dev/null 2>&1; then
+    return 0
+  fi
+  return 1
+}
+
 rewrite_installer_desktop_name() {
   local target_file="$1"
   sed -i \
@@ -69,6 +85,14 @@ fi
 
 if command -v nidoagent >/dev/null 2>&1; then
   nidoagent skills sync >/dev/null 2>&1 &
+fi
+
+# Never auto-open the NidoHub control center / onboarding wizard during a Live
+# ISO session (while the OS installer is active). Users can still open NidoHub
+# manually or via `nido-welcome --force`; on an installed system it opens
+# automatically on first login.
+if [[ "$FORCE" -eq 0 ]] && is_live_session; then
+  exit 0
 fi
 
 POLICY_FILE="${CONFIG_DIR}/ai-policy.json"

@@ -14,19 +14,61 @@ from __future__ import annotations
 import argparse
 import os
 import stat
+import struct
 import sys
 import tempfile
+import zlib
 from pathlib import Path
 
+MARK_VERSION = "NidoOS-v2"
 MARKER_RELPATH = "etc/nidoos-initrd-branded"
 
+# Primary Plymouth crest / fallback logo paths replaced with NidoOS emblem PNG.
+# NOTE: On VMs without an ACPI UEFI BGRT table (e.g., UTM/QEMU), Ubuntu's initrd
+# bgrt theme displays spinner/bgrt-fallback.png at top-center (Ubuntu's orange
+# Circle of Friends). Replacing it eliminates the upstream logo completely.
 INITRD_PLYMOUTH_LOGO_PATHS = (
     "usr/share/plymouth/ubuntu-logo.png",
-    "usr/share/plymouth/themes/spinner/watermark.png",
-    "usr/share/plymouth/themes/bgrt/watermark.png",
+    "usr/share/plymouth/themes/spinner/bgrt-fallback.png",
+    "usr/share/pixmaps/ubuntu-logo-text-dark.png",
+    "usr/share/pixmaps/ubuntu-logo-text.png",
     "usr/share/plymouth/themes/ubuntu-logo/ubuntu-logo.png",
     "usr/share/plymouth/themes/ubuntu-logo/ubuntu-logo16.png",
     "usr/share/plymouth/themes/nidoos/watermark.png",
+)
+
+# Secondary bottom watermark slots in bgrt/spinner themes: replace with a 1x1
+# transparent PNG so the NidoOS emblem appears cleanly once above the spinner
+# instead of duplicating top + bottom.
+INITRD_PLYMOUTH_TRANSPARENT_PATHS = (
+    "usr/share/plymouth/themes/spinner/watermark.png",
+    "usr/share/plymouth/themes/bgrt/watermark.png",
+)
+
+def _make_transparent_1x1_png() -> bytes:
+    """Build a guaranteed-valid 1x1 fully transparent RGBA32 PNG."""
+    def _chunk(tag: bytes, data: bytes) -> bytes:
+        crc = zlib.crc32(tag + data) & 0xFFFFFFFF
+        return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", crc)
+
+    ihdr = struct.pack(">IIBBBBB", 1, 1, 8, 6, 0, 0, 0)
+    idat = zlib.compress(b"\x00\x00\x00\x00\x00", level=6)
+    return b"\x89PNG\r\n\x1a\n" + _chunk(b"IHDR", ihdr) + _chunk(b"IDAT", idat) + _chunk(b"IEND", b"")
+
+
+TRANSPARENT_1X1_PNG = _make_transparent_1x1_png()
+
+NIDOOS_TEXT_PLYMOUTH = (
+    b"[Plymouth Theme]\n"
+    b"Name=NidoOS Text\n"
+    b"Description=NidoOS text-mode boot splash\n"
+    b"ModuleName=ubuntu-text\n\n"
+    b"[ubuntu-text]\n"
+    b"title=NidoOS\n"
+    b"black=0x000000\n"
+    b"white=0xf8fafc\n"
+    b"brown=0x10b981\n"
+    b"blue=0x0d9488\n"
 )
 
 
@@ -134,7 +176,12 @@ def patch_initrd(initrd_path: Path, logo_png_path: Path) -> int:
     overlay_files: dict[str, bytes] = {
         rel: logo_bytes for rel in INITRD_PLYMOUTH_LOGO_PATHS
     }
-    overlay_files[MARKER_RELPATH] = b"NidoOS\n"
+    for rel in INITRD_PLYMOUTH_TRANSPARENT_PATHS:
+        overlay_files[rel] = TRANSPARENT_1X1_PNG
+    overlay_files["usr/share/plymouth/themes/ubuntu-text/ubuntu-text.plymouth"] = (
+        NIDOOS_TEXT_PLYMOUTH
+    )
+    overlay_files[MARKER_RELPATH] = f"{MARK_VERSION}\n".encode("ascii")
 
     cpio_blob = build_newc_cpio(overlay_files)
     align_pad = b"\x00" * _pad4(orig_size)
@@ -174,7 +221,12 @@ def run_self_test() -> int:
         parsed = parse_newc_cpio(full[aligned_start:])
         for rel in INITRD_PLYMOUTH_LOGO_PATHS:
             assert parsed.get(rel) == fake_png, f"Missing or mismatched {rel} in CPIO overlay"
-        assert parsed.get(MARKER_RELPATH) == b"NidoOS\n"
+        for rel in INITRD_PLYMOUTH_TRANSPARENT_PATHS:
+            assert parsed.get(rel) == TRANSPARENT_1X1_PNG, f"Missing transparent placeholder for {rel}"
+        assert b"title=NidoOS" in parsed.get(
+            "usr/share/plymouth/themes/ubuntu-text/ubuntu-text.plymouth", b""
+        )
+        assert parsed.get(MARKER_RELPATH) == f"{MARK_VERSION}\n".encode("ascii")
 
         # Verify idempotency (second run appends 0 bytes)
         added_again = patch_initrd(initrd_p, logo_p)

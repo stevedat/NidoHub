@@ -16,9 +16,11 @@ DEB_BUILDER="${ROOT_DIR}/scripts/build_deb_portable.py"
 rm -rf "$DIST_DIR" "$STAGE_DIR" "$NIDOHUB_STAGE_DIR" "$SETTINGS_STAGE_DIR"
 mkdir -p "$DIST_DIR" "${STAGE_DIR}/usr/lib/nidoai" "${NIDOHUB_STAGE_DIR}/usr/share/icons/hicolor" \
   "${SETTINGS_STAGE_DIR}/usr/share/backgrounds/ubuntu-nido" \
-  "${SETTINGS_STAGE_DIR}/usr/share/pixmaps"
+  "${SETTINGS_STAGE_DIR}/usr/share/pixmaps" \
+  "${SETTINGS_STAGE_DIR}/usr/share/desktop-provision"
 python3 "${ROOT_DIR}/branding/generate-assets.py"
 python3 "${ROOT_DIR}/branding/generate-assets.py" --hub-icon-dir "${NIDOHUB_STAGE_DIR}/usr/share/icons/hicolor"
+python3 "${ROOT_DIR}/branding/generate-assets.py" --desktop-provision-dir "${SETTINGS_STAGE_DIR}/usr/share/desktop-provision"
 cp "${ROOT_DIR}/iso-builder/config/includes.chroot/usr/share/backgrounds/ubuntu-nido/wallpaper.png" \
   "${SETTINGS_STAGE_DIR}/usr/share/backgrounds/ubuntu-nido/wallpaper.png"
 cp "${ROOT_DIR}/iso-builder/config/includes.chroot/usr/share/backgrounds/ubuntu-nido/nidoos-logo.png" \
@@ -67,6 +69,7 @@ chmod 755 \
   "${SCRIPT_DIR}/nidoagent-cli/files/usr/bin/nidoagent" \
   "${SCRIPT_DIR}/nidoagent-cli/files/usr/lib/nidoagent-cli/cli.mjs" \
   "${SCRIPT_DIR}/nido-desktop-settings/DEBIAN/postinst" \
+  "${SCRIPT_DIR}/nido-desktop-settings/files/usr/libexec/ubuntu-nido/bind-installer-fonts" \
   "${SCRIPT_DIR}/nido-desktop-settings/files/usr/libexec/ubuntu-nido/ensure-vietnamese-ime" \
   "${SCRIPT_DIR}/nido-desktop-settings/files/usr/local/bin/nido-welcome" \
   "${SCRIPT_DIR}/nido-desktop-settings/files/usr/local/bin/nidoagent-quicklaunch" \

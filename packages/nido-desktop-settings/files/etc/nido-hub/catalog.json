@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
-  "distro": "Ubuntu-Nido",
-  "release": "0.1.0",
+  "distro": "NidoOS",
+  "release": "0.2.0",
   "aptRepo": "https://ubuntu-nido-apt.pages.dev",
   "editions": [
     {
@@ -11,8 +11,8 @@
       "source": "nido-apt",
       "protected": true,
       "status": "available",
-      "packages": ["nido-desktop", "nidoai-gateway", "nidoagent-cli", "nido-hub", "nido-desktop-settings"],
-      "description": "Gói tổng hợp Nido Minimal Desktop (NidoAI Gateway, NidoAgent và Trung tâm NidoHub)."
+      "packages": ["nido-desktop", "nidoai-gateway", "nidoagent-cli", "nido-hub", "nido-desktop-settings", "geary"],
+      "description": "Gói tổng hợp Nido Minimal Desktop (NidoAI Gateway, NidoAgent, Geary Mail, Himalaya CLI và Trung tâm NidoHub)."
     },
     {
       "id": "office-cli",

@@ -29,6 +29,12 @@ if [ -d /etc/dconf/db/gdm.d ] && command -v dconf >/dev/null 2>&1; then
   dconf compile /etc/dconf/db/gdm /etc/dconf/db/gdm.d >/dev/null 2>&1 || dconf update >/dev/null 2>&1 || true
 fi
 
+if [ -f /usr/lib/systemd/system/nido-installer-fonts.service ]; then
+  mkdir -p /etc/systemd/system/graphical.target.wants
+  ln -snf /usr/lib/systemd/system/nido-installer-fonts.service \
+    /etc/systemd/system/graphical.target.wants/nido-installer-fonts.service
+fi
+
 if command -v fc-cache >/dev/null 2>&1; then
   fc-cache -rf >/dev/null 2>&1 || true
 fi

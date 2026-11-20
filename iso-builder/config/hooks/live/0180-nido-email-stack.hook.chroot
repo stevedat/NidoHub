@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# Hook 0180: Install lightweight AI-ready Email stack (Geary GTK client + Himalaya CLI)
+set -euo pipefail
+export DEBIAN_FRONTEND=noninteractive
+
+HIMALAYA_VERSION="v2.2.1"
+ARCH="$(dpkg --print-architecture)"
+
+case "$ARCH" in
+  amd64)
+    ASSET="himalaya.x86_64-linux.tgz"
+    EXPECTED_SHA256="5c5ba2724c162f82d0a0c71b6c03224ed44f8bef7b14ace5da0635d3af2665a0"
+    ;;
+  arm64)
+    ASSET="himalaya.aarch64-linux.tgz"
+    EXPECTED_SHA256="1dc21c3dd6d948929e22e5cae49b9d0b3b30ff88fafd4493fd4460c6252e9d90"
+    ;;
+  *)
+    echo "[NidoOS] Unsupported arch for Himalaya binary: ${ARCH}" >&2
+    exit 1
+    ;;
+esac
+
+if ! dpkg -s geary >/dev/null 2>&1; then
+  echo "[NidoOS] Installing lightweight Geary GTK email client..."
+  apt-get -o DPkg::Lock::Timeout="${APT_LOCK_TIMEOUT:-600}" install -y --no-install-recommends geary
+fi
+
+if [ ! -x /usr/local/bin/himalaya ]; then
+  echo "[NidoOS] Installing Himalaya CLI ${HIMALAYA_VERSION} (${ARCH})..."
+  TMP_DIR="$(mktemp -d /tmp/nido-himalaya.XXXXXX)"
+  trap 'rm -rf "$TMP_DIR"' EXIT
+  URL="https://github.com/pimalaya/himalaya/releases/download/${HIMALAYA_VERSION}/${ASSET}"
+  curl -fsSL --retry 3 --connect-timeout 20 --max-time 120 "$URL" -o "${TMP_DIR}/${ASSET}"
+  ACTUAL_SHA256="$(sha256sum "${TMP_DIR}/${ASSET}" | awk '{print $1}')"
+  if [ "$ACTUAL_SHA256" != "$EXPECTED_SHA256" ]; then
+    echo "[NidoOS] ERROR: Himalaya SHA-256 mismatch! expected=${EXPECTED_SHA256} actual=${ACTUAL_SHA256}" >&2
+    exit 1
+  fi
+  tar -xzf "${TMP_DIR}/${ASSET}" -C "${TMP_DIR}"
+  BIN_SRC="$(find "${TMP_DIR}" -type f -name himalaya | head -n 1)"
+  if [ -z "$BIN_SRC" ] || [ ! -f "$BIN_SRC" ]; then
+    echo "[NidoOS] ERROR: himalaya binary not found inside ${ASSET}" >&2
+    exit 1
+  fi
+  install -m 0755 "$BIN_SRC" /usr/local/bin/himalaya
+fi
+
+dpkg -s geary >/dev/null
+/usr/local/bin/himalaya --version
+echo "[NidoOS] Email stack (Geary + Himalaya ${HIMALAYA_VERSION}) verified."

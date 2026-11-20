@@ -82,6 +82,11 @@ repack_layered_live_overlays() {
       fi
     done
     ldconfig
+    if [ -f /usr/lib/systemd/system/nido-installer-fonts.service ]; then
+      mkdir -p /etc/systemd/system/graphical.target.wants
+      ln -snf /usr/lib/systemd/system/nido-installer-fonts.service \
+        /etc/systemd/system/graphical.target.wants/nido-installer-fonts.service
+    fi
     if [ -f /var/lib/snapd/desktop/applications/ubuntu-desktop-bootstrap_ubuntu-desktop-bootstrap.desktop ]; then
       sed -i "s/^Name=Install RELEASE/Name=Cài đặt NidoOS/" \
         /var/lib/snapd/desktop/applications/ubuntu-desktop-bootstrap_ubuntu-desktop-bootstrap.desktop || true
@@ -116,6 +121,14 @@ repack_layered_live_overlays() {
     fc-match -f "%{family}\n" "Ubuntu:charset=1ec7" | grep -Eq "Be Vietnam Pro|Noto Sans"
     test -x /usr/libexec/ubuntu-nido/ensure-vietnamese-ime
     /usr/libexec/ubuntu-nido/ensure-vietnamese-ime --self-test >/dev/null
+    test -x /usr/libexec/ubuntu-nido/bind-installer-fonts
+    /usr/libexec/ubuntu-nido/bind-installer-fonts --self-test >/dev/null
+    test -L /etc/systemd/system/graphical.target.wants/nido-installer-fonts.service
+    test -f /usr/share/desktop-provision/whitelabel.yaml
+    test -f /usr/share/desktop-provision/images/nidoos-logo-dark.svg
+    test -f /usr/share/desktop-provision/slides/1/slide_vi_VN.html
+    test -x /usr/local/bin/himalaya
+    dpkg -s geary >/dev/null
     test -f /etc/xdg/autostart/ubuntu-nido-ime-sync.desktop
     grep -q "vielotus-vni" /etc/dconf/db/local.d/00-ubuntu-nido-settings
     test -x /usr/bin/nidoai

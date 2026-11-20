@@ -1,0 +1,28 @@
+# NidoOS white-label configuration for ubuntu-desktop-bootstrap
+# Replaces upstream Ubuntu logos, mascots, and orange accents with NidoOS Teal/Emerald branding.
+theme:
+  light:
+    accent-color: "#0D9488"
+    elevated-button-color: "#0D9488"
+    elevated-button-text-color: "#FFFFFF"
+  dark:
+    accent-color: "#10B981"
+    elevated-button-color: "#0D9488"
+    elevated-button-text-color: "#FFFFFF"
+
+pages:
+  locale:
+    image: "nidoos-logo-light.svg"
+    image-dark: "nidoos-logo-dark.svg"
+  try-or-install:
+    image: "nidoos-mascot-light.svg"
+    image-dark: "nidoos-mascot-dark.svg"
+  refresh:
+    visible: false
+    image: "nidoos-mascot-light.svg"
+    image-dark: "nidoos-mascot-dark.svg"
+  done:
+    image: "nidoos-mascot-light.svg"
+    image-dark: "nidoos-mascot-dark.svg"
+  storage-icon:
+    image: "nidoos-storage-icon.svg"

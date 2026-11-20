@@ -1,0 +1,142 @@
+#!/usr/bin/env bash
+# Bind-mount full-Vietnamese static Noto Sans TTFs over ubuntu-desktop-bootstrap's
+# bundled Ubuntu-*.ttf Flutter assets during Live ISO boot so Vietnamese diacritics
+# (including dot-below U+0323 / hook-above U+0309 like 'ọ', 'ệ', 'ả', 'ử') render
+# cleanly without tofu boxes while preserving Greek, Cyrillic, and Latin glyphs.
+set -euo pipefail
+
+FONT_ROOT="${NIDO_FONT_ROOT:-/usr/share/fonts}"
+SNAP_ROOT="${NIDO_SNAP_ROOT:-/snap/ubuntu-desktop-bootstrap}"
+DRY_RUN=0
+
+find_first_font() {
+  local candidate
+  for candidate in "$@"; do
+    if [[ -f "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+resolve_font_for_target() {
+  local target_name="$1"
+  local noto="${FONT_ROOT}/truetype/noto"
+  local dejavu="${FONT_ROOT}/truetype/dejavu"
+  local beviet="${FONT_ROOT}/truetype/be-vietnam-pro"
+
+  case "$target_name" in
+    Ubuntu-R.ttf|Ubuntu-L.ttf)
+      find_first_font \
+        "${noto}/NotoSans-Regular.ttf" \
+        "${dejavu}/DejaVuSans.ttf" \
+        "${beviet}/BeVietnamPro-Regular.ttf"
+      ;;
+    Ubuntu-M.ttf)
+      find_first_font \
+        "${noto}/NotoSans-Medium.ttf" \
+        "${noto}/NotoSans-Regular.ttf" \
+        "${dejavu}/DejaVuSans.ttf" \
+        "${beviet}/BeVietnamPro-Medium.ttf"
+      ;;
+    Ubuntu-B.ttf)
+      find_first_font \
+        "${noto}/NotoSans-Bold.ttf" \
+        "${dejavu}/DejaVuSans-Bold.ttf" \
+        "${beviet}/BeVietnamPro-Bold.ttf" \
+        "${noto}/NotoSans-Regular.ttf"
+      ;;
+    Ubuntu-RI.ttf|Ubuntu-LI.ttf|Ubuntu-MI.ttf)
+      find_first_font \
+        "${noto}/NotoSans-Italic.ttf" \
+        "${dejavu}/DejaVuSans-Oblique.ttf" \
+        "${noto}/NotoSans-Regular.ttf" \
+        "${beviet}/BeVietnamPro-Italic.ttf"
+      ;;
+    Ubuntu-BI.ttf)
+      find_first_font \
+        "${noto}/NotoSans-BoldItalic.ttf" \
+        "${dejavu}/DejaVuSans-BoldOblique.ttf" \
+        "${noto}/NotoSans-Bold.ttf" \
+        "${noto}/NotoSans-Regular.ttf"
+      ;;
+    UbuntuMono-Regular.ttf)
+      find_first_font \
+        "${noto}/NotoSansMono-Regular.ttf" \
+        "${dejavu}/DejaVuSansMono.ttf" \
+        "${noto}/NotoSans-Regular.ttf"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+run_self_test() {
+  local td
+  td="$(mktemp -d "${TMPDIR:-/tmp}/nido-bind-fonts.XXXXXX")"
+  trap 'rm -rf "$td"' RETURN
+  mkdir -p "${td}/fonts/truetype/noto" "${td}/snap/590/bin/data/flutter_assets/packages/yaru/assets/fonts"
+  local f
+  for f in NotoSans-Regular.ttf NotoSans-Bold.ttf NotoSans-Italic.ttf NotoSans-BoldItalic.ttf NotoSansMono-Regular.ttf; do
+    printf 'TTF' > "${td}/fonts/truetype/noto/${f}"
+  done
+  for f in Ubuntu-L.ttf Ubuntu-LI.ttf Ubuntu-R.ttf Ubuntu-RI.ttf Ubuntu-M.ttf Ubuntu-MI.ttf Ubuntu-B.ttf Ubuntu-BI.ttf UbuntuMono-Regular.ttf; do
+    printf 'UBU' > "${td}/snap/590/bin/data/flutter_assets/packages/yaru/assets/fonts/${f}"
+  done
+  FONT_ROOT="${td}/fonts"
+  SNAP_ROOT="${td}/snap"
+  DRY_RUN=1
+  local count=0
+  while IFS= read -r line; do
+    [[ "$line" == BIND:* ]] && count=$((count + 1))
+  done < <(apply_mounts)
+  if [[ "$count" -ne 9 ]]; then
+    echo "ERROR: Expected 9 installer font bindings, got ${count}" >&2
+    return 1
+  fi
+  echo "bind-installer-fonts self-test passed (9/9 Flutter Yaru font targets mapped)."
+  return 0
+}
+
+apply_mounts() {
+  [[ -d "$SNAP_ROOT" ]] || return 0
+  local rev_dir fonts_dir target_file target_name src_file
+  shopt -s nullglob
+  for rev_dir in "${SNAP_ROOT}"/*; do
+    # Skip symlinks (e.g. 'current') so each real squashfs mountpoint is bound once
+    [[ -L "$rev_dir" ]] && continue
+    [[ -d "$rev_dir" ]] || continue
+    fonts_dir="${rev_dir}/bin/data/flutter_assets/packages/yaru/assets/fonts"
+    [[ -d "$fonts_dir" ]] || continue
+    for target_file in "${fonts_dir}"/Ubuntu*.ttf; do
+      [[ -f "$target_file" ]] || continue
+      target_name="$(basename "$target_file")"
+      src_file="$(resolve_font_for_target "$target_name" || true)"
+      [[ -n "$src_file" && -f "$src_file" ]] || continue
+      if [[ "$DRY_RUN" -eq 1 ]]; then
+        printf 'BIND:%s -> %s\n' "$src_file" "$target_file"
+      else
+        if command -v mountpoint >/dev/null 2>&1 && mountpoint -q "$target_file" 2>/dev/null; then
+          continue
+        fi
+        mount --bind "$src_file" "$target_file" 2>/dev/null || true
+      fi
+    done
+  done
+  shopt -u nullglob
+}
+
+case "${1:-}" in
+  --self-test)
+    run_self_test
+    ;;
+  --dry-run)
+    DRY_RUN=1
+    apply_mounts
+    ;;
+  *)
+    apply_mounts
+    ;;
+esac

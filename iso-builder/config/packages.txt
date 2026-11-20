@@ -8,8 +8,10 @@ fontconfig
 fonts-dejavu-core
 fonts-liberation
 fonts-noto-core
+fonts-noto-mono
 fonts-noto-ui-core
 fwupd
+geary
 gir1.2-adw-1
 gir1.2-gtk-3.0
 gir1.2-gtk-4.0

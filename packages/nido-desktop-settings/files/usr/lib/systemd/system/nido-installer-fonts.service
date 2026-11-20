@@ -1,0 +1,13 @@
+[Unit]
+Description=NidoOS Live Installer Vietnamese Font Overlay
+ConditionKernelCommandLine=boot=casper
+After=local-fs.target snapd.mounts.target snapd.seeded.service
+Before=display-manager.service graphical.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/ubuntu-nido/bind-installer-fonts
+
+[Install]
+WantedBy=graphical.target

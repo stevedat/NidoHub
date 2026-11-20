@@ -236,8 +236,22 @@ step_customize() {
     fc-match -f "%{family}\n" "Ubuntu:charset=1ec7" | grep -Eq "Be Vietnam Pro|Noto Sans"
     test -x /usr/libexec/ubuntu-nido/ensure-vietnamese-ime
     /usr/libexec/ubuntu-nido/ensure-vietnamese-ime --self-test >/dev/null
+    test -x /usr/libexec/ubuntu-nido/bind-installer-fonts
+    /usr/libexec/ubuntu-nido/bind-installer-fonts --self-test >/dev/null
+    test -f /usr/lib/systemd/system/nido-installer-fonts.service
+    test -L /etc/systemd/system/graphical.target.wants/nido-installer-fonts.service
+    test -f /usr/share/desktop-provision/whitelabel.yaml
+    test -f /usr/share/desktop-provision/images/nidoos-logo-dark.svg
+    test -f /usr/share/desktop-provision/images/nidoos-logo-light.svg
+    test -f /usr/share/desktop-provision/slides/1/slide_vi_VN.html
+    test -f /usr/share/ubuntu-nido/skills/ubuntu-nido-email/SKILL.md
     test -f /etc/xdg/autostart/ubuntu-nido-ime-sync.desktop
     grep -q "vielotus-vni" /etc/dconf/db/local.d/00-ubuntu-nido-settings
+    grep -q "accent-color='\''teal'\''" /etc/dconf/db/local.d/00-ubuntu-nido-settings
+    grep -q "dock-position='\''BOTTOM'\''" /etc/dconf/db/local.d/00-ubuntu-nido-settings
+    test -x /usr/local/bin/himalaya
+    dpkg -s geary >/dev/null 2>&1
+    test -f /usr/share/plymouth/themes/spinner/bgrt-fallback.png
     test -x /usr/bin/nidoai
     test -x /usr/bin/nidoagent
     test -x /usr/bin/nido-hub

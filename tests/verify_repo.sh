@@ -17,6 +17,7 @@ SHELL_SCRIPTS=(
   "${ROOT_DIR}/packages/nidoai-gateway/files/usr/bin/nidoai"
   "${ROOT_DIR}/packages/nidoagent-cli/files/usr/bin/nidoagent"
   "${ROOT_DIR}/packages/nido-desktop-settings/DEBIAN/postinst"
+  "${ROOT_DIR}/packages/nido-desktop-settings/files/usr/libexec/ubuntu-nido/bind-installer-fonts"
   "${ROOT_DIR}/packages/nido-desktop-settings/files/usr/local/bin/nido-welcome"
   "${ROOT_DIR}/packages/nido-desktop-settings/files/usr/local/bin/nidoagent-quicklaunch"
   "${ROOT_DIR}/packages/nido-desktop-settings/files/etc/skel/.local/share/nautilus/scripts/Giao-cho-NidoAgent"
@@ -50,6 +51,7 @@ SHELL_SCRIPTS=(
   "${ROOT_DIR}/iso-builder/config/hooks/live/0150-vielotus-im.hook.chroot"
   "${ROOT_DIR}/iso-builder/config/hooks/live/0160-nidobox.hook.chroot"
   "${ROOT_DIR}/iso-builder/config/hooks/live/0170-nidooffice-desktop.hook.chroot"
+  "${ROOT_DIR}/iso-builder/config/hooks/live/0180-nido-email-stack.hook.chroot"
   "${ROOT_DIR}/iso-builder/config/hooks/live/0200-nido-ai-stack.hook.chroot"
   "${ROOT_DIR}/iso-builder/config/hooks/live/0900-nido-plymouth.hook.chroot"
   "${ROOT_DIR}/tests/verify_repo.sh"
@@ -164,10 +166,20 @@ for fname in expected:
                 "./etc/fonts/conf.d/52-ubuntu-nido-vietnamese.conf",
                 "./usr/share/backgrounds/ubuntu-nido/wallpaper.png",
                 "./usr/share/pixmaps/nidoos-logo.png",
+                "./usr/share/desktop-provision/whitelabel.yaml",
+                "./usr/share/desktop-provision/images/nidoos-logo-light.svg",
+                "./usr/share/desktop-provision/images/nidoos-logo-dark.svg",
+                "./usr/share/desktop-provision/images/nidoos-mascot-dark.svg",
+                "./usr/share/desktop-provision/images/nidoos-storage-icon.svg",
+                "./usr/share/desktop-provision/slides/1/slide_vi_VN.html",
+                "./usr/share/desktop-provision/slides/4/slide_en_US.html",
+                "./usr/lib/systemd/system/nido-installer-fonts.service",
+                "./usr/libexec/ubuntu-nido/bind-installer-fonts",
                 "./usr/libexec/ubuntu-nido/ensure-vietnamese-ime",
                 "./usr/share/ubuntu-nido/skills/ubuntu-nido-office/SKILL.md",
                 "./usr/share/ubuntu-nido/skills/ubuntu-nido-box/SKILL.md",
                 "./usr/share/ubuntu-nido/skills/ubuntu-nido-agent/SKILL.md",
+                "./usr/share/ubuntu-nido/skills/ubuntu-nido-email/SKILL.md",
             ):
                 assert req_cfg in names, f"{fname}: missing {req_cfg}"
         elif fname == "nido-hub_0.2.0_all.deb":
@@ -198,7 +210,7 @@ for fname in expected:
                 ctrl_tar = ctrl_raw
             with tarfile.open(fileobj=io.BytesIO(ctrl_tar), mode="r:") as ctf:
                 ctrl_txt = ctf.extractfile("./control").read().decode("utf-8")
-                for dep in ("nido-desktop-settings", "nido-hub", "nidoagent-cli", "nidoai-gateway", "nidooffice-cli", "nidooffice-desktop", "vielotus", "nidobox (>= 1.4.7)", "showtime | totem"):
+                for dep in ("nido-desktop-settings", "nido-hub", "nidoagent-cli", "nidoai-gateway", "nidooffice-cli", "nidooffice-desktop", "vielotus", "nidobox (>= 1.4.7)", "geary", "showtime | totem"):
                     assert dep in ctrl_txt, f"{fname}: missing dependency {dep}"
             for req_st in (
                 "./usr/libexec/ubuntu-nido/showtime-launch",
@@ -459,7 +471,7 @@ assert data["ok"] is True, f"Expected ok=true, got {data}"
 assert data["tokenConfigured"] is True, "Expected tokenConfigured=true"
 assert data["gateway"]["status"] == "ok", f"Unexpected gateway payload: {data}"
 caps = data.get("capabilities") or {}
-assert caps.get("skills", {}).get("count") == 3, f"Expected 3 OS skills in capabilities: {caps}"
+assert caps.get("skills", {}).get("count") == 4, f"Expected 4 OS skills in capabilities: {caps}"
 assert set(caps.get("agents", {}).keys()) == {"agy", "codex", "claude"}, f"Unexpected agents cap: {caps}"
 print("Verified nidoagent status output + capabilities against live nidoai-gateway.")
 PY
@@ -619,7 +631,7 @@ caps_out = _json.loads(
     ).stdout
 )
 assert caps_out["ok"] is True and caps_out["capabilities"]["office"]["cli"] is True
-assert caps_out["capabilities"]["skills"]["count"] == 3
+assert caps_out["capabilities"]["skills"]["count"] == 4
 
 skills_list = _json.loads(
     subprocess.run(
@@ -628,7 +640,7 @@ skills_list = _json.loads(
     ).stdout
 )
 skill_names = {s["name"] for s in skills_list["skills"]}
-assert skill_names == {"ubuntu-nido-office", "ubuntu-nido-box", "ubuntu-nido-agent"}, f"Unexpected skills: {skills_list}"
+assert skill_names == {"ubuntu-nido-office", "ubuntu-nido-box", "ubuntu-nido-agent", "ubuntu-nido-email"}, f"Unexpected skills: {skills_list}"
 assert all(s["description"] for s in skills_list["skills"]), f"Missing frontmatter description: {skills_list}"
 
 # Create a custom non-symlink user skill under ~/.claude/skills to verify sync NEVER overwrites user overrides
@@ -642,7 +654,7 @@ sync1 = _json.loads(
         text=True, check=True, env=agent_env, capture_output=True,
     ).stdout
 )
-assert sync1["ok"] is True and sync1["skillsCount"] == 3
+assert sync1["ok"] is True and sync1["skillsCount"] == 4
 by_target = {t["target"]: {i["skill"]: i["status"] for i in t["items"]} for t in sync1["targets"]}
 assert by_target["agents"]["ubuntu-nido-office"] == "linked"
 assert by_target["agy"]["ubuntu-nido-box"] == "linked"
@@ -894,6 +906,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -907,13 +920,52 @@ ET.fromstring(fc_text)
 for token in ("Ubuntu", "Ubuntu Sans", "Be Vietnam Pro", "Noto Sans", "Noto Sans Mono"):
     assert token in fc_text, f"Missing expected font family {token!r} in 52-ubuntu-nido-vietnamese.conf"
 
-# 2. Validate dconf defaults & ensure-vietnamese-ime --self-test
+# 2. Validate dconf defaults, installer white-label/font bind, Live welcome suppression & IME sync
 dconf_txt = (root / "packages/nido-desktop-settings/files/etc/dconf/db/local.d/00-ubuntu-nido-settings").read_text(encoding="utf-8")
-assert "('ibus', 'vielotus')" in dconf_txt and "('ibus', 'vielotus-vni')" in dconf_txt, (
-    "00-ubuntu-nido-settings must pre-activate both Sen Viet Telex and VNI"
-)
+for expected_dconf in (
+    "('ibus', 'vielotus')",
+    "('ibus', 'vielotus-vni')",
+    "accent-color='teal'",
+    "gtk-theme='Yaru-prussiangreen-dark'",
+    "icon-theme='Yaru-prussiangreen-dark'",
+    "dock-position='BOTTOM'",
+    "extend-height=false",
+    "show-home=false",
+    "button-layout=':minimize,maximize,close'",
+    "center-new-windows=true",
+    "org.gnome.Geary.desktop",
+):
+    assert expected_dconf in dconf_txt, f"Missing expected dconf setting: {expected_dconf}"
+
+gdm_txt = (root / "packages/nido-desktop-settings/files/etc/dconf/db/gdm.d/01-nidoos-logo").read_text(encoding="utf-8")
+assert "accent-color='teal'" in gdm_txt and "logo='/usr/share/pixmaps/nidoos-logo.png'" in gdm_txt
+
+wl_txt = (root / "packages/nido-desktop-settings/files/usr/share/desktop-provision/whitelabel.yaml").read_text(encoding="utf-8")
+for wl_tok in ('accent-color: "#0D9488"', 'nidoos-logo-dark.svg', 'nidoos-logo-light.svg', 'nidoos-storage-icon.svg'):
+    assert wl_tok in wl_txt, f"Missing expected whitelabel token: {wl_tok}"
+
 ime_script = root / "packages/nido-desktop-settings/files/usr/libexec/ubuntu-nido/ensure-vietnamese-ime"
 subprocess.run([sys.executable, str(ime_script), "--self-test"], check=True)
+
+bind_fonts_script = root / "packages/nido-desktop-settings/files/usr/libexec/ubuntu-nido/bind-installer-fonts"
+subprocess.run(["bash", str(bind_fonts_script), "--self-test"], check=True)
+
+# Verify nido-welcome suppresses auto-opening NidoHub during Live ISO session
+welcome_script = root / "packages/nido-desktop-settings/files/usr/local/bin/nido-welcome"
+with tempfile.TemporaryDirectory() as wtmp:
+    fake_bin = Path(wtmp) / "bin"
+    fake_bin.mkdir()
+    sentinel = Path(wtmp) / "hub-launched"
+    fake_hub = fake_bin / "nido-hub"
+    fake_hub.write_text(f"#!/bin/sh\ntouch {sentinel}\n", encoding="utf-8")
+    fake_hub.chmod(0o755)
+    wenv = dict(os.environ)
+    wenv["DISPLAY"] = ":99"
+    wenv["HOME"] = wtmp
+    wenv["PATH"] = f"{fake_bin}:{wenv.get('PATH', '')}"
+    wenv["NIDO_TEST_LIVE_SESSION"] = "1"
+    subprocess.run(["bash", str(welcome_script)], env=wenv, check=True)
+    assert not sentinel.exists(), "nido-welcome must NOT auto-launch nido-hub during a Live ISO session!"
 
 # 3. Verify nidoagent respects NIDOAI_ENABLED=0 (AI OFF policy)
 cli_mjs = root / "packages/nidoagent-cli/files/usr/lib/nidoagent-cli/cli.mjs"

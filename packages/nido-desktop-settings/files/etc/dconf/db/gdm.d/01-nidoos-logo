@@ -1,2 +1,9 @@
 [org/gnome/login-screen]
 logo='/usr/share/pixmaps/nidoos-logo.png'
+
+[org/gnome/desktop/interface]
+color-scheme='prefer-dark'
+accent-color='teal'
+gtk-theme='Yaru-prussiangreen-dark'
+icon-theme='Yaru-prussiangreen-dark'
+font-name='Be Vietnam Pro 10'
