@@ -32,13 +32,13 @@ jobs:
     runs-on: ubuntu-24.04
     env:
       GH_TOKEN: ${{ github.token }}
-      CDN_S3_ENDPOINT: ${{ vars.CDN_S3_ENDPOINT }}
+      CDN_S3_ENDPOINT: ${{ secrets.CDN_S3_ENDPOINT }}
       CDN_BUCKET: ${{ vars.CDN_BUCKET || 'nidoos-releases' }}
       CDN_PUBLIC_URL: ${{ vars.CDN_PUBLIC_URL }}
       RCLONE_CONFIG_CDN_TYPE: s3
       RCLONE_CONFIG_CDN_PROVIDER: Other
       RCLONE_CONFIG_CDN_REGION: auto
-      RCLONE_CONFIG_CDN_ENDPOINT: ${{ vars.CDN_S3_ENDPOINT }}
+      RCLONE_CONFIG_CDN_ENDPOINT: ${{ secrets.CDN_S3_ENDPOINT }}
       RCLONE_CONFIG_CDN_ACCESS_KEY_ID: ${{ secrets.CDN_ACCESS_KEY_ID }}
       RCLONE_CONFIG_CDN_SECRET_ACCESS_KEY: ${{ secrets.CDN_SECRET_ACCESS_KEY }}
       RCLONE_CONFIG_CDN_ACL: private
@@ -48,14 +48,14 @@ jobs:
       - name: Validate S3 CDN configuration
         run: |
           set -euo pipefail
-          for req in CDN_S3_ENDPOINT CDN_BUCKET CDN_PUBLIC_URL; do
+          for req in CDN_BUCKET CDN_PUBLIC_URL; do
             if [ -z "${!req:-}" ]; then
               echo "ERROR: Missing GitHub repository variable: $req" >&2
               exit 1
             fi
           done
-          if [ -z "${RCLONE_CONFIG_CDN_ACCESS_KEY_ID:-}" ] || [ -z "${RCLONE_CONFIG_CDN_SECRET_ACCESS_KEY:-}" ]; then
-            echo "ERROR: Missing GitHub Actions secrets CDN_ACCESS_KEY_ID / CDN_SECRET_ACCESS_KEY." >&2
+          if [ -z "${CDN_S3_ENDPOINT:-}" ] || [ -z "${RCLONE_CONFIG_CDN_ACCESS_KEY_ID:-}" ] || [ -z "${RCLONE_CONFIG_CDN_SECRET_ACCESS_KEY:-}" ]; then
+            echo "ERROR: Missing GitHub Actions secrets CDN_S3_ENDPOINT / CDN_ACCESS_KEY_ID / CDN_SECRET_ACCESS_KEY." >&2
             echo "Add scoped S3 Object Read & Write credentials for bucket '${CDN_BUCKET}' to repository secrets." >&2
             exit 1
           fi

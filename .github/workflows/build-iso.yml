@@ -287,14 +287,14 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload ISO to S3 CDN (if secrets configured)
-        if: ${{ secrets.CDN_ACCESS_KEY_ID != '' && secrets.CDN_SECRET_ACCESS_KEY != '' && vars.CDN_S3_ENDPOINT != '' }}
+        if: ${{ secrets.CDN_ACCESS_KEY_ID != '' && secrets.CDN_SECRET_ACCESS_KEY != '' && secrets.CDN_S3_ENDPOINT != '' }}
         env:
           CDN_BUCKET: ${{ vars.CDN_BUCKET || 'nidoos-releases' }}
           CDN_PUBLIC_URL: ${{ vars.CDN_PUBLIC_URL }}
           RCLONE_CONFIG_CDN_TYPE: s3
           RCLONE_CONFIG_CDN_PROVIDER: Other
           RCLONE_CONFIG_CDN_REGION: auto
-          RCLONE_CONFIG_CDN_ENDPOINT: ${{ vars.CDN_S3_ENDPOINT }}
+          RCLONE_CONFIG_CDN_ENDPOINT: ${{ secrets.CDN_S3_ENDPOINT }}
           RCLONE_CONFIG_CDN_ACCESS_KEY_ID: ${{ secrets.CDN_ACCESS_KEY_ID }}
           RCLONE_CONFIG_CDN_SECRET_ACCESS_KEY: ${{ secrets.CDN_SECRET_ACCESS_KEY }}
           RCLONE_CONFIG_CDN_ACL: private
@@ -355,7 +355,7 @@ jobs:
       RCLONE_CONFIG_CDN_TYPE: s3
       RCLONE_CONFIG_CDN_PROVIDER: Other
       RCLONE_CONFIG_CDN_REGION: auto
-      RCLONE_CONFIG_CDN_ENDPOINT: ${{ vars.CDN_S3_ENDPOINT }}
+      RCLONE_CONFIG_CDN_ENDPOINT: ${{ secrets.CDN_S3_ENDPOINT }}
       RCLONE_CONFIG_CDN_ACCESS_KEY_ID: ${{ secrets.CDN_ACCESS_KEY_ID }}
       RCLONE_CONFIG_CDN_SECRET_ACCESS_KEY: ${{ secrets.CDN_SECRET_ACCESS_KEY }}
       RCLONE_CONFIG_CDN_ACL: private
