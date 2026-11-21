@@ -1,5 +1,6 @@
 [Unit]
 Description=NidoAI Local AI Gateway
+ConditionPathExists=!/snap/ubuntu-desktop-bootstrap
 
 [Service]
 Type=simple

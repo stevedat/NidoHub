@@ -28,8 +28,8 @@ if command -v snap >/dev/null 2>&1; then
 fi
 
 # 1. Remove Ubuntu App Center (snap-store), Thunderbird Snap (replaced by Geary),
-# and Ubuntu Security Center (desktop-security-center)
-for unwanted_snap in snap-store thunderbird desktop-security-center; do
+# Ubuntu Security Center (desktop-security-center), and snapd-desktop-integration
+for unwanted_snap in snap-store thunderbird desktop-security-center snapd-desktop-integration; do
   if snap list "$unwanted_snap" >/dev/null 2>&1; then
     echo "[NidoOS] Removing ${unwanted_snap} snap..."
     snap remove --purge "$unwanted_snap" || true
@@ -44,6 +44,12 @@ if [ -x /usr/bin/firefox ] && ! grep -qs "snap install firefox" /usr/bin/firefox
     snap remove --purge firefox || true
   fi
   rm -f /var/lib/snapd/desktop/applications/firefox_*.desktop 2>/dev/null || true
+fi
+
+# 3. Switch snapd to on-demand socket activation when zero user snaps remain (~150 MB RAM saved)
+USER_SNAPS="$(snap list 2>/dev/null | awk 'NR>1 && $1 !~ /^(bare|core[0-9]*|snapd|gnome-|gtk-common-themes|mesa-|firmware-updater|prompting-client)$/ {print $1}')"
+if [ -z "$USER_SNAPS" ] && command -v systemctl >/dev/null 2>&1; then
+  systemctl disable --now snapd.service snapd.seeded.service >/dev/null 2>&1 || true
 fi
 
 if command -v update-desktop-database >/dev/null 2>&1; then

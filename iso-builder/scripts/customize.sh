@@ -254,8 +254,16 @@ step_customize() {
     test ! -e /usr/share/applications/gnome-ubuntu-panel.desktop
     test ! -e /etc/xdg/autostart/update-notifier.desktop
     test ! -e /etc/xdg/autostart/ubuntu-advantage-notification.desktop
+    test ! -e /etc/xdg/autostart/localsearch-3.desktop
+    test ! -e /etc/xdg/autostart/org.gnome.Evolution-alarm-notify.desktop
+    test ! -e /etc/xdg/autostart/snap-userd-autostart.desktop
+    test -L /etc/systemd/system/packagekit.service
+    test -L /etc/systemd/user/localsearch-3.service
     test -L /etc/systemd/user/gnome-initial-setup-first-login.service
     test -L /etc/systemd/user/update-notifier-release.path
+    test -f /etc/systemd/zram-generator.conf
+    dpkg -s earlyoom >/dev/null 2>&1
+    dpkg -s systemd-zram-generator >/dev/null 2>&1
     grep -q "^Prompt=never$" /etc/update-manager/release-upgrades
     test -f /etc/xdg/autostart/ubuntu-nido-ime-sync.desktop
     grep -q "vielotus-vni" /etc/dconf/db/local.d/00-ubuntu-nido-settings

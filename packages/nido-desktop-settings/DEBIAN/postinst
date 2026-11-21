@@ -35,9 +35,13 @@ if [ -f /usr/lib/systemd/system/nido-installer-fonts.service ]; then
     /etc/systemd/system/graphical.target.wants/nido-installer-fonts.service
 fi
 
-# Mask gnome-initial-setup & update-notifier popups on upgraded installs too
-mkdir -p /etc/systemd/user
+# Mask gnome-initial-setup, update-notifier & idle RAM-heavy services on upgraded installs too
+mkdir -p /etc/systemd/user /etc/systemd/system
+ln -snf /dev/null /etc/systemd/system/packagekit.service
+ln -snf /dev/null /etc/systemd/system/packagekit-offline-update.service
 for usr_unit in \
+  localsearch-3.service \
+  localsearch-control-3.service \
   gnome-initial-setup-first-login.service \
   gnome-initial-setup-upgrade-login.service \
   gnome-initial-setup-copy-worker.service \

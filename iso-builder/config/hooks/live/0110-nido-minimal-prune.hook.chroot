@@ -104,7 +104,10 @@ for divert_path in \
   /etc/xdg/autostart/gnome-initial-setup-first-login.desktop \
   /etc/xdg/autostart/gnome-initial-setup-copy-worker.desktop \
   /etc/xdg/autostart/update-notifier.desktop \
-  /etc/xdg/autostart/ubuntu-advantage-notification.desktop; do
+  /etc/xdg/autostart/ubuntu-advantage-notification.desktop \
+  /etc/xdg/autostart/localsearch-3.desktop \
+  /etc/xdg/autostart/org.gnome.Evolution-alarm-notify.desktop \
+  /etc/xdg/autostart/snap-userd-autostart.desktop; do
   if [ -e "$divert_path" ]; then
     if ! dpkg-divert --list "$divert_path" 2>/dev/null | grep -q "$(basename "$divert_path")"; then
       dpkg-divert --local --rename \
@@ -124,11 +127,15 @@ for sys_unit in \
   apport-autoreport.service \
   apport-autoreport.path \
   apt-news.service \
-  esm-cache.service; do
+  esm-cache.service \
+  packagekit.service \
+  packagekit-offline-update.service; do
   ln -snf /dev/null "/etc/systemd/system/${sys_unit}"
 done
 
 for usr_unit in \
+  localsearch-3.service \
+  localsearch-control-3.service \
   gnome-initial-setup-first-login.service \
   gnome-initial-setup-upgrade-login.service \
   gnome-initial-setup-copy-worker.service \
@@ -154,6 +161,18 @@ done
 
 if [ -f /etc/default/apport ]; then
   sed -i 's/^enabled=.*/enabled=0/' /etc/default/apport || true
+fi
+
+# Configure compressed zram swap (zstd) + earlyoom for responsive desktop RAM headroom
+mkdir -p /etc/systemd
+cat > /etc/systemd/zram-generator.conf <<'ZRAM'
+[zram0]
+zram-size = min(ram / 2, 4096)
+compression-algorithm = zstd
+swap-priority = 100
+ZRAM
+if command -v systemctl >/dev/null 2>&1; then
+  systemctl enable earlyoom.service >/dev/null 2>&1 || true
 fi
 
 # Prevent Ubuntu non-LTS release upgrade prompts (updates flow via NidoHub + unattended-upgrades)
