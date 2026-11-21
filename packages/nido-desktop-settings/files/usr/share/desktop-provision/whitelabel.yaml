@@ -21,6 +21,22 @@ pages:
     visible: false
     image: "nidoos-mascot-light.svg"
     image-dark: "nidoos-mascot-dark.svg"
+  ubuntu-pro:
+    visible: false
+    image: "nidoos-mascot-light.svg"
+    image-dark: "nidoos-mascot-dark.svg"
+  ubuntu-pro-onboarding:
+    visible: false
+    image: "nidoos-mascot-light.svg"
+    image-dark: "nidoos-mascot-dark.svg"
+  ubuntu-pro-success:
+    visible: false
+    image: "nidoos-mascot-light.svg"
+    image-dark: "nidoos-mascot-dark.svg"
+  telemetry:
+    visible: false
+    image: "nidoos-mascot-light.svg"
+    image-dark: "nidoos-mascot-dark.svg"
   done:
     image: "nidoos-mascot-light.svg"
     image-dark: "nidoos-mascot-dark.svg"

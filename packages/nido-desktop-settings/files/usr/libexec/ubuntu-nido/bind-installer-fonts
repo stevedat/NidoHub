@@ -3,10 +3,13 @@
 # bundled Ubuntu-*.ttf Flutter assets during Live ISO boot so Vietnamese diacritics
 # (including dot-below U+0323 / hook-above U+0309 like 'ọ', 'ệ', 'ả', 'ử') render
 # cleanly without tofu boxes while preserving Greek, Cyrillic, and Latin glyphs.
+# Also prunes unwanted snap desktop clutter (Thunderbird, Ubuntu App Center,
+# Security Center, duplicate Firefox Snap) from the Live session before GDM starts.
 set -euo pipefail
 
 FONT_ROOT="${NIDO_FONT_ROOT:-/usr/share/fonts}"
 SNAP_ROOT="${NIDO_SNAP_ROOT:-/snap/ubuntu-desktop-bootstrap}"
+SNAP_DESKTOP_DIR="${NIDO_SNAP_DESKTOP_DIR:-/var/lib/snapd/desktop/applications}"
 DRY_RUN=0
 
 find_first_font() {
@@ -73,6 +76,28 @@ resolve_font_for_target() {
   esac
 }
 
+wait_for_snap_fonts() {
+  [[ "$DRY_RUN" -eq 1 ]] && return 0
+  local _
+  for _ in $(seq 1 40); do
+    if compgen -G "${SNAP_ROOT}/*/bin/data/flutter_assets/packages/yaru/assets/fonts/Ubuntu-R.ttf" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 0.25
+  done
+  return 0
+}
+
+clean_live_snap_launchers() {
+  [[ "$DRY_RUN" -eq 1 ]] && return 0
+  [[ -d "$SNAP_DESKTOP_DIR" ]] || return 0
+  rm -f \
+    "${SNAP_DESKTOP_DIR}"/thunderbird_*.desktop \
+    "${SNAP_DESKTOP_DIR}"/snap-store_*.desktop \
+    "${SNAP_DESKTOP_DIR}"/desktop-security-center_*.desktop \
+    "${SNAP_DESKTOP_DIR}"/firefox_*.desktop 2>/dev/null || true
+}
+
 run_self_test() {
   local td
   td="$(mktemp -d "${TMPDIR:-/tmp}/nido-bind-fonts.XXXXXX")"
@@ -102,7 +127,8 @@ run_self_test() {
 
 apply_mounts() {
   [[ -d "$SNAP_ROOT" ]] || return 0
-  local rev_dir fonts_dir target_file target_name src_file
+  wait_for_snap_fonts
+  local rev_dir fonts_dir target_file target_name src_file bound=0
   shopt -s nullglob
   for rev_dir in "${SNAP_ROOT}"/*; do
     # Skip symlinks (e.g. 'current') so each real squashfs mountpoint is bound once
@@ -119,13 +145,20 @@ apply_mounts() {
         printf 'BIND:%s -> %s\n' "$src_file" "$target_file"
       else
         if command -v mountpoint >/dev/null 2>&1 && mountpoint -q "$target_file" 2>/dev/null; then
+          bound=$((bound + 1))
           continue
         fi
-        mount --bind "$src_file" "$target_file" 2>/dev/null || true
+        if mount --bind "$src_file" "$target_file" 2>/dev/null; then
+          bound=$((bound + 1))
+        fi
       fi
     done
   done
   shopt -u nullglob
+  if [[ "$DRY_RUN" -eq 0 ]]; then
+    echo "[NidoOS] bind-installer-fonts: bound ${bound} Flutter font file(s)."
+  fi
+  clean_live_snap_launchers
 }
 
 case "${1:-}" in

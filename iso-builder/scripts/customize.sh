@@ -238,6 +238,7 @@ step_customize() {
     /usr/libexec/ubuntu-nido/ensure-vietnamese-ime --self-test >/dev/null
     test -x /usr/libexec/ubuntu-nido/bind-installer-fonts
     /usr/libexec/ubuntu-nido/bind-installer-fonts --self-test >/dev/null
+    python3 -c "import struct; from pathlib import Path; data=Path(\"/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf\").read_bytes(); nt=struct.unpack(\">H\",data[4:6])[0]; off=next(o for i in range(nt) for tag,_,o,_ in [struct.unpack(\">4sIII\",data[12+i*16:28+i*16])] if tag==b\"cmap\"); ns=struct.unpack(\">H\",data[off+2:off+4])[0]; chars=set(); [chars.update(range(s,e+1)) for i in range(ns) for _,_,so in [struct.unpack(\">HHI\",data[off+4+i*8:off+12+i*8])] for so2 in [off+so] if struct.unpack(\">H\",data[so2:so2+2])[0]==4 for sc in [struct.unpack(\">H\",data[so2+6:so2+8])[0]//2] for s,e in zip(struct.unpack(f\">{sc}H\",data[so2+16+sc*2:so2+16+sc*4]),struct.unpack(f\">{sc}H\",data[so2+14:so2+14+sc*2])) if s!=0xFFFF]; [chars.update(range(s,e+1)) for i in range(ns) for _,_,so in [struct.unpack(\">HHI\",data[off+4+i*8:off+12+i*8])] for so2 in [off+so] if struct.unpack(\">H\",data[so2:so2+2])[0]==12 for g in range(struct.unpack(\">I\",data[so2+12:so2+16])[0]) for s,e,_ in [struct.unpack(\">III\",data[so2+16+g*12:so2+28+g*12])]]; missing=[hex(cp) for cp in (0x1ECD,0x1EC7,0x1EA3,0x1EED,0x1EBF,0x1EEF) if cp not in chars]; assert not missing, f\"NotoSans missing {missing}\""
     test -f /usr/lib/systemd/system/nido-installer-fonts.service
     test -L /etc/systemd/system/graphical.target.wants/nido-installer-fonts.service
     test -f /usr/share/desktop-provision/whitelabel.yaml
@@ -245,6 +246,8 @@ step_customize() {
     test -f /usr/share/desktop-provision/images/nidoos-logo-light.svg
     test -f /usr/share/desktop-provision/slides/1/slide_vi_VN.html
     test -f /usr/share/ubuntu-nido/skills/ubuntu-nido-email/SKILL.md
+    test -f /usr/local/share/applications/thunderbird_thunderbird.desktop
+    test ! -e /usr/share/applications/gnome-ubuntu-panel.desktop
     test -f /etc/xdg/autostart/ubuntu-nido-ime-sync.desktop
     grep -q "vielotus-vni" /etc/dconf/db/local.d/00-ubuntu-nido-settings
     grep -q "accent-color='\''teal'\''" /etc/dconf/db/local.d/00-ubuntu-nido-settings

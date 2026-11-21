@@ -50,12 +50,33 @@ NIDOOS_LOGO_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 25
 """
 
 
+NIDOOS_SYMBOLIC_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="16" height="16">
+  <rect x="2.2" y="2" width="2.4" height="12" rx="1.2" fill="#bebebe" />
+  <rect x="11.4" y="2" width="2.4" height="12" rx="1.2" fill="#bebebe" />
+  <path d="M3.4 3.2 L12.6 12.8" stroke="#bebebe" stroke-width="2.4" stroke-linecap="round" />
+</svg>
+"""
+
+NIDOOS_APP_GRID_SYMBOLIC_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="16" height="16">
+  <rect x="2" y="2" width="3" height="3" rx="1" fill="#bebebe" />
+  <rect x="6.5" y="2" width="3" height="3" rx="1" fill="#bebebe" />
+  <rect x="11" y="2" width="3" height="3" rx="1" fill="#bebebe" />
+  <rect x="2" y="6.5" width="3" height="3" rx="1" fill="#bebebe" />
+  <rect x="6.5" y="6.5" width="3" height="3" rx="1" fill="#bebebe" />
+  <rect x="11" y="6.5" width="3" height="3" rx="1" fill="#bebebe" />
+  <rect x="2" y="11" width="3" height="3" rx="1" fill="#bebebe" />
+  <rect x="6.5" y="11" width="3" height="3" rx="1" fill="#bebebe" />
+  <rect x="11" y="11" width="3" height="3" rx="1" fill="#bebebe" />
+</svg>
+"""
+
+
 def _nidoos_wordmark_svg(dark: bool) -> str:
-    """Horizontal NidoOS crest + wordmark SVG for installer white-label screens."""
-    title_fill = "#F8FAFC" if dark else "#0F172A"
-    sub_fill = "#94A3B8" if dark else "#475569"
+    """Pure-geometry NidoOS crest + vector path wordmark (zero <text> tags for flutter_svg)."""
+    fg = "#F8FAFC" if dark else "#0F172A"
+    accent = "#10B981" if dark else "#0D9488"
     badge_stroke = "#334155" if dark else "#CBD5E1"
-    return f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 380 120" width="380" height="120">
+    return f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 360 120" width="360" height="120">
   <defs>
     <linearGradient id="wlBg" x1="0%" y1="0%" x2="100%" y2="100%">
       <stop offset="0%" stop-color="#1E293B" />
@@ -77,8 +98,25 @@ def _nidoos_wordmark_svg(dark: bool) -> str:
     <path d="M78 78 L178 178" stroke="url(#wlAmber)" stroke-width="30" stroke-linecap="round" />
     <circle cx="178" cy="78" r="11" fill="#FBBF24" />
   </g>
-  <text x="128" y="66" font-family="Noto Sans, Be Vietnam Pro, sans-serif" font-size="44" font-weight="700" fill="{title_fill}" letter-spacing="-0.5">NidoOS</text>
-  <text x="130" y="92" font-family="Noto Sans, Be Vietnam Pro, sans-serif" font-size="14" font-weight="500" fill="{sub_fill}" letter-spacing="0.4">AI-Native Minimal Desktop</text>
+  <!-- Pure vector geometric wordmark: NidoOS -->
+  <g fill="none" stroke="{fg}" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round">
+    <!-- N -->
+    <path d="M128 82 V38 L156 82 V38" />
+    <!-- i -->
+    <path d="M174 52 V82" />
+    <!-- d -->
+    <path d="M214 38 V82" />
+    <circle cx="201" cy="67" r="13.5" />
+    <!-- o -->
+    <circle cx="238" cy="67" r="13.5" />
+  </g>
+  <circle cx="174" cy="40" r="4.2" fill="{accent}" />
+  <g fill="none" stroke="{accent}" stroke-width="6.8" stroke-linecap="round" stroke-linejoin="round">
+    <!-- O -->
+    <circle cx="282" cy="60" r="21" />
+    <!-- S -->
+    <path d="M342 46 C339 40 331 38 323 39 C315 40 311 45 312 51 C313 57 320 59 329 61 C338 63 344 66 344 73 C344 80 336 83 326 83 C317 83 311 79 309 74" />
+  </g>
 </svg>
 """
 
@@ -508,6 +546,13 @@ def generate_hub_icons(hicolor_dir: Path) -> list[Path]:
         svg_path.write_text(NIDOOS_LOGO_SVG, encoding="utf-8")
         write_rgba_png(png_path, 256, 256, rgba_256)
         generated.extend([svg_path, png_path])
+
+    sym_path = hicolor_dir / "scalable" / "apps" / "nidoos-symbolic.svg"
+    sym_path.write_text(NIDOOS_SYMBOLIC_SVG, encoding="utf-8")
+    grid_path = hicolor_dir / "scalable" / "actions" / "nidoos-app-grid-symbolic.svg"
+    grid_path.parent.mkdir(parents=True, exist_ok=True)
+    grid_path.write_text(NIDOOS_APP_GRID_SYMBOLIC_SVG, encoding="utf-8")
+    generated.extend([sym_path, grid_path])
     return generated
 
 

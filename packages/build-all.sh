@@ -17,7 +17,8 @@ rm -rf "$DIST_DIR" "$STAGE_DIR" "$NIDOHUB_STAGE_DIR" "$SETTINGS_STAGE_DIR"
 mkdir -p "$DIST_DIR" "${STAGE_DIR}/usr/lib/nidoai" "${NIDOHUB_STAGE_DIR}/usr/share/icons/hicolor" \
   "${SETTINGS_STAGE_DIR}/usr/share/backgrounds/ubuntu-nido" \
   "${SETTINGS_STAGE_DIR}/usr/share/pixmaps" \
-  "${SETTINGS_STAGE_DIR}/usr/share/desktop-provision"
+  "${SETTINGS_STAGE_DIR}/usr/share/desktop-provision" \
+  "${SETTINGS_STAGE_DIR}/usr/local/share/applications"
 python3 "${ROOT_DIR}/branding/generate-assets.py"
 python3 "${ROOT_DIR}/branding/generate-assets.py" --hub-icon-dir "${NIDOHUB_STAGE_DIR}/usr/share/icons/hicolor"
 python3 "${ROOT_DIR}/branding/generate-assets.py" --desktop-provision-dir "${SETTINGS_STAGE_DIR}/usr/share/desktop-provision"
@@ -25,6 +26,32 @@ cp "${ROOT_DIR}/iso-builder/config/includes.chroot/usr/share/backgrounds/ubuntu-
   "${SETTINGS_STAGE_DIR}/usr/share/backgrounds/ubuntu-nido/wallpaper.png"
 cp "${ROOT_DIR}/iso-builder/config/includes.chroot/usr/share/backgrounds/ubuntu-nido/nidoos-logo.png" \
   "${SETTINGS_STAGE_DIR}/usr/share/pixmaps/nidoos-logo.png"
+
+# Hide unwanted Snap/Ubuntu/duplicate clutter in /usr/local/share/applications
+# (highest XDG priority across both Live ISO and installed NidoOS).
+for hidden_desktop in \
+  thunderbird_thunderbird.desktop \
+  snap-store_snap-store.desktop \
+  desktop-security-center_desktop-security-center.desktop \
+  firefox_firefox.desktop \
+  yelp.desktop \
+  software-properties-gtk.desktop \
+  software-properties-drivers.desktop \
+  software-properties-livepatch.desktop \
+  update-manager.desktop \
+  apport-gtk.desktop \
+  ubuntu-report-on-upgrade.desktop \
+  ibus-setup-Unikey.desktop \
+  ibus-setup-hangul.desktop \
+  org.freedesktop.IBus.Setup.desktop \
+  im-config.desktop; do
+  cat > "${SETTINGS_STAGE_DIR}/usr/local/share/applications/${hidden_desktop}" <<'HDESK'
+[Desktop Entry]
+Type=Application
+Hidden=true
+NoDisplay=true
+HDESK
+done
 
 if [[ -n "$NIDOAI_SRC_DIR" && -f "${NIDOAI_SRC_DIR}/build/cli.mjs" ]]; then
   echo "==> Staging compiled external NidoAI build from ${NIDOAI_SRC_DIR}/build (strict secret exclusion)"

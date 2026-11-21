@@ -125,20 +125,20 @@ def _strip_nested_keys(
     return out
 
 
-def _set_name_en(block: list[str], new_name: str) -> list[str]:
+def _set_localized_en(block: list[str], section: str, new_value: str) -> list[str]:
     out: list[str] = []
-    in_name = False
+    in_section = False
     for idx, line in enumerate(block):
         stripped = line[2:] if idx == 0 and line.startswith("- ") else line.lstrip()
         is_top = idx == 0 or (
             line.startswith("  ") and not line.startswith("   ") and not line.startswith("  - ")
         )
         if is_top:
-            in_name = stripped.startswith("name:")
+            in_section = stripped.startswith(f"{section}:")
             out.append(line)
-        elif in_name and stripped.startswith("en:"):
+        elif in_section and stripped.startswith("en:"):
             indent = line[: len(line) - len(line.lstrip())]
-            out.append(f"{indent}en: {new_name}")
+            out.append(f"{indent}en: {new_value}")
         else:
             out.append(line)
     return out
@@ -148,13 +148,16 @@ def update_install_sources(
     yaml_text: str,
     squashfs_filename: str,
     squashfs_size: int,
-    display_name: str = "Ubuntu-Nido Desktop",
+    display_name: str = "NidoOS Desktop",
+    display_description: str = "NidoOS AI-Native Minimal Desktop.",
 ) -> str:
     """Update install-sources.yaml for a flattened remastered squashfs image."""
     header, entries, footer = split_yaml_document(yaml_text)
     if not entries:
         return (
             f"- default: true\n"
+            f"  description:\n"
+            f"    en: {display_description}\n"
             f"  id: ubuntu-nido-desktop\n"
             f"  locale_support: locale-only\n"
             f"  name:\n"
@@ -182,7 +185,8 @@ def update_install_sources(
             block = _set_top_field(block, "type", "fsimage")
             block = _set_top_field(block, "default", "true")
             block = _set_top_field(block, "locale_support", "locale-only")
-            block = _set_name_en(block, display_name)
+            block = _set_localized_en(block, "name", display_name)
+            block = _set_localized_en(block, "description", display_description)
             updated_primary = True
         kept.append(block)
 

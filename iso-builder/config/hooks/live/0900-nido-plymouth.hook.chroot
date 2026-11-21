@@ -157,17 +157,68 @@ update-alternatives --install \
   300 >/dev/null 2>&1 || true
 update-alternatives --set default.plymouth "$THEME_DIR/nidoos.plymouth" >/dev/null 2>&1 || true
 
-# Replace distributor-logo in Yaru theme if present so Settings -> About displays NidoOS
-if [ -f /usr/share/icons/hicolor/scalable/apps/nidoos-logo.svg ]; then
-  for yaru_dir in /usr/share/icons/Yaru/scalable/apps /usr/share/icons/Yaru-dark/scalable/apps; do
+# Replace distributor-logo, dock Show Apps icon, and Ubuntu panel icons in Yaru themes
+# so GNOME Settings -> About, Dock, and Places display NidoOS branding (never Ubuntu).
+NIDO_SVG="/usr/share/icons/hicolor/scalable/apps/nidoos-logo.svg"
+NIDO_SYM="/usr/share/icons/hicolor/scalable/apps/nidoos-symbolic.svg"
+NIDO_GRID="/usr/share/icons/hicolor/scalable/actions/nidoos-app-grid-symbolic.svg"
+NIDO_PNG_256="/usr/share/icons/hicolor/256x256/apps/nidoos-logo.png"
+if [ ! -f "$NIDO_PNG_256" ] && [ -n "$LOGO_SRC" ]; then
+  NIDO_PNG_256="$LOGO_SRC"
+fi
+
+if [ -f "$NIDO_SVG" ]; then
+  for yaru_dir in \
+    /usr/share/icons/Yaru/scalable/apps \
+    /usr/share/icons/Yaru-dark/scalable/apps \
+    /usr/share/icons/Yaru-prussiangreen/scalable/apps \
+    /usr/share/icons/Yaru-prussiangreen-dark/scalable/apps; do
     if [ -d "$yaru_dir" ]; then
-      cp -f /usr/share/icons/hicolor/scalable/apps/nidoos-logo.svg "${yaru_dir}/distributor-logo.svg" 2>/dev/null || true
+      cp -f "$NIDO_SVG" "${yaru_dir}/distributor-logo.svg" 2>/dev/null || true
     fi
   done
-  if command -v gtk-update-icon-cache >/dev/null 2>&1; then
-    gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor || true
-    [ -d /usr/share/icons/Yaru ] && gtk-update-icon-cache -q -t -f /usr/share/icons/Yaru || true
+fi
+
+if [ -f "$NIDO_GRID" ] && [ -e /usr/share/icons/Yaru/scalable/actions/view-app-grid-ubuntu-symbolic.svg ]; then
+  divert_and_replace_file "$NIDO_GRID" "/usr/share/icons/Yaru/scalable/actions/view-app-grid-ubuntu-symbolic.svg"
+fi
+if [ -f "$NIDO_SYM" ]; then
+  if [ -e /usr/share/icons/Yaru/scalable/places/distributor-logo-symbolic.svg ]; then
+    divert_and_replace_file "$NIDO_SYM" "/usr/share/icons/Yaru/scalable/places/distributor-logo-symbolic.svg"
   fi
+  if [ -e /usr/share/icons/Yaru/scalable/categories/preferences-ubuntu-panel-symbolic.svg ]; then
+    divert_and_replace_file "$NIDO_SYM" "/usr/share/icons/Yaru/scalable/categories/preferences-ubuntu-panel-symbolic.svg"
+  fi
+fi
+
+if [ -f "$NIDO_PNG_256" ] && [ -d /usr/share/icons/Yaru ]; then
+  for sz in 16x16 16x16@2x 22x22 24x24 24x24@2x 32x32 32x32@2x 48x48 48x48@2x 256x256 256x256@2x; do
+    dst="/usr/share/icons/Yaru/${sz}/places/distributor-logo.png"
+    if [ -e "$dst" ] || [ -L "$dst" ]; then
+      px="${sz%%x*}"
+      case "$sz" in
+        *@2x) px=$((px * 2)) ;;
+      esac
+      scaled_tmp="${THEME_DIR}/dist-${px}.png"
+      if [ ! -f "$scaled_tmp" ]; then
+        python3 - "$NIDO_PNG_256" "$scaled_tmp" "$px" <<'PY' || cp -f "$NIDO_PNG_256" "$scaled_tmp"
+import sys
+from PIL import Image
+src, dst, px = sys.argv[1], sys.argv[2], int(sys.argv[3])
+im = Image.open(src).convert("RGBA")
+im = im.resize((px, px), Image.Resampling.LANCZOS)
+im.save(dst, format="PNG")
+PY
+      fi
+      divert_and_replace_file "$scaled_tmp" "$dst"
+    fi
+  done
+fi
+
+if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+  for icdir in /usr/share/icons/hicolor /usr/share/icons/Yaru /usr/share/icons/Yaru-dark /usr/share/icons/Yaru-prussiangreen /usr/share/icons/Yaru-prussiangreen-dark; do
+    [ -d "$icdir" ] && gtk-update-icon-cache -q -t -f "$icdir" || true
+  done
 fi
 
 if command -v update-initramfs >/dev/null 2>&1; then

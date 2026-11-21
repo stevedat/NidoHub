@@ -73,12 +73,81 @@ fi
 
 rm -f \
   /usr/share/applications/thunderbird*.desktop \
+  /var/lib/snapd/desktop/applications/thunderbird_*.desktop \
+  /var/lib/snapd/desktop/applications/snap-store_*.desktop \
+  /var/lib/snapd/desktop/applications/desktop-security-center_*.desktop \
+  /var/lib/snapd/desktop/applications/firefox_*.desktop \
   /usr/share/applications/transmission*.desktop \
   /usr/share/applications/org.gnome.Rhythmbox3*.desktop \
   /usr/share/applications/org.gnome.Shotwell*.desktop \
   /usr/share/applications/org.remmina.Remmina*.desktop \
   /usr/share/applications/org.gnome.DejaDup*.desktop \
-  /etc/xdg/autostart/org.gnome.DejaDup*.desktop
+  /etc/xdg/autostart/org.gnome.DejaDup*.desktop \
+  /etc/xdg/autostart/ubuntu-report-on-upgrade.desktop
+
+# Hide "Ubuntu Desktop" panel in GNOME Settings (permanently via dpkg-divert so
+# future gnome-control-center upgrades never re-expose it).
+if [ -e /usr/share/applications/gnome-ubuntu-panel.desktop ]; then
+  if ! dpkg-divert --list /usr/share/applications/gnome-ubuntu-panel.desktop 2>/dev/null | grep -q gnome-ubuntu-panel.desktop; then
+    dpkg-divert --local --rename \
+      --divert /usr/share/applications/gnome-ubuntu-panel.desktop.nido-disabled \
+      --add /usr/share/applications/gnome-ubuntu-panel.desktop >/dev/null 2>&1 || true
+  fi
+  rm -f /usr/share/applications/gnome-ubuntu-panel.desktop
+fi
+
+# Disable Ubuntu Pro, Ubuntu Insights, Ubuntu Report, Whoopsie, and Apport services
+# (preserves ubuntu-desktop-minimal, unattended-upgrades security updates, and fwupd).
+if [ -e /usr/share/dbus-1/system-services/com.canonical.UbuntuAdvantage.service ]; then
+  if ! dpkg-divert --list /usr/share/dbus-1/system-services/com.canonical.UbuntuAdvantage.service 2>/dev/null | grep -q UbuntuAdvantage; then
+    dpkg-divert --local --rename \
+      --divert /usr/share/dbus-1/system-services/com.canonical.UbuntuAdvantage.service.nido-disabled \
+      --add /usr/share/dbus-1/system-services/com.canonical.UbuntuAdvantage.service >/dev/null 2>&1 || true
+  fi
+  rm -f /usr/share/dbus-1/system-services/com.canonical.UbuntuAdvantage.service
+fi
+
+mkdir -p /etc/systemd/system /etc/systemd/user
+for sys_unit in \
+  ubuntu-advantage-desktop-daemon.service \
+  whoopsie.service \
+  whoopsie.path \
+  apport.service \
+  apport-autoreport.service \
+  apport-autoreport.path \
+  apt-news.service \
+  esm-cache.service; do
+  ln -snf /dev/null "/etc/systemd/system/${sys_unit}"
+done
+
+for usr_unit in \
+  ubuntu-insights-collect.timer \
+  ubuntu-insights-upload.timer \
+  ubuntu-insights-collect.service \
+  ubuntu-insights-upload.service \
+  ubuntu-report.path \
+  ubuntu-report.service; do
+  ln -snf /dev/null "/etc/systemd/user/${usr_unit}"
+  rm -f "/etc/systemd/user/default.target.wants/${usr_unit}" 2>/dev/null || true
+done
+
+if [ -f /etc/default/apport ]; then
+  sed -i 's/^enabled=.*/enabled=0/' /etc/default/apport || true
+fi
+
+# Ensure Geary is the default email handler instead of Thunderbird
+for sys_mf in /usr/share/applications/ubuntu-mimeapps.list /usr/share/applications/gnome-mimeapps.list; do
+  if [ -f "$sys_mf" ]; then
+    sed -i -E \
+      -e 's/thunderbird_thunderbird\.desktop/org.gnome.Geary.desktop/g' \
+      -e 's/thunderbird\.desktop/org.gnome.Geary.desktop/g' \
+      "$sys_mf" || true
+  fi
+done
+
+if command -v update-desktop-database >/dev/null 2>&1; then
+  update-desktop-database -q /usr/share/applications || true
+fi
 
 # Verify Nido Minimal Desktop core pillars remain intact
 dpkg -s ubuntu-desktop-minimal >/dev/null

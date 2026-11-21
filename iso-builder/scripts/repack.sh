@@ -52,7 +52,7 @@ repack_layered_live_overlays() {
         "fcitx5" "fcitx5-*" \
         "aisleriot" "gnome-mahjongg" "gnome-mines" "gnome-sudoku" "quadrapassel" \
         "transmission-gtk" "transmission-common" "rhythmbox" "rhythmbox-data" "rhythmbox-plugins" \
-        "shotwell" "shotwell-common" "remmina" "remmina-common" "remmina-plugin-*" "deja-dup" "thunderbird" 2>/dev/null \
+        "shotwell" "shotwell-common" "remmina" "remmina-common" "remmina-plugin-*" "deja-dup" "thunderbird" "ibus-unikey" 2>/dev/null \
         | awk "\$1 ~ /^i/ && \$2 != \"vielotus\" { print \$2 }" \
         | sort -u || true
     )
@@ -65,20 +65,36 @@ repack_layered_live_overlays() {
       /usr/share/applications/*fcitx*.desktop \
       /etc/xdg/autostart/*fcitx*.desktop \
       /usr/share/applications/thunderbird*.desktop \
+      /usr/share/applications/ibus-setup-Unikey.desktop \
+      /var/lib/snapd/desktop/applications/thunderbird_*.desktop \
+      /var/lib/snapd/desktop/applications/snap-store_*.desktop \
+      /var/lib/snapd/desktop/applications/desktop-security-center_*.desktop \
+      /var/lib/snapd/desktop/applications/firefox_*.desktop \
       /usr/share/applications/transmission*.desktop \
       /usr/share/applications/org.gnome.Rhythmbox3*.desktop \
       /usr/share/applications/org.gnome.Shotwell*.desktop \
       /usr/share/applications/org.remmina.Remmina*.desktop \
       /usr/share/applications/org.gnome.DejaDup*.desktop \
-      /etc/xdg/autostart/org.gnome.DejaDup*.desktop
+      /etc/xdg/autostart/org.gnome.DejaDup*.desktop \
+      /etc/xdg/autostart/ubuntu-report-on-upgrade.desktop
+    if [ -f /etc/casper.conf ]; then
+      sed -i \
+        -e "s/^export HOST=.*/export HOST=\"nidoos\"/" \
+        -e "s/^export BUILD_SYSTEM=.*/export BUILD_SYSTEM=\"NidoOS\"/" \
+        -e "s/^export USERFULLNAME=.*/export USERFULLNAME=\"NidoOS Live\"/" \
+        /etc/casper.conf || true
+    fi
     for sys_mf in /usr/share/applications/ubuntu-mimeapps.list /usr/share/applications/gnome-mimeapps.list; do
       if [ -f "$sys_mf" ]; then
         sed -i -E \
           -e "s/libreoffice-(writer|calc|impress)\.desktop/nidooffice.desktop/g" \
           -e "s/libreoffice-[A-Za-z0-9_.-]+\.desktop;?//g" \
+          -e "s/thunderbird_thunderbird\.desktop/org.gnome.Geary.desktop/g" \
+          -e "s/thunderbird\.desktop/org.gnome.Geary.desktop/g" \
           -e "/^[^=[]+=$/d" \
           "$sys_mf" || true
         ! grep -q "libreoffice-" "$sys_mf"
+        ! grep -q "thunderbird" "$sys_mf"
       fi
     done
     ldconfig

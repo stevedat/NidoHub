@@ -1,6 +1,6 @@
 [Unit]
-Description=NidoOS Live Installer Vietnamese Font Overlay
-ConditionKernelCommandLine=boot=casper
+Description=NidoOS Live Installer Vietnamese Font Overlay & Session Polish
+ConditionPathExists=/snap/ubuntu-desktop-bootstrap
 After=local-fs.target snapd.mounts.target snapd.seeded.service
 Before=display-manager.service graphical.target
 

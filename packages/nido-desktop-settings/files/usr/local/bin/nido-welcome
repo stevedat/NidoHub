@@ -22,7 +22,7 @@ is_live_session() {
   if [[ -r /proc/cmdline ]] && grep -qw 'boot=casper' /proc/cmdline 2>/dev/null; then
     return 0
   fi
-  if [[ -d /run/casper ]]; then
+  if [[ -d /run/casper || -f /etc/casper.conf || -d /cdrom/casper || -d /snap/ubuntu-desktop-bootstrap ]]; then
     return 0
   fi
   if command -v pgrep >/dev/null 2>&1 && pgrep -f 'ubuntu-desktop-bootstrap' >/dev/null 2>&1; then

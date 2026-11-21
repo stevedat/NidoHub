@@ -173,6 +173,10 @@ for fname in expected:
                 "./usr/share/desktop-provision/images/nidoos-storage-icon.svg",
                 "./usr/share/desktop-provision/slides/1/slide_vi_VN.html",
                 "./usr/share/desktop-provision/slides/4/slide_en_US.html",
+                "./usr/local/share/applications/thunderbird_thunderbird.desktop",
+                "./usr/local/share/applications/snap-store_snap-store.desktop",
+                "./usr/local/share/applications/desktop-security-center_desktop-security-center.desktop",
+                "./usr/local/share/applications/yelp.desktop",
                 "./usr/lib/systemd/system/nido-installer-fonts.service",
                 "./usr/libexec/ubuntu-nido/bind-installer-fonts",
                 "./usr/libexec/ubuntu-nido/ensure-vietnamese-ime",
@@ -195,6 +199,8 @@ for fname in expected:
                 "./usr/share/icons/hicolor/256x256/apps/com.nidoholdings.NidoHub.png",
                 "./usr/share/icons/hicolor/scalable/apps/nidoos-logo.svg",
                 "./usr/share/icons/hicolor/scalable/apps/distributor-logo.svg",
+                "./usr/share/icons/hicolor/scalable/apps/nidoos-symbolic.svg",
+                "./usr/share/icons/hicolor/scalable/actions/nidoos-app-grid-symbolic.svg",
             ):
                 assert req_hub in names, f"{fname}: missing {req_hub}"
         elif fname == "nido-desktop_0.2.0_all.deb":
@@ -929,13 +935,24 @@ for expected_dconf in (
     "gtk-theme='Yaru-prussiangreen-dark'",
     "icon-theme='Yaru-prussiangreen-dark'",
     "dock-position='BOTTOM'",
+    "dock-fixed=true",
     "extend-height=false",
     "show-home=false",
     "button-layout=':minimize,maximize,close'",
     "center-new-windows=true",
     "org.gnome.Geary.desktop",
+    "folder-children=['System', 'Utilities', 'Media']",
+    "report-technical-problems=false",
 ):
     assert expected_dconf in dconf_txt, f"Missing expected dconf setting: {expected_dconf}"
+
+unit_txt = (root / "packages/nido-desktop-settings/files/usr/lib/systemd/system/nido-installer-fonts.service").read_text(encoding="utf-8")
+assert "ConditionPathExists=/snap/ubuntu-desktop-bootstrap" in unit_txt, "nido-installer-fonts.service must key off /snap/ubuntu-desktop-bootstrap, not boot=casper"
+assert "ConditionKernelCommandLine=boot=casper" not in unit_txt
+
+for svg_name in ("nidoos-logo-light.svg", "nidoos-logo-dark.svg"):
+    svg_txt = (root / "packages/nido-desktop-settings/stage/usr/share/desktop-provision/images" / svg_name).read_text(encoding="utf-8")
+    assert "<text" not in svg_txt, f"{svg_name} must use pure vector paths (no <text> for flutter_svg)"
 
 gdm_txt = (root / "packages/nido-desktop-settings/files/etc/dconf/db/gdm.d/01-nidoos-logo").read_text(encoding="utf-8")
 assert "accent-color='teal'" in gdm_txt and "logo='/usr/share/pixmaps/nidoos-logo.png'" in gdm_txt
@@ -1064,6 +1081,8 @@ assert "preinstalled_langs" not in out_26, "preinstalled_langs must be stripped"
 assert "variations" not in out_26, "variations must be stripped"
 assert "minimal.enhanced-secureboot.squashfs" not in out_26, "enhanced-secureboot variation must be stripped"
 assert "Ubuntu-Nido Desktop" in out_26, "Display name not updated (26.04)"
+assert "A minimal but usable Ubuntu Desktop." not in out_26, "Ubuntu description leaked in install-sources.yaml"
+assert "NidoOS AI-Native Minimal Desktop." in out_26, "NidoOS description missing in install-sources.yaml"
 
 # Unit test reconcile_live_layer.py without requiring root mknod
 rec_spec = importlib.util.spec_from_file_location("rec", sys.argv[2])

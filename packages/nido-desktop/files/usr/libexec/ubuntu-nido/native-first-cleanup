@@ -6,7 +6,7 @@
 set -euo pipefail
 
 # Never run in Live ISO / Casper environments
-if [ -f /run/casper-md5check.json ] || [ -f /cdrom/.disk/info ] || grep -qw "boot=casper" /proc/cmdline 2>/dev/null; then
+if [ -f /run/casper-md5check.json ] || [ -f /cdrom/.disk/info ] || [ -d /snap/ubuntu-desktop-bootstrap ] || grep -qw "boot=casper" /proc/cmdline 2>/dev/null; then
   exit 0
 fi
 
@@ -27,17 +27,20 @@ if command -v snap >/dev/null 2>&1; then
   snap wait system seed.loaded >/dev/null 2>&1 || true
 fi
 
-# 1. Remove Ubuntu App Center (snap-store) only
-if snap list snap-store >/dev/null 2>&1; then
-  echo "[Ubuntu-Nido] Removing Ubuntu App Center (snap-store) in favor of NidoHub..."
-  snap remove --purge snap-store || true
-fi
-rm -f /var/lib/snapd/desktop/applications/snap-store_*.desktop 2>/dev/null || true
+# 1. Remove Ubuntu App Center (snap-store), Thunderbird Snap (replaced by Geary),
+# and Ubuntu Security Center (desktop-security-center)
+for unwanted_snap in snap-store thunderbird desktop-security-center; do
+  if snap list "$unwanted_snap" >/dev/null 2>&1; then
+    echo "[NidoOS] Removing ${unwanted_snap} snap..."
+    snap remove --purge "$unwanted_snap" || true
+  fi
+  rm -f "/var/lib/snapd/desktop/applications/${unwanted_snap}_"*.desktop 2>/dev/null || true
+done
 
 # 2. Remove Firefox Snap ONLY if official Mozilla DEB Firefox is verified installed
 if [ -x /usr/bin/firefox ] && ! grep -qs "snap install firefox" /usr/bin/firefox 2>/dev/null; then
   if snap list firefox >/dev/null 2>&1; then
-    echo "[Ubuntu-Nido] Removing Firefox Snap (official Mozilla Firefox DEB is active)..."
+    echo "[NidoOS] Removing Firefox Snap (official Mozilla Firefox DEB is active)..."
     snap remove --purge firefox || true
   fi
   rm -f /var/lib/snapd/desktop/applications/firefox_*.desktop 2>/dev/null || true
