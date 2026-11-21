@@ -242,7 +242,7 @@ step_customize() {
     test -f /usr/lib/systemd/system/nido-installer-fonts.service
     test -L /etc/systemd/system/graphical.target.wants/nido-installer-fonts.service
     test -f /usr/share/desktop-provision/whitelabel.yaml
-    grep -q '^app-name: "NidoOS"$' /usr/share/desktop-provision/whitelabel.yaml
+    grep -q "^app-name: \"NidoOS\"\$" /usr/share/desktop-provision/whitelabel.yaml
     test -f /usr/share/desktop-provision/images/nidoos-logo-dark.svg
     test -f /usr/share/desktop-provision/images/nidoos-logo-light.svg
     test -f /usr/share/desktop-provision/slides/1/slide_vi_VN.html
