@@ -23,6 +23,21 @@ Kiểm tra toàn vẹn tệp bằng [`SHA256SUMS.txt`](https://pub-1972d16906124
 sha256sum -c SHA256SUMS.txt
 ```
 
+## Yêu cầu phần cứng
+
+| Thành phần | Tối thiểu chính thức | Khuyến nghị |
+| :--- | :--- | :--- |
+| **CPU Intel** | Core i3/i5/i7 thế hệ 6 (Skylake) trở lên | Core i thế hệ 8+ / Core Ultra |
+| **CPU AMD** | Ryzen 1000 trở lên | Ryzen 2000+ |
+| **RAM** | 6 GB (4 GB chỉ ở diện thử nghiệm tối ưu riêng) | 8–16 GB+ |
+| **Ổ cứng** | SSD 64 GB | SSD 128 GB+ |
+| **Đồ họa (GPU)** | Đồ họa tích hợp tương thích | GPU được hỗ trợ tăng tốc phần cứng |
+| **Kiến trúc & Firmware** | 64-bit `x86_64` hoặc `ARM64` chuẩn UEFI (Apple Silicon VM, Snapdragon X) | UEFI + TPM 2.0 |
+
+- **NidoOS Standard (`Intel Gen 6+ / Ryzen 1000+`, `RAM 6–8 GB`):** Phù hợp cho văn phòng, trường học, NidoOffice, Email Geary và tác vụ phổ thông — vẫn dùng đầy đủ **AI đám mây** (`NidoAgent`, `NidoOffice AI`, `NidoBox OCR`) qua tài khoản OAuth/API.
+- **NidoOS AI — Cục bộ Offline (`Intel Gen 8+ / Ryzen 2000+`, `RAM 16 GB+`):** Khuyên dùng khi chạy mô hình AI cục bộ (Ollama) không cần mạng; khả năng chạy model phụ thuộc thêm vào GPU/NPU.
+- **CPU `x86_64` đời cũ hơn:** Intel Core i thế hệ 1–4 không hỗ trợ chính thức; thế hệ 5 chỉ ở mức thử nghiệm.
+
 ## Điểm nổi bật
 
 - **NidoOS Minimal Desktop (GNOME Teal/Emerald tinh gọn):** Giao diện GNOME Wayland hiện đại với thanh Dock nổi ở đáy màn hình, App Grid gom gọn 1 trang (`Hệ thống · Tiện ích · Đa phương tiện`), bảng màu Xanh ngọc – Tối dịu mắt, xử lý chuẩn font chữ tiếng Việt có dấu từ trình cài đặt Live ISO (`Noto Sans`) tới toàn hệ điều hành (`Be Vietnam Pro`), loại bỏ logo/telemetry Ubuntu và Thunderbird Snap mặc định.

@@ -23,6 +23,21 @@ Verify checksums with [`SHA256SUMS.txt`](https://pub-1972d169061247c2aec05aa7ba6
 sha256sum -c SHA256SUMS.txt
 ```
 
+## System Requirements
+
+| Component | Official Minimum | Recommended |
+| :--- | :--- | :--- |
+| **Intel CPU** | Core i3/i5/i7 Gen 6 (Skylake)+ | Core i Gen 8+ / Core Ultra |
+| **AMD CPU** | Ryzen 1000+ | Ryzen 2000+ |
+| **RAM** | 6 GB (4 GB experimental only) | 8–16 GB+ |
+| **Storage** | 64 GB SSD | 128 GB+ SSD |
+| **Graphics** | Compatible integrated GPU | Hardware-accelerated GPU |
+| **Architecture & Firmware** | 64-bit `x86_64` or standard UEFI `ARM64` (Apple Silicon VM, Snapdragon X) | UEFI + TPM 2.0 |
+
+- **NidoOS Standard (`Gen 6+ / Ryzen 1000+`, `6–8 GB RAM`):** Designed for offices, schools, NidoOffice, Geary Email, and everyday desktop workflows — includes full Cloud AI (`NidoAgent`, `NidoOffice AI`, `NidoBox OCR`) via OAuth/API.
+- **NidoOS AI — Local Offline (`Gen 8+ / Ryzen 2000+`, `16 GB+ RAM`):** Recommended for running local Ollama models offline (model size and speed depend on available RAM and GPU/NPU).
+- **Older `x86_64` CPUs:** Intel Core i Gen 1–4 are not officially supported; Gen 5 is experimental only.
+
 ## Highlights
 
 - **NidoOS Minimal Desktop (Teal/Emerald GNOME):** Clean GNOME Wayland desktop (floating bottom dock, 1-page organized App Grid, Teal accent theme, GDM, Nautilus, PipeWire) with full Vietnamese diacritic typography across both the Live Installer (`Noto Sans`) and Desktop (`Be Vietnam Pro`), zero Canonical/Ubuntu desktop branding or telemetry clutter, and full package compatibility via `nido-desktop`.
