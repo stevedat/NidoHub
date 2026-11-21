@@ -35,6 +35,7 @@ for hidden_desktop in \
   desktop-security-center_desktop-security-center.desktop \
   firefox_firefox.desktop \
   yelp.desktop \
+  org.gnome.Yelp.desktop \
   software-properties-gtk.desktop \
   software-properties-drivers.desktop \
   software-properties-livepatch.desktop \

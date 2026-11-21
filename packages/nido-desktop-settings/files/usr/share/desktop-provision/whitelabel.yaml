@@ -1,5 +1,7 @@
 # NidoOS white-label configuration for ubuntu-desktop-bootstrap
 # Replaces upstream Ubuntu logos, mascots, and orange accents with NidoOS Teal/Emerald branding.
+app-name: "NidoOS"
+
 theme:
   light:
     accent-color: "#0D9488"

@@ -179,6 +179,7 @@ for fname in expected:
                 "./usr/local/share/applications/snap-store_snap-store.desktop",
                 "./usr/local/share/applications/desktop-security-center_desktop-security-center.desktop",
                 "./usr/local/share/applications/yelp.desktop",
+                "./usr/local/share/applications/org.gnome.Yelp.desktop",
                 "./usr/lib/systemd/system/nido-installer-fonts.service",
                 "./usr/libexec/ubuntu-nido/bind-installer-fonts",
                 "./usr/libexec/ubuntu-nido/ensure-vietnamese-ime",
@@ -188,6 +189,8 @@ for fname in expected:
                 "./usr/share/ubuntu-nido/skills/ubuntu-nido-email/SKILL.md",
             ):
                 assert req_cfg in names, f"{fname}: missing {req_cfg}"
+            wl_txt = tf.extractfile("./usr/share/desktop-provision/whitelabel.yaml").read().decode("utf-8")
+            assert 'app-name: "NidoOS"' in wl_txt, f"{fname}: whitelabel.yaml missing app-name: \"NidoOS\""
         elif fname == "nido-hub_0.2.0_all.deb":
             for req_hub in (
                 "./usr/lib/nido-hub/agent_accounts.py",

@@ -242,12 +242,14 @@ step_customize() {
     test -f /usr/lib/systemd/system/nido-installer-fonts.service
     test -L /etc/systemd/system/graphical.target.wants/nido-installer-fonts.service
     test -f /usr/share/desktop-provision/whitelabel.yaml
+    grep -q '^app-name: "NidoOS"$' /usr/share/desktop-provision/whitelabel.yaml
     test -f /usr/share/desktop-provision/images/nidoos-logo-dark.svg
     test -f /usr/share/desktop-provision/images/nidoos-logo-light.svg
     test -f /usr/share/desktop-provision/slides/1/slide_vi_VN.html
     test -f /usr/share/ubuntu-nido/skills/ubuntu-nido-email/SKILL.md
     test -f /usr/local/share/applications/thunderbird_thunderbird.desktop
     test -f /usr/local/share/applications/gnome-initial-setup.desktop
+    test -f /usr/local/share/applications/org.gnome.Yelp.desktop
     test -f /etc/skel/.config/gnome-initial-setup-done
     test ! -e /usr/share/applications/gnome-ubuntu-panel.desktop
     test ! -e /etc/xdg/autostart/update-notifier.desktop
