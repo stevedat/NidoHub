@@ -6,7 +6,7 @@ on:
       run_id:
         description: "Build NidoOS ISO workflow run ID"
         required: true
-        default: "44735273675"
+        default: "44844800922"
         type: string
       release_prefix:
         description: "Destination CDN folder prefix (e.g. latest or v0.2.0)"

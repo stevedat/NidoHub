@@ -7,5 +7,7 @@ Depends: nidoagent-cli (>= 0.2.0), nido-hub (>= 0.2.0)
 Recommends: zenity, libnotify-bin
 Maintainer: Nido Holdings <support@nido-holdings.com>
 Homepage: https://nido-holdings.com
-Description: Ubuntu-Nido desktop integration and setup assistant
- Desktop shortcuts, file manager integration, and first-login AI setup.
+Description: NidoOS desktop integration, Teal GNOME layout, and setup assistant
+ NidoOS branding, Teal GNOME Minimal layout (floating bottom dock & 1-page
+ app grid), Vietnamese typography & Sen Viet IME sync, white-label installer
+ assets, Nautilus scripts, and post-install AI onboarding assistant.

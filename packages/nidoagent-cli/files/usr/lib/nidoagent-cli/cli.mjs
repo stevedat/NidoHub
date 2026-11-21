@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * NidoAgent CLI (Ubuntu-Nido)
+ * NidoAgent CLI (NidoOS)
  * Zero-dependency ESM client talking to the local NidoAI Gateway.
  */
 import { execFileSync, spawn } from 'node:child_process';
@@ -338,6 +338,10 @@ function collectCapabilities() {
         fs.existsSync('/usr/libexec/ibus-engine-vielotus') ||
         fs.existsSync('/usr/lib/ibus-vielotus') ||
         Boolean(whichBinary('vielotus-setup')),
+    },
+    email: {
+      geary: Boolean(whichBinary('geary')),
+      himalaya: Boolean(whichBinary('himalaya')),
     },
     agents,
     multimedia: {
@@ -995,7 +999,7 @@ function cmdSkills(args = []) {
       return;
     }
     const activeTargets = res.targets.filter((t) => t.active);
-    console.log(`Ubuntu-Nido OS Skills (${res.skillsCount} skill từ ${res.sourceDir}):`);
+    console.log(`NidoOS OS Skills (${res.skillsCount} skill từ ${res.sourceDir}):`);
     for (const t of activeTargets) {
       const counts = t.items.reduce((acc, item) => {
         acc[item.status] = (acc[item.status] || 0) + 1;
@@ -1015,10 +1019,10 @@ function cmdSkills(args = []) {
     return;
   }
   if (skills.length === 0) {
-    console.log(`Không tìm thấy Ubuntu-Nido OS Skills trong ${dir}.`);
+    console.log(`Không tìm thấy NidoOS OS Skills trong ${dir}.`);
     return;
   }
-  console.log(`Ubuntu-Nido OS Skills (${skills.length} từ ${dir}):`);
+  console.log(`NidoOS OS Skills (${skills.length} từ ${dir}):`);
   for (const s of skills) {
     console.log(`  - ${s.name}: ${s.description || s.skillFile}`);
   }

@@ -356,6 +356,70 @@ jobs:
           path: apt-repo/**
           retention-days: 7
 
+  sync-cdn-checksums:
+    needs: build
+    if: always() && needs.build.result == 'success'
+    runs-on: ubuntu-24.04
+    env:
+      CDN_BUCKET: ${{ vars.CDN_BUCKET || 'nidoos-releases' }}
+      CDN_PUBLIC_URL: ${{ vars.CDN_PUBLIC_URL }}
+      RCLONE_CONFIG_CDN_TYPE: s3
+      RCLONE_CONFIG_CDN_PROVIDER: Other
+      RCLONE_CONFIG_CDN_REGION: auto
+      RCLONE_CONFIG_CDN_ENDPOINT: ${{ secrets.CDN_S3_ENDPOINT }}
+      RCLONE_CONFIG_CDN_ACCESS_KEY_ID: ${{ secrets.CDN_ACCESS_KEY_ID }}
+      RCLONE_CONFIG_CDN_SECRET_ACCESS_KEY: ${{ secrets.CDN_SECRET_ACCESS_KEY }}
+      RCLONE_CONFIG_CDN_ACL: private
+      RCLONE_CONFIG_CDN_NO_CHECK_BUCKET: "true"
+    steps:
+      - name: Download ISO checksums
+        uses: actions/download-artifact@v4
+        with:
+          pattern: nidoos-sha256-*
+          path: cdn-checksums
+          merge-multiple: true
+
+      - name: Merge & upload latest/SHA256SUMS.txt to S3 CDN
+        run: |
+          set -euo pipefail
+          if [ -z "${RCLONE_CONFIG_CDN_ACCESS_KEY_ID:-}" ] || [ -z "${RCLONE_CONFIG_CDN_SECRET_ACCESS_KEY:-}" ] || [ -z "${RCLONE_CONFIG_CDN_ENDPOINT:-}" ]; then
+            echo "CDN credentials not configured; skipping latest/SHA256SUMS.txt sync."
+            exit 0
+          fi
+          sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends rclone
+          cd cdn-checksums
+          # Seed with any existing remote latest/SHA256SUMS.txt so single-arch builds preserve the other arch
+          if rclone copyto "cdn:${CDN_BUCKET}/latest/SHA256SUMS.txt" remote-existing.txt --s3-no-check-bucket 2>/dev/null; then
+            true
+          elif [ -n "${CDN_PUBLIC_URL:-}" ] && curl -fsSL "${CDN_PUBLIC_URL%/}/latest/SHA256SUMS.txt" -o remote-existing.txt 2>/dev/null; then
+            true
+          else
+            : > remote-existing.txt
+          fi
+          python3 - <<'PY'
+          from pathlib import Path
+          entries: dict[str, str] = {}
+          existing = Path("remote-existing.txt")
+          if existing.is_file():
+              for ln in existing.read_text(encoding="utf-8", errors="replace").splitlines():
+                  parts = ln.split()
+                  if len(parts) >= 2 and parts[1].endswith(".iso"):
+                      entries[parts[1]] = f"{parts[0]}  {parts[1]}"
+          for sha_file in sorted(Path(".").glob("NidoOS-desktop-*.sha256")):
+              for ln in sha_file.read_text(encoding="utf-8", errors="replace").splitlines():
+                  parts = ln.split()
+                  if len(parts) >= 2:
+                      entries[parts[1]] = f"{parts[0]}  {parts[1]}"
+          out = "\n".join(entries[k] for k in sorted(entries)) + ("\n" if entries else "")
+          Path("SHA256SUMS.txt").write_text(out, encoding="utf-8")
+          PY
+          test -s SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          rclone copyto SHA256SUMS.txt "cdn:${CDN_BUCKET}/latest/SHA256SUMS.txt" \
+            --s3-no-check-bucket \
+            --header-upload "Content-Type: text/plain; charset=utf-8" \
+            --header-upload "Cache-Control: no-cache"
+
   release:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: build
