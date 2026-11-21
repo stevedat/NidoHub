@@ -70,6 +70,12 @@ NIDOOS_APP_GRID_SYMBOLIC_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBo
 </svg>
 """
 
+NIDOBOX_SYMBOLIC_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="16" height="16" fill="none">
+  <path d="M8 1.6 L13.8 4.8 V11.2 L8 14.4 L2.2 11.2 V4.8 Z" stroke="#bebebe" stroke-width="1.5" stroke-linejoin="round" />
+  <path d="M2.4 5.0 L8 8.1 L13.6 5.0 M8 8.1 V14.2" stroke="#bebebe" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
+</svg>
+"""
+
 
 def _nidoos_wordmark_svg(dark: bool) -> str:
     """Pure-geometry NidoOS crest + vector path wordmark (zero <text> tags for flutter_svg)."""
@@ -556,6 +562,17 @@ def generate_hub_icons(hicolor_dir: Path) -> list[Path]:
     return generated
 
 
+def generate_desktop_icons(hicolor_dir: Path) -> list[Path]:
+    """Generate monochrome desktop top-bar symbolic icons into hicolor icon theme."""
+    generated: list[Path] = []
+    for subdir in ("status", "apps"):
+        icon_path = hicolor_dir / "scalable" / subdir / "nidobox-symbolic.svg"
+        icon_path.parent.mkdir(parents=True, exist_ok=True)
+        icon_path.write_text(NIDOBOX_SYMBOLIC_SVG, encoding="utf-8")
+        generated.append(icon_path)
+    return generated
+
+
 def generate_desktop_provision_assets(provision_dir: Path) -> list[Path]:
     """Generate white-label SVG logos & localized HTML slides for ubuntu-desktop-bootstrap."""
     generated: list[Path] = []
@@ -599,6 +616,12 @@ def main() -> None:
         help="Optional hicolor icon theme root to write NidoHub & NidoOS icons into.",
     )
     parser.add_argument(
+        "--desktop-icon-dir",
+        type=Path,
+        default=None,
+        help="Optional hicolor icon theme root to write NidoOS desktop top-bar icons into.",
+    )
+    parser.add_argument(
         "--desktop-provision-dir",
         type=Path,
         default=None,
@@ -608,6 +631,8 @@ def main() -> None:
 
     if args.hub_icon_dir is not None:
         files = generate_hub_icons(args.hub_icon_dir)
+    elif args.desktop_icon_dir is not None:
+        files = generate_desktop_icons(args.desktop_icon_dir)
     elif args.desktop_provision_dir is not None:
         files = generate_desktop_provision_assets(args.desktop_provision_dir)
     else:

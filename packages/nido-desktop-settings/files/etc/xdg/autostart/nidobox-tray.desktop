@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=NidoBox Menu Bar
+Name[vi]=Biểu tượng NidoBox trên thanh menu
+Comment=Keep NidoBox quick tools available on the GNOME top bar
+Comment[vi]=Giữ biểu tượng tiện ích NidoBox thường trú trên thanh menu trên cùng
+Exec=/usr/libexec/ubuntu-nido/nidobox-tray
+Icon=nidobox-symbolic
+Terminal=false
+NoDisplay=true
+X-GNOME-Autostart-enabled=true
+X-GNOME-Autostart-Delay=2
+OnlyShowIn=GNOME;

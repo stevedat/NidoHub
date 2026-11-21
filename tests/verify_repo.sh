@@ -183,6 +183,10 @@ for fname in expected:
                 "./usr/lib/systemd/system/nido-installer-fonts.service",
                 "./usr/libexec/ubuntu-nido/bind-installer-fonts",
                 "./usr/libexec/ubuntu-nido/ensure-vietnamese-ime",
+                "./usr/libexec/ubuntu-nido/nidobox-tray",
+                "./etc/xdg/autostart/nidobox-tray.desktop",
+                "./usr/share/icons/hicolor/scalable/status/nidobox-symbolic.svg",
+                "./usr/share/icons/hicolor/scalable/apps/nidobox-symbolic.svg",
                 "./usr/share/ubuntu-nido/skills/ubuntu-nido-office/SKILL.md",
                 "./usr/share/ubuntu-nido/skills/ubuntu-nido-box/SKILL.md",
                 "./usr/share/ubuntu-nido/skills/ubuntu-nido-agent/SKILL.md",
@@ -998,6 +1002,9 @@ subprocess.run([sys.executable, str(ime_script), "--self-test"], check=True)
 
 bind_fonts_script = root / "packages/nido-desktop-settings/files/usr/libexec/ubuntu-nido/bind-installer-fonts"
 subprocess.run(["bash", str(bind_fonts_script), "--self-test"], check=True)
+
+tray_script = root / "packages/nido-desktop-settings/files/usr/libexec/ubuntu-nido/nidobox-tray"
+subprocess.run([sys.executable, str(tray_script), "--self-test"], check=True)
 
 # Verify nido-welcome suppresses auto-opening NidoHub during Live ISO session
 welcome_script = root / "packages/nido-desktop-settings/files/usr/local/bin/nido-welcome"
