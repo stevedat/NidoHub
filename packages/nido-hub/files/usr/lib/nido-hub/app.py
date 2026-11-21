@@ -57,6 +57,7 @@ from ai_discovery import (  # noqa: E402
 )
 from app_store import (  # noqa: E402
     CATEGORY_LABELS,
+    SOURCE_LABELS,
     NidoAppStore,
     OperationHandle,
 )
@@ -73,11 +74,51 @@ from printer_probe import (  # noqa: E402
 )
 
 PROVIDERS = [
-    ("gemini", "Google Gemini API (Miễn phí $0 / BYOK)"),
-    ("openai", "OpenAI API (BYOK)"),
-    ("anthropic", "Anthropic Console API (BYOK)"),
-    ("local", "Local Ollama (Offline 127.0.0.1:11434)"),
+    ("gemini", "Google Gemini (Miễn phí / Khóa API)"),
+    ("openai", "OpenAI (Khóa API)"),
+    ("anthropic", "Anthropic Claude (Khóa API)"),
+    ("local", "AI ngoại tuyến trên máy (Ollama)"),
 ]
+
+NIDO_HUB_CSS = """
+.nido-status-tile {
+    background-color: @card_bg_color;
+    border: 1px solid alpha(@window_fg_color, 0.08);
+    border-radius: 12px;
+    padding: 12px 14px;
+}
+.nido-status-title {
+    font-weight: 700;
+    font-size: 13px;
+}
+.nido-status-badge {
+    font-size: 11px;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 999px;
+}
+.nido-badge-ok {
+    background-color: alpha(#10B981, 0.16);
+    color: #34D399;
+}
+.nido-badge-warn {
+    background-color: alpha(#F59E0B, 0.16);
+    color: #FBBF24;
+}
+.nido-badge-muted {
+    background-color: alpha(@window_fg_color, 0.08);
+    color: alpha(@window_fg_color, 0.72);
+}
+.nido-result-frame {
+    background-color: @card_bg_color;
+    border: 1px solid alpha(@window_fg_color, 0.08);
+    border-radius: 12px;
+}
+.nido-footer-bar {
+    border-top: 1px solid alpha(@window_fg_color, 0.08);
+    padding-top: 10px;
+}
+"""
 
 GEMINI_FREE_KEY_URL = "https://aistudio.google.com/apikey"
 
@@ -1141,6 +1182,12 @@ def run_self_test() -> int:
 
         lan_q, lan_uri, lan_mod = build_network_printer_spec("192.168.1.50", "pcl6")
         assert lan_q == "NidoLAN_192_168_1_50" and lan_uri == "socket://192.168.1.50:9100" and "pxlmono" in lan_mod
+
+        # Verify NidoOS UI styling & polished copywriting registries
+        assert ".nido-status-tile" in NIDO_HUB_CSS and ".nido-footer-bar" in NIDO_HUB_CSS
+        assert {"gemini", "openai", "anthropic", "local"} == {k for k, _ in PROVIDERS}
+        assert all(SOURCE_LABELS.get(k) for k in ("nido-apt", "vendor-apt", "ubuntu-apt", "flatpak"))
+        assert all(isinstance(v[0], str) and v[0] for v in UNIVERSAL_ADAPTER_MODELS.values())
         plain_md = render_markdown_to_plain(md_sample)
         assert "**Tên tài liệu:**" not in plain_md and "`v0.13.1`" not in plain_md
         assert "• Tên tài liệu: Biên bản ký số v0.13.1" in plain_md
@@ -1244,16 +1291,14 @@ def can_launch_gtk() -> bool:
 
 def _format_agent_status_subtitle(spec: Any, state: dict[str, Any]) -> str:
     if state.get("signedIn"):
-        acct = state.get("accountLabel") or "Đã đăng nhập"
+        acct = state.get("accountLabel") or "Đã kết nối"
         plan = f" · {state['plan']}" if state.get("plan") else ""
-        src = " (đồng bộ từ ORCA)" if state.get("source") == "orca" else ""
-        return f"Đã kết nối: {acct}{plan}{src}"
+        return f"Đã kết nối: {acct}{plan}"
     if state.get("installed"):
-        ver = f" ({state['version']})" if state.get("version") else ""
-        return f"Đã cài CLI{ver} — chưa đăng nhập. {spec.subtitle}"
+        return f"Đã cài đặt, chưa đăng nhập — {spec.subtitle}"
     if getattr(spec, "download_url", ""):
-        return f"Chưa cài — {spec.subtitle}"
-    return f"Chưa cài CLI — bấm 1 lần để tự tải (không cần root) & đăng nhập. {spec.subtitle}"
+        return f"Chưa cài đặt — {spec.subtitle}"
+    return f"Chưa kết nối — bấm để cài đặt và đăng nhập qua trình duyệt."
 
 
 def _resolve_opened_package_path(raw: str | None) -> Path | None:
@@ -1280,7 +1325,52 @@ def run_gtk_app(
 
     gi.require_version("Gtk", "4.0")
     gi.require_version("Adw", "1")
-    from gi.repository import Adw, Gio, GLib, Gtk  # type: ignore
+    from gi.repository import Adw, Gdk, Gio, GLib, Gtk  # type: ignore
+
+    def _install_css() -> None:
+        try:
+            display = Gdk.Display.get_default()
+            if display is None:
+                return
+            provider = Gtk.CssProvider()
+            if hasattr(provider, "load_from_string"):
+                provider.load_from_string(NIDO_HUB_CSS)
+            else:
+                provider.load_from_data(NIDO_HUB_CSS.encode("utf-8"))
+            Gtk.StyleContext.add_provider_for_display(
+                display, provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+            )
+        except Exception:
+            pass
+
+    def _wrap_clamped(child: Any, max_width: int = 860) -> Any:
+        clamp = Adw.Clamp(maximum_size=max_width, tightening_threshold=min(680, max_width))
+        clamp.set_child(child)
+        return clamp
+
+    def _make_scrolled_canvas(max_width: int = 860) -> tuple[Any, Any]:
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_vexpand(True)
+        if hasattr(scroll, "set_policy"):
+            scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18)
+        vbox.set_margin_top(18)
+        vbox.set_margin_bottom(24)
+        vbox.set_margin_start(20)
+        vbox.set_margin_end(20)
+        scroll.set_child(_wrap_clamped(vbox, max_width=max_width))
+        return scroll, vbox
+
+    def _set_badge_state(badge: Any, label_text: str, ready: bool) -> None:
+        badge.set_text(label_text)
+        for cls in ("nido-badge-ok", "nido-badge-warn", "nido-badge-muted"):
+            badge.remove_css_class(cls)
+        if ready:
+            badge.add_css_class("nido-badge-ok")
+        elif "tắt" in label_text.lower():
+            badge.add_css_class("nido-badge-muted")
+        else:
+            badge.add_css_class("nido-badge-warn")
 
     def _make_plain_row(row: Any, title: str, subtitle: str | None = None) -> Any:
         if hasattr(row, "set_use_markup"):
@@ -1315,11 +1405,13 @@ def run_gtk_app(
             self.selected_files: list[str] = []
 
         def do_activate(self) -> None:
+            _install_css()
             Gtk.Window.set_default_icon_name("com.nidoholdings.NidoHub")
             win = Adw.ApplicationWindow(application=self)
             win.set_icon_name("com.nidoholdings.NidoHub")
-            win.set_title("NidoHub — NidoOS")
-            win.set_default_size(920, 720)
+            win.set_title("NidoHub")
+            win.set_default_size(980, 700)
+            win.set_size_request(740, 540)
 
             root_stack = Gtk.Stack()
             root_stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
@@ -1342,7 +1434,7 @@ def run_gtk_app(
             toast_overlay.set_child(stack)
             toolbar.set_content(toast_overlay)
 
-            # --- Page 1: AI Setup (Hardware-Aware Discovery + Gateway + Official Agents + Local Ollama) ---
+            # --- Page 1: AI Assistant & Accounts (Spacious Clamped Canvas + Horizontal Status Strip) ---
             ai_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
             backend.ensure_gateway_ready(start_service=True)
             banner = Adw.Banner()
@@ -1350,79 +1442,105 @@ def run_gtk_app(
                 banner.set_use_markup(False)
             _, gw_msg = backend.probe_gateway_health()
             if not backend.is_ai_enabled():
-                gw_msg = "Chế độ AI đang TẮT trên NidoOS — gạt công tắc Bật AI bên dưới để kích hoạt."
+                gw_msg = "Trợ lý AI đang tắt trên NidoOS — bật công tắc bên dưới khi bạn muốn sử dụng."
             banner.set_title(gw_msg if hasattr(banner, "set_use_markup") else escape_markup(gw_msg))
-            banner.set_revealed(True)
+            banner.set_revealed(not backend.is_ai_enabled())
             ai_box.append(banner)
 
-            ai_page = Adw.PreferencesPage()
+            ai_scroll, ai_page = _make_scrolled_canvas(max_width=860)
             env = backend.load_env()
             initial_report = backend.get_ai_readiness_report(persist_agents=False)
 
-            # Group 0 (Pinned Top): Master AI ON/OFF Switch + Hardware-Aware AI Discovery
+            # Horizontal 3-Tile Capability Strip (pinned compactly at top)
+            cap_strip = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+            cap_strip.set_homogeneous(True)
+            cap_tiles: dict[str, tuple[Any, Any, Any]] = {}
+            short_cap_titles = {
+                "nidobox_ocr": "Nhận diện ảnh (OCR)",
+                "nidooffice_ai": "Trợ lý NidoOffice",
+                "nidoagent": "Điều phối NidoAgent",
+            }
+            for cap_key in ("nidobox_ocr", "nidooffice_ai", "nidoagent"):
+                cap = initial_report["capabilities"][cap_key]
+                tile = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+                tile.add_css_class("nido-status-tile")
+                hdr_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+                t_lbl = Gtk.Label(label=short_cap_titles.get(cap_key, cap["title"]), xalign=0.0, hexpand=True)
+                t_lbl.set_ellipsize(3)
+                t_lbl.add_css_class("nido-status-title")
+                b_lbl = Gtk.Label()
+                b_lbl.add_css_class("nido-status-badge")
+                _set_badge_state(b_lbl, cap["badge"], bool(cap.get("ready")))
+                hdr_row.append(t_lbl)
+                hdr_row.append(b_lbl)
+                d_lbl = Gtk.Label(label=cap["detail"], xalign=0.0)
+                d_lbl.set_ellipsize(3)
+                d_lbl.add_css_class("dim-label")
+                tile.append(hdr_row)
+                tile.append(d_lbl)
+                cap_strip.append(tile)
+                cap_tiles[cap_key] = (t_lbl, b_lbl, d_lbl)
+            ai_page.append(cap_strip)
+
+            # Group 1: Master AI Toggle & Hardware Overview
             diag_group = _make_group(
-                title="Trạng thái AI & Đề xuất theo cấu hình máy",
-                description=initial_report["recommendationVi"],
+                title="Trợ lý AI trên NidoOS",
+                description="Bật để dùng AI trong NidoOffice, NidoBox và NidoAgent; tắt để máy chạy hoàn toàn ngoại tuyến.",
             )
             ai_master_guard = [False]
             ai_master_switch = _make_plain_row(
                 Adw.SwitchRow(),
-                "Kích hoạt Trợ lý AI NidoOS (AI ON / OFF)",
-                "Bật để dùng Google/Gemini, ChatGPT, Claude, NidoAgent & NidoOffice AI; Tắt để không chạy nền AI.",
+                "Bật Trợ lý AI",
+                "Dùng chung cho toàn bộ ứng dụng NidoOS.",
             )
             ai_master_switch.set_active(backend.is_ai_enabled())
             diag_group.add(ai_master_switch)
 
             reopen_ob_row = _make_plain_row(
                 Adw.ActionRow(),
-                "Trình hướng dẫn thiết lập AI ban đầu (ON/OFF & Đăng nhập tài khoản)",
-                "Mở lại màn hình thiết lập tài khoản Google/Gemini, ChatGPT, Claude và API Key tùy chọn.",
+                "Trình thiết lập AI lần đầu",
+                "Mở lại màn hình hướng dẫn chọn chế độ và đăng nhập tài khoản.",
             )
-            reopen_ob_btn = Gtk.Button(label="Mở màn hình thiết lập", valign=Gtk.Align.CENTER)
+            reopen_ob_btn = Gtk.Button(label="Mở trình hướng dẫn", valign=Gtk.Align.CENTER)
             reopen_ob_row.add_suffix(reopen_ob_btn)
+            reopen_ob_row.set_activatable_widget(reopen_ob_btn)
             diag_group.add(reopen_ob_row)
 
             hw_row = _make_plain_row(
                 Adw.ActionRow(),
-                "Phần cứng & Môi trường AI phát hiện được",
+                "Cấu hình máy",
                 f"{initial_report['hardwareLineVi']} · {initial_report['ollamaStatusVi']}",
             )
             rescan_btn = Gtk.Button(label="Quét lại", valign=Gtk.Align.CENTER)
             hw_row.add_suffix(rescan_btn)
             diag_group.add(hw_row)
 
-            cap_rows: dict[str, Any] = {}
-            for cap_key in ("nidobox_ocr", "nidooffice_ai", "nidoagent"):
-                cap = initial_report["capabilities"][cap_key]
-                c_row = _make_plain_row(
-                    Adw.ActionRow(),
-                    f"{cap['title']} — [{cap['badge']}]",
-                    cap["detail"],
-                )
-                diag_group.add(c_row)
-                cap_rows[cap_key] = c_row
-
-            # Group 1: Stateless App Gateway (BYOK / Free Gemini Key / Local Ollama)
-            prov_group = _make_group(
-                title="1. NidoAI Gateway — Ứng dụng nền (NidoBox OCR, NidoOffice, NidoAgent)",
-                description=(
-                    "Thiết lập 1 nơi duy nhất — tự động chia sẻ qua 127.0.0.1:18090 cho toàn hệ sinh thái. "
-                    f"Kho khóa: {backend.secret_store.mode_label_vi()}."
-                ),
+            # Advanced settings group (collapsed by default via Adw.ExpanderRow)
+            adv_group = _make_group(
+                title="Cài đặt nâng cao",
+                description="Tùy chọn cho người dùng có khóa API riêng hoặc muốn chạy AI trực tiếp trên máy.",
             )
+            apikey_expander = _make_plain_row(
+                Adw.ExpanderRow(),
+                "Khóa API cá nhân",
+                "Kết nối trực tiếp khóa Google Gemini, OpenAI, Anthropic hoặc địa chỉ Ollama.",
+            )
+            if hasattr(apikey_expander, "set_expanded"):
+                apikey_expander.set_expanded(False)
+
             model_list = Gtk.StringList.new([label for _, label in PROVIDERS])
-            prov_row = _make_plain_row(Adw.ComboRow(model=model_list), "Nguồn AI mặc định")
+            prov_row = _make_plain_row(Adw.ComboRow(model=model_list), "Nguồn AI ưu tiên")
             cur_prov = env.get("NIDOAI_PRIMARY_BACKEND", "gemini")
             prov_idx = next((i for i, (k, _) in enumerate(PROVIDERS) if k == cur_prov), 0)
             prov_row.set_selected(prov_idx)
-            prov_group.add(prov_row)
+            apikey_expander.add_row(prov_row)
 
             free_key_row = _make_plain_row(
                 Adw.ActionRow(),
-                "Khóa Google AI Studio miễn phí ($0 — khuyên dùng cho máy dưới 8 GB RAM)",
-                "Mở trình duyệt tạo GEMINI_API_KEY miễn phí rồi dán vào ô bên dưới để bật ngay Vision OCR & NidoOffice AI.",
+                "Lấy khóa Google Gemini miễn phí",
+                "Mở Google AI Studio trên trình duyệt để tạo khóa dùng cho nhận diện ảnh và soạn thảo.",
             )
-            get_key_btn = Gtk.Button(label="Lấy khóa miễn phí", valign=Gtk.Align.CENTER)
+            get_key_btn = Gtk.Button(label="Lấy khóa", valign=Gtk.Align.CENTER)
             get_key_btn.connect(
                 "clicked",
                 lambda _b: _add_toast(
@@ -1433,44 +1551,50 @@ def run_gtk_app(
                 ),
             )
             free_key_row.add_suffix(get_key_btn)
-            prov_group.add(free_key_row)
+            apikey_expander.add_row(free_key_row)
 
-            gemini_row = _make_plain_row(Adw.PasswordEntryRow(), "Google Gemini API Key")
+            gemini_row = _make_plain_row(Adw.PasswordEntryRow(), "Khóa Google Gemini")
             gemini_row.set_text(env.get("GEMINI_API_KEY", ""))
-            prov_group.add(gemini_row)
+            apikey_expander.add_row(gemini_row)
 
-            openai_row = _make_plain_row(Adw.PasswordEntryRow(), "OpenAI API Key (BYOK)")
+            openai_row = _make_plain_row(Adw.PasswordEntryRow(), "Khóa OpenAI")
             openai_row.set_text(env.get("OPENAI_API_KEY", ""))
-            prov_group.add(openai_row)
+            apikey_expander.add_row(openai_row)
 
-            anthropic_row = _make_plain_row(
-                Adw.PasswordEntryRow(), "Anthropic Console API Key (BYOK)"
-            )
+            anthropic_row = _make_plain_row(Adw.PasswordEntryRow(), "Khóa Anthropic Claude")
             anthropic_row.set_text(env.get("ANTHROPIC_API_KEY", ""))
-            prov_group.add(anthropic_row)
+            apikey_expander.add_row(anthropic_row)
 
             ollama_row = _make_plain_row(
-                Adw.EntryRow(), "Local Ollama Endpoint (mặc định http://127.0.0.1:11434/v1)"
+                Adw.EntryRow(), "Địa chỉ Ollama trên máy"
             )
             ollama_row.set_text(env.get("NIDOAI_LOCAL_BASE_URL", ""))
-            prov_group.add(ollama_row)
+            apikey_expander.add_row(ollama_row)
 
             local_model_row = _make_plain_row(
-                Adw.EntryRow(), "Model cục bộ mặc định (VD: gemma3:4b, qwen2.5:7b — để trống sẽ tự chọn)"
+                Adw.EntryRow(), "Tên mô hình cục bộ mặc định (ví dụ: gemma3:4b)"
             )
             local_model_row.set_text(env.get("NIDOAI_LOCAL_MODEL", ""))
-            prov_group.add(local_model_row)
+            apikey_expander.add_row(local_model_row)
 
-            btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
-            btn_box.set_halign(Gtk.Align.CENTER)
-            btn_box.set_margin_top(12)
+            btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            btn_box.set_valign(Gtk.Align.CENTER)
 
-            save_btn = Gtk.Button(label="Lưu & Xác thực sống")
+            save_btn = Gtk.Button(label="Lưu & kiểm tra", valign=Gtk.Align.CENTER)
             save_btn.add_css_class("suggested-action")
-            save_btn.add_css_class("pill")
 
-            check_btn = Gtk.Button(label="Kiểm tra kết nối")
-            check_btn.add_css_class("pill")
+            check_btn = Gtk.Button(label="Kiểm tra kết nối", valign=Gtk.Align.CENTER)
+            btn_box.append(check_btn)
+            btn_box.append(save_btn)
+
+            api_action_row = _make_plain_row(
+                Adw.ActionRow(),
+                "Áp dụng cấu hình khóa API",
+                "Lưu an toàn vào kho khóa hệ thống và kiểm tra kết nối ngay.",
+            )
+            api_action_row.add_suffix(btn_box)
+            apikey_expander.add_row(api_action_row)
+            adv_group.add(apikey_expander)
 
             # Forward refs updated by refresh_readiness_ui()
             ollama_status_row: Any = None
@@ -1480,14 +1604,11 @@ def run_gtk_app(
 
             def _format_banner_line(gw_line: str, agent_states_list: list[dict[str, Any]], caps: dict[str, Any]) -> str:
                 if not backend.is_ai_enabled():
-                    return "Chế độ AI đang TẮT trên NidoOS — gạt công tắc Bật AI bên dưới để kích hoạt."
+                    return "Trợ lý AI đang tắt trên NidoOS — bật công tắc bên dưới khi bạn muốn sử dụng."
                 signed = [str(a.get("id", "")).upper() for a in agent_states_list if a.get("signedIn")]
                 if signed and "chưa cấu hình" in gw_line:
                     names = ", ".join(signed)
-                    return (
-                        f"Đã kết nối {names} cho NidoOffice & NidoAgent · "
-                        "Gateway chưa có khóa API (chỉ cần thêm nếu bật NidoBox OCR)"
-                    )
+                    return f"Đã kết nối {names} cho NidoOffice và NidoAgent."
                 return gw_line
 
             def _apply_agent_rows_ui(states_map: dict[str, dict[str, Any]]) -> None:
@@ -1501,13 +1622,13 @@ def run_gtk_app(
                         btn_w.set_label("Đăng xuất")
                         btn_w.remove_css_class("suggested-action")
                     elif st.get("installed"):
-                        btn_w.set_label("Đăng nhập trình duyệt")
+                        btn_w.set_label("Đăng nhập")
                         btn_w.add_css_class("suggested-action")
                     elif getattr(spec, "download_url", ""):
-                        btn_w.set_label("Mở trang tải")
+                        btn_w.set_label("Tải về")
                         btn_w.remove_css_class("suggested-action")
                     else:
-                        btn_w.set_label("Cài & Đăng nhập")
+                        btn_w.set_label("Cài & đăng nhập")
                         btn_w.add_css_class("suggested-action")
                     btn_w.set_sensitive(True)
 
@@ -1526,30 +1647,32 @@ def run_gtk_app(
                         banner.set_title(
                             banner_line if hasattr(banner, "set_use_markup") else escape_markup(banner_line)
                         )
+                        banner.set_revealed(not backend.is_ai_enabled())
                         hw_row.set_subtitle(
                             f"{rep['hardwareLineVi']} · {rep['ollamaStatusVi']}"
                         )
                         for ck in ("nidobox_ocr", "nidooffice_ai", "nidoagent"):
                             c_info = rep["capabilities"][ck]
-                            cap_rows[ck].set_title(f"{c_info['title']} — [{c_info['badge']}]")
-                            cap_rows[ck].set_subtitle(c_info["detail"])
+                            _, b_lbl, d_lbl = cap_tiles[ck]
+                            _set_badge_state(b_lbl, c_info["badge"], bool(c_info.get("ready")))
+                            d_lbl.set_text(c_info["detail"])
                         _apply_agent_rows_ui(states_map)
                         ol_info = rep["local"]["ollama"]
                         if ollama_status_row is not None:
                             ollama_status_row.set_subtitle(rep["ollamaStatusVi"])
                         if ollama_install_btn is not None:
                             if ol_info.get("installed"):
-                                ollama_install_btn.set_label("Đã cài Ollama")
+                                ollama_install_btn.set_label("Đã cài")
                                 ollama_install_btn.set_sensitive(False)
                                 ollama_install_btn.remove_css_class("suggested-action")
                             else:
-                                ollama_install_btn.set_label("Cài Ollama (SHA256)")
+                                ollama_install_btn.set_label("Cài Ollama")
                                 ollama_install_btn.set_sensitive(True)
                                 ollama_install_btn.add_css_class("suggested-action")
                         installed_set = set(rep["local"].get("installedModels", []))
                         for mid, mbtn in ollama_model_btns:
                             is_pulled = any(m == mid or m.startswith(f"{mid}:") for m in installed_set)
-                            mbtn.set_label("Kích hoạt" if is_pulled else "Tải & Kích hoạt")
+                            mbtn.set_label("Kích hoạt" if is_pulled else "Tải & bật")
                             mbtn.set_sensitive(True)
                         if show_toast:
                             _add_toast(toast_overlay, banner_line[:160])
@@ -1568,7 +1691,7 @@ def run_gtk_app(
                 l_url = ollama_row.get_text()
                 l_mod = local_model_row.get_text()
                 _btn.set_sensitive(False)
-                _btn.set_label("Đang xác thực...")
+                _btn.set_label("Đang kiểm tra...")
 
                 def worker() -> None:
                     saved_msg = backend.save_ai_settings(
@@ -1584,7 +1707,7 @@ def run_gtk_app(
 
                     def finish() -> bool:
                         _btn.set_sensitive(True)
-                        _btn.set_label("Lưu & Xác thực sống")
+                        _btn.set_label("Lưu & kiểm tra")
                         _add_toast(toast_overlay, saved_msg[:160])
                         refresh_readiness_ui(persist_agents=False)
                         return False
@@ -1599,19 +1722,11 @@ def run_gtk_app(
             rescan_btn.connect("clicked", lambda _b: refresh_readiness_ui(persist_agents=True, show_toast=True))
             save_btn.connect("clicked", on_save_clicked)
             check_btn.connect("clicked", on_check_clicked)
-            btn_box.append(save_btn)
-            btn_box.append(check_btn)
 
-            btn_group = Adw.PreferencesGroup()
-            btn_group.add(btn_box)
-
-            # Group 2: Stateful Agent Accounts (Official CLI + System Browser OAuth)
+            # Group 2: Connected AI Accounts
             agents_group = _make_group(
-                title="2. Tài khoản Agent (Google AI Ultra / Pro / Free · ChatGPT · Claude)",
-                description=(
-                    "Cài 1 chạm CLI chính chủ kèm xác thực SHA-512 (không cần root) và đăng nhập OAuth hợp lệ ToS. "
-                    "Tự động dùng được ngay trong NidoOffice & NidoAgent."
-                ),
+                title="Tài khoản AI",
+                description="Đăng nhập một chạm qua trình duyệt bằng tài khoản Google, ChatGPT hoặc Claude của bạn.",
             )
 
             initial_states_list = backend.probe_agent_accounts(persist=False)
@@ -1635,9 +1750,9 @@ def run_gtk_app(
                     "Đăng xuất"
                     if st.get("signedIn")
                     else (
-                        "Đăng nhập trình duyệt"
+                        "Đăng nhập"
                         if st.get("installed")
-                        else ("Mở trang tải" if getattr(spec, "download_url", "") else "Cài & Đăng nhập")
+                        else ("Tải về" if getattr(spec, "download_url", "") else "Cài & đăng nhập")
                     )
                 )
                 act_btn = Gtk.Button(label=btn_label, valign=Gtk.Align.CENTER)
@@ -1671,31 +1786,38 @@ def run_gtk_app(
                 agents_group.add(row)
                 agent_rows[spec.id] = (row, act_btn, spec)
 
-            # Group 3: Hardware-Matched Local AI (Ollama SHA256 Installer + Model Puller)
-            ollama_group = _make_group(
-                title="3. AI Cục bộ Offline (Ollama — Khuyến nghị theo RAM & GPU máy)",
-                description=(
-                    "Cài đặt chính chủ kèm xác thực SHA256 vào thư mục người dùng (không cần root, chỉ nghe trên 127.0.0.1:11434)."
-                ),
+            # Collapsed Local Offline AI (Ollama) Expander inside Cài đặt nâng cao
+            ollama_expander = _make_plain_row(
+                Adw.ExpanderRow(),
+                "AI ngoại tuyến trên máy (Ollama)",
+                "Tải và chạy mô hình trực tiếp trên máy tính khi không có mạng.",
             )
+            if hasattr(ollama_expander, "set_expanded"):
+                ollama_expander.set_expanded(False)
 
             ol_prog_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-            ol_prog_box.set_visible(False)
+            ol_prog_box.set_margin_top(6)
+            ol_prog_box.set_margin_bottom(6)
+            ol_prog_box.set_margin_start(12)
+            ol_prog_box.set_margin_end(12)
             ol_prog_lbl = Gtk.Label(xalign=0)
             ol_prog_lbl.set_ellipsize(3)
             ol_prog_bar = Gtk.ProgressBar()
             ol_prog_box.append(ol_prog_lbl)
             ol_prog_box.append(ol_prog_bar)
-            ollama_group.add(ol_prog_box)
+            ol_prog_row = Adw.PreferencesRow()
+            ol_prog_row.set_child(ol_prog_box)
+            ol_prog_row.set_visible(False)
+            ollama_expander.add_row(ol_prog_row)
 
             ol_init = initial_report["local"]["ollama"]
             ollama_status_row = _make_plain_row(
                 Adw.ActionRow(),
-                "Runtime Ollama cục bộ",
+                "Nền tảng Ollama",
                 initial_report["ollamaStatusVi"],
             )
             ollama_install_btn = Gtk.Button(
-                label="Đã cài Ollama" if ol_init.get("installed") else "Cài Ollama (SHA256)",
+                label="Đã cài" if ol_init.get("installed") else "Cài Ollama",
                 valign=Gtk.Align.CENTER,
             )
             if ol_init.get("installed"):
@@ -1705,7 +1827,7 @@ def run_gtk_app(
 
             def _set_ol_progress(pct: int, text: str) -> None:
                 def _ui() -> bool:
-                    ol_prog_box.set_visible(True)
+                    ol_prog_row.set_visible(True)
                     ol_prog_bar.set_fraction(max(0.0, min(1.0, pct / 100.0)))
                     ol_prog_lbl.set_text(text)
                     return False
@@ -1722,7 +1844,7 @@ def run_gtk_app(
 
                     def finish() -> bool:
                         if ok_o:
-                            ol_prog_box.set_visible(False)
+                            ol_prog_row.set_visible(False)
                         _add_toast(toast_overlay, msg_o[:150])
                         refresh_readiness_ui(persist_agents=False)
                         return False
@@ -1733,27 +1855,27 @@ def run_gtk_app(
 
             ollama_install_btn.connect("clicked", on_install_ollama_clicked)
             ollama_status_row.add_suffix(ollama_install_btn)
-            ollama_group.add(ollama_status_row)
+            ollama_expander.add_row(ollama_status_row)
 
             installed_models_init = set(initial_report["local"].get("installedModels", []))
             for rec in initial_report["recommendedModels"]:
                 mid = str(rec["id"])
                 tags: list[str] = []
                 if rec["recommended"]:
-                    tags.append("Khuyên dùng cho máy này")
+                    tags.append("Khuyên dùng")
                 elif not rec["fits_hardware"]:
-                    tags.append(f"Cần >= {rec['min_ram_gb']:.0f} GB RAM")
+                    tags.append(f"Cần từ {rec['min_ram_gb']:.0f} GB RAM")
                 tags.append(f"~{rec['size_gb']:.1f} GB")
                 if rec["supports_vision"]:
-                    tags.append("Vision OCR")
+                    tags.append("Hỗ trợ ảnh")
                 m_row = _make_plain_row(
                     Adw.ActionRow(),
                     rec["label"],
-                    f"[{' · '.join(tags)}] {rec['reason_vi']}",
+                    f"{' · '.join(tags)} — {rec['reason_vi']}",
                 )
                 is_pulled = any(m == mid or m.startswith(f"{mid}:") for m in installed_models_init)
                 m_btn = Gtk.Button(
-                    label="Kích hoạt" if is_pulled else "Tải & Kích hoạt",
+                    label="Kích hoạt" if is_pulled else "Tải & bật",
                     valign=Gtk.Align.CENTER,
                 )
                 if rec["recommended"]:
@@ -1762,7 +1884,7 @@ def run_gtk_app(
                 def on_pull_model_clicked(_b: Gtk.Button, target_mid: str = mid) -> None:
                     _b.set_sensitive(False)
                     _b.set_label("Đang tải...")
-                    _set_ol_progress(4, f"Đang tải & kích hoạt {target_mid}...")
+                    _set_ol_progress(4, f"Đang tải và bật {target_mid}...")
 
                     def worker() -> None:
                         ok_m, msg_m = backend.pull_and_activate_local_model(
@@ -1771,7 +1893,7 @@ def run_gtk_app(
 
                         def finish() -> bool:
                             if ok_m:
-                                ol_prog_box.set_visible(False)
+                                ol_prog_row.set_visible(False)
                                 ollama_row.set_text(OLLAMA_DEFAULT_BASE_URL)
                                 local_model_row.set_text(target_mid)
                                 local_idx = next(
@@ -1788,15 +1910,14 @@ def run_gtk_app(
 
                 m_btn.connect("clicked", on_pull_model_clicked)
                 m_row.add_suffix(m_btn)
-                ollama_group.add(m_row)
+                ollama_expander.add_row(m_row)
                 ollama_model_btns.append((mid, m_btn))
 
+            adv_group.add(ollama_expander)
+
             cloud_accounts_group = _make_group(
-                title="4. Tài khoản Email, Đám mây & Người dùng hệ thống (Geary Mail · Files)",
-                description=(
-                    "Khác với Tài khoản AI ở trên: đăng nhập Google, Microsoft 365 hoặc Nextcloud tại đây "
-                    "để tự động đồng bộ hộp thư Geary Mail và ổ đĩa đám mây trong Files."
-                ),
+                title="Tài khoản máy & Đám mây",
+                description="Đồng bộ hộp thư Geary, ổ đĩa đám mây trong Files và quản lý người dùng máy tính.",
             )
 
             def _on_open_panel(_btn: Any, panel: str) -> None:
@@ -1806,10 +1927,10 @@ def run_gtk_app(
 
             goa_row = _make_plain_row(
                 Adw.ActionRow(),
-                "Tài khoản trực tuyến (Google / Microsoft / Nextcloud)",
-                "Kết nối 1 chạm cho Geary Mail, Google Drive, OneDrive & Lịch",
+                "Email & Đám mây (Google / Microsoft / Nextcloud)",
+                "Kết nối hộp thư Geary Mail, Drive, OneDrive và Lịch.",
             )
-            goa_btn = Gtk.Button(label="Mở Tài khoản trực tuyến", valign=Gtk.Align.CENTER)
+            goa_btn = Gtk.Button(label="Mở cài đặt", valign=Gtk.Align.CENTER)
             goa_btn.connect("clicked", _on_open_panel, "online-accounts")
             goa_row.add_suffix(goa_btn)
             goa_row.set_activatable_widget(goa_btn)
@@ -1817,40 +1938,37 @@ def run_gtk_app(
 
             users_row = _make_plain_row(
                 Adw.ActionRow(),
-                "Tài khoản người dùng hệ thống",
-                "Quản lý mật khẩu đăng nhập máy, ảnh đại diện & thêm người dùng",
+                "Người dùng máy tính",
+                "Đổi mật khẩu đăng nhập, ảnh đại diện hoặc thêm tài khoản mới.",
             )
-            users_btn = Gtk.Button(label="Quản lý người dùng", valign=Gtk.Align.CENTER)
+            users_btn = Gtk.Button(label="Quản lý", valign=Gtk.Align.CENTER)
             users_btn.connect("clicked", _on_open_panel, "users")
             users_row.add_suffix(users_btn)
             users_row.set_activatable_widget(users_btn)
             cloud_accounts_group.add(users_row)
 
-            refresh_agents_btn = Gtk.Button(label="Làm mới toàn bộ trạng thái AI")
+            refresh_agents_btn = Gtk.Button(label="Làm mới trạng thái")
             refresh_agents_btn.add_css_class("pill")
             refresh_agents_btn.set_halign(Gtk.Align.CENTER)
-            refresh_agents_btn.set_margin_top(8)
             refresh_agents_btn.connect("clicked", lambda _b: refresh_agent_rows())
             agents_refresh_group = Adw.PreferencesGroup()
             agents_refresh_group.add(refresh_agents_btn)
 
-            ai_page.add(diag_group)
-            ai_page.add(prov_group)
-            ai_page.add(btn_group)
-            ai_page.add(agents_group)
-            ai_page.add(ollama_group)
-            ai_page.add(cloud_accounts_group)
-            ai_page.add(agents_refresh_group)
-            ai_box.append(ai_page)
-            stack.add_titled_with_icon(ai_box, "welcome", "Thiết lập AI", "preferences-system-symbolic")
+            ai_page.append(diag_group)
+            ai_page.append(agents_group)
+            ai_page.append(adv_group)
+            ai_page.append(cloud_accounts_group)
+            ai_page.append(agents_refresh_group)
+            ai_box.append(ai_scroll)
+            stack.add_titled_with_icon(ai_box, "welcome", "Trợ lý AI", "preferences-system-symbolic")
 
-            # --- Page 2: Native-First Software Center (Ubuntu APT, Nido APT, Vendor DEB, Optional Flathub) ---
+            # --- Page 2: Software Center & Updates ---
             apps_outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
 
             # Live Operation Progress Bar (revealed during install / remove / update / repair)
             op_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
-            op_box.set_margin_top(10)
-            op_box.set_margin_bottom(8)
+            op_box.set_margin_top(12)
+            op_box.set_margin_bottom(6)
             op_box.set_margin_start(20)
             op_box.set_margin_end(20)
             op_box.set_visible(False)
@@ -1859,7 +1977,7 @@ def run_gtk_app(
             op_status_lbl = Gtk.Label(label="", xalign=0.0, hexpand=True)
             op_status_lbl.set_ellipsize(3)  # Pango.EllipsizeMode.END
             op_cancel_btn = Gtk.Button(label="Hủy")
-            op_repair_btn = Gtk.Button(label="Khôi phục APT")
+            op_repair_btn = Gtk.Button(label="Khôi phục hệ thống gói")
             op_repair_btn.add_css_class("destructive-action")
             op_repair_btn.set_visible(False)
             op_top_row.append(op_status_lbl)
@@ -1869,18 +1987,18 @@ def run_gtk_app(
             op_progress = Gtk.ProgressBar()
             op_box.append(op_top_row)
             op_box.append(op_progress)
-            apps_outer.append(op_box)
+            apps_outer.append(_wrap_clamped(op_box, max_width=860))
 
-            # Search & Action Toolbar
+            # Search & Action Toolbar (aligned with the 860px card stack)
             apps_ctrl = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-            apps_ctrl.set_margin_top(12)
-            apps_ctrl.set_margin_bottom(6)
+            apps_ctrl.set_margin_top(14)
+            apps_ctrl.set_margin_bottom(4)
             apps_ctrl.set_margin_start(20)
             apps_ctrl.set_margin_end(20)
 
             search_entry = Gtk.SearchEntry(hexpand=True)
             search_entry.set_placeholder_text(
-                "Tìm gói .deb Ubuntu / hãng / Flathub (nhấn Enter để tìm trực tuyến)..."
+                "Tìm ứng dụng (nhấn Enter để tìm thêm trực tuyến)..."
             )
             cat_keys = list(CATEGORY_LABELS.keys())
             cat_dropdown = Gtk.DropDown.new_from_strings([CATEGORY_LABELS[k] for k in cat_keys])
@@ -1889,10 +2007,10 @@ def run_gtk_app(
             apps_ctrl.append(search_entry)
             apps_ctrl.append(cat_dropdown)
             apps_ctrl.append(sys_update_btn)
-            apps_outer.append(apps_ctrl)
+            apps_outer.append(_wrap_clamped(apps_ctrl, max_width=860))
 
-            apps_page = Adw.PreferencesPage()
-            apps_outer.append(apps_page)
+            apps_scroll, apps_page = _make_scrolled_canvas(max_width=860)
+            apps_outer.append(apps_scroll)
 
             local_pkg_group = None
             local_pkg_install_btn = None
@@ -1911,8 +2029,8 @@ def run_gtk_app(
                             "invalid": True,
                         }
                     local_pkg_group = _make_group(
-                        title="Cài đặt gói .deb cục bộ",
-                        description=f"Tệp: {package_file.name}",
+                        title="Cài đặt gói phần mềm (.deb)",
+                        description=f"Tệp đã mở: {package_file.name}",
                     )
                     pkg_title = (
                         f"{local_pkg_meta['package']} {local_pkg_meta['version']}".strip()
@@ -1923,52 +2041,50 @@ def run_gtk_app(
                         pkg_title,
                         str(local_pkg_meta.get("summary") or str(package_file)),
                     )
-                    local_pkg_install_btn = Gtk.Button(label="Cài đặt .deb", valign=Gtk.Align.CENTER)
+                    local_pkg_install_btn = Gtk.Button(label="Cài đặt", valign=Gtk.Align.CENTER)
                     local_pkg_install_btn.add_css_class("suggested-action")
                     if local_pkg_meta.get("invalid"):
                         local_pkg_install_btn.set_sensitive(False)
                     local_row.add_suffix(local_pkg_install_btn)
                     local_pkg_group.add(local_row)
-                    apps_page.add(local_pkg_group)
+                    apps_page.append(local_pkg_group)
                 elif package_file.suffix.lower() == ".flatpakref":
                     local_pkg_group = _make_group(
-                        title="Cài đặt tệp Flatpak (.flatpakref)",
-                        description=f"Tệp: {package_file.name}",
+                        title="Cài đặt ứng dụng Flatpak",
+                        description=f"Tệp đã mở: {package_file.name}",
                     )
                     local_row = _make_plain_row(
                         Adw.ActionRow(),
                         package_file.stem,
-                        f"Cài đặt ở phạm vi người dùng (--user) từ {package_file}",
+                        "Cài đặt ứng dụng cho tài khoản hiện tại.",
                     )
-                    local_pkg_install_btn = Gtk.Button(label="Cài đặt Flatpak", valign=Gtk.Align.CENTER)
+                    local_pkg_install_btn = Gtk.Button(label="Cài đặt", valign=Gtk.Align.CENTER)
                     local_pkg_install_btn.add_css_class("suggested-action")
                     local_row.add_suffix(local_pkg_install_btn)
                     local_pkg_group.add(local_row)
-                    apps_page.add(local_pkg_group)
+                    apps_page.append(local_pkg_group)
 
             maint_status = backend.app_store.probe_system_maintenance_status()
             sec_txt = (
-                "Đang bật tự động (unattended-upgrades)"
+                "Đang bật tự động"
                 if maint_status["securityUpdatesAuto"]
-                else ("Đã cài unattended-upgrades" if maint_status["securityUpdatesInstalled"] else "Chưa bật")
+                else ("Đã cài đặt" if maint_status["securityUpdatesInstalled"] else "Chưa bật")
             )
-            fw_txt = "Sẵn sàng (fwupd)" if maint_status["fwupdAvailable"] else "Chưa cài fwupd"
+            fw_txt = "Sẵn sàng" if maint_status["fwupdAvailable"] else "Chưa bật"
             maint_group = _make_group(
-                title="Tình trạng hệ thống & Cập nhật độc lập",
+                title="Cập nhật & Bảo trì hệ thống",
                 description=(
-                    f"Kiến trúc: {maint_status['hostArch']} ({maint_status['codename']}) · "
-                    f"Vá bảo mật hệ thống: {sec_txt} · Firmware: {fw_txt}."
+                    f"Kiến trúc {maint_status['hostArch']} · Vá bảo mật tự động: {sec_txt} · "
+                    f"Cập nhật phần cứng: {fw_txt}."
                 ),
             )
-            apps_page.add(maint_group)
+            apps_page.append(maint_group)
 
             apps_group = _make_group(
-                title="Kho Ứng dụng Native-First (Ưu tiên gói .deb chính chủ)",
-                description=(
-                    "Hỗ trợ Ubuntu APT, Nido APT, kho hãng có xác thực GPG + APT Pinning, và Flathub tùy chọn."
-                ),
+                title="Kho ứng dụng",
+                description="Ứng dụng được kiểm duyệt và tối ưu cho NidoOS.",
             )
-            apps_page.add(apps_group)
+            apps_page.append(apps_group)
 
             active_op: dict[str, OperationHandle | None] = {"handle": None}
             rendered_rows: list[Any] = []
@@ -2081,9 +2197,9 @@ def run_gtk_app(
                         if q_low not in hay:
                             continue
 
-                    state_badge = "Đã cài đặt" if item["installed"] else "Chưa cài đặt"
+                    state_badge = "Đã cài" if item["installed"] else "Chưa cài"
                     arch_part = f" · {item['archNote']}" if item.get("archNote") else ""
-                    sub = f"[{item['sourceLabel']} · {state_badge}{arch_part}] {item['description']}"
+                    sub = f"{item['sourceLabel']} · {state_badge}{arch_part} — {item['description']}"
                     row = _make_plain_row(Adw.ActionRow(), item["name"], sub)
 
                     btn_box_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
@@ -2158,26 +2274,20 @@ def run_gtk_app(
 
             stack.add_titled_with_icon(apps_outer, "apps", "Ứng dụng", "system-software-install-symbolic")
 
-            # --- Page 3: Global Printer & Scanner Manager (Adapter-First + APT On-Demand) ---
-            printer_scroll = Gtk.ScrolledWindow()
-            printer_scroll.set_vexpand(True)
-            printer_page = Adw.PreferencesPage()
-            printer_scroll.set_child(printer_page)
+            # --- Page 3: Printers & Scanners (Single Clamped ScrolledCanvas, No Double Scroll) ---
+            printer_scroll, printer_page = _make_scrolled_canvas(max_width=860)
 
             printer_list_group = _make_group(
-                title="Máy in & Máy quét (Adapter-First · Không bloat ISO)",
-                description=(
-                    "Tự động nhận diện IPP Everywhere / AirPrint (kiểu macOS), Universal PCL6/PostScript/RAW "
-                    "(kiểu Windows) và cài đúng driver APT theo dòng máy qua nido-pkg-helper."
-                ),
+                title="Máy in đang kết nối",
+                description="Tự nhận máy in USB và Wi-Fi hiện đại; chỉ tải thêm trình điều khiển khi dòng máy cần.",
             )
             printer_status_row = _make_plain_row(
                 Adw.ActionRow(),
-                "Đang quét thiết bị máy in USB & mạng LAN...",
-                "Nhấn Làm mới sau khi cắm cáp USB hoặc bật Wi-Fi máy in.",
+                "Đang tìm máy in USB và mạng nội bộ...",
+                "Nhấn Làm mới sau khi cắm cáp USB hoặc bật Wi-Fi cho máy in.",
             )
             printer_refresh_btn = Gtk.Button(label="Làm mới", valign=Gtk.Align.CENTER)
-            printer_sys_btn = Gtk.Button(label="Cài đặt Máy in Hệ thống", valign=Gtk.Align.CENTER)
+            printer_sys_btn = Gtk.Button(label="Cài đặt hệ thống", valign=Gtk.Align.CENTER)
             printer_sys_btn.connect("clicked", _on_open_panel, "printers")
             p_hdr_btns = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
             p_hdr_btns.append(printer_refresh_btn)
@@ -2200,29 +2310,29 @@ def run_gtk_app(
                         printer_dynamic_rows.clear()
 
                         if not detected:
-                            printer_status_row.set_title("Chưa phát hiện máy in USB hoặc mạng LAN")
+                            printer_status_row.set_title("Chưa tìm thấy máy in")
                             printer_status_row.set_subtitle(
-                                "Cắm máy in USB (hỗ trợ ipp-usb tự động) hoặc thêm máy in IP bên dưới."
+                                "Cắm cáp USB hoặc thêm máy in qua địa chỉ IP ở mục bên dưới."
                             )
                             return False
 
-                        printer_status_row.set_title(f"Phát hiện {len(detected)} máy in / hàng đợi")
+                        printer_status_row.set_title(f"Tìm thấy {len(detected)} máy in")
                         printer_status_row.set_subtitle(
-                            "Ưu tiên Adapter không cần driver trước; chỉ tải gói APT khi dòng máy yêu cầu."
+                            "Chọn Kết nối ngay hoặc cài trình điều khiển nếu máy yêu cầu."
                         )
                         for pr in detected:
                             sub_txt = f"{pr.adapter_label} — {pr.note_vi}"
                             p_row = _make_plain_row(Adw.ActionRow(), pr.name, sub_txt)
                             if pr.status == "needs-apt" and pr.recommended_packages:
                                 pkgs_list = list(pr.recommended_packages)
-                                act_b = Gtk.Button(label="Cài Driver APT", valign=Gtk.Align.CENTER)
+                                act_b = Gtk.Button(label="Cài trình điều khiển", valign=Gtk.Align.CENTER)
                                 act_b.add_css_class("suggested-action")
                                 act_b.connect(
                                     "clicked",
                                     lambda _b, pl=pkgs_list, pname=pr.name: (
                                         stack.set_visible_child_name("apps"),
                                         start_store_operation(
-                                            f"Cài driver {pname}",
+                                            f"Cài trình điều khiển {pname}",
                                             lambda h, cb, p=pl: backend.app_store._run_streaming_helper(
                                                 ["install-apt", *p], h, on_progress=cb
                                             ),
@@ -2231,7 +2341,7 @@ def run_gtk_app(
                                 )
                                 p_row.add_suffix(act_b)
                             elif pr.status == "adapter-available" and pr.uri and pr.recommended_model:
-                                act_b = Gtk.Button(label="Gắn Adapter", valign=Gtk.Align.CENTER)
+                                act_b = Gtk.Button(label="Kết nối ngay", valign=Gtk.Align.CENTER)
                                 act_b.add_css_class("suggested-action")
                                 q_default = "".join(c if c.isalnum() or c in "_-" else "_" for c in pr.name).strip("_") or "NidoPrinter"
                                 act_b.connect(
@@ -2239,7 +2349,7 @@ def run_gtk_app(
                                     lambda _b, qn=q_default[:48], u=pr.uri, m=pr.recommended_model, pn=pr.name: (
                                         stack.set_visible_child_name("apps"),
                                         start_store_operation(
-                                            f"Gắn adapter {pn}",
+                                            f"Kết nối máy in {pn}",
                                             lambda h, cb, q=qn, uri_v=u, mod_v=m: backend.configure_printer(
                                                 q, uri_v, mod_v, handle=h, on_progress=cb
                                             ),
@@ -2248,7 +2358,7 @@ def run_gtk_app(
                                 )
                                 p_row.add_suffix(act_b)
                             else:
-                                act_b = Gtk.Button(label="Mở Cài đặt", valign=Gtk.Align.CENTER)
+                                act_b = Gtk.Button(label="Mở cài đặt", valign=Gtk.Align.CENTER)
                                 act_b.connect("clicked", _on_open_panel, "printers")
                                 p_row.add_suffix(act_b)
 
@@ -2264,22 +2374,22 @@ def run_gtk_app(
             _refresh_printers_ui()
 
             lan_printer_group = _make_group(
-                title="Thêm máy in mạng văn phòng (IP / IPP / Socket 9100 / POS)",
-                description="Hỗ trợ máy photocopy văn phòng (Ricoh, Toshiba, Canon, Xerox, HP) bằng Universal Adapter.",
+                title="Thêm máy in mạng văn phòng",
+                description="Nhập địa chỉ IP của máy in hoặc máy photocopy trong mạng nội bộ.",
             )
-            lan_ip_row = _make_plain_row(Adw.EntryRow(), "Địa chỉ IP hoặc IPP URI (vd: 192.168.1.50)")
+            lan_ip_row = _make_plain_row(Adw.EntryRow(), "Địa chỉ IP hoặc liên kết máy in (ví dụ: 192.168.1.50)")
             lan_printer_group.add(lan_ip_row)
 
             adapter_keys = list(UNIVERSAL_ADAPTER_MODELS.keys())
             adapter_labels = Gtk.StringList.new([UNIVERSAL_ADAPTER_MODELS[k][0] for k in adapter_keys])
-            lan_adapter_row = _make_plain_row(Adw.ComboRow(model=adapter_labels), "Chọn Adapter")
+            lan_adapter_row = _make_plain_row(Adw.ComboRow(model=adapter_labels), "Kiểu máy in")
             lan_adapter_row.set_selected(0)
             lan_printer_group.add(lan_adapter_row)
 
             lan_add_row = _make_plain_row(
                 Adw.ActionRow(),
-                "Tạo hàng đợi in qua mạng",
-                "Sử dụng Universal Adapter có sẵn trong hệ thống — không cần tải driver ngoài.",
+                "Kết nối máy in mạng",
+                "Sử dụng trình điều khiển tiêu chuẩn có sẵn trên hệ thống.",
             )
             lan_add_btn = Gtk.Button(label="Thêm máy in", valign=Gtk.Align.CENTER)
             lan_add_btn.add_css_class("suggested-action")
@@ -2303,22 +2413,23 @@ def run_gtk_app(
             lan_add_row.add_suffix(lan_add_btn)
             lan_printer_group.add(lan_add_row)
 
-            printer_page.add(printer_list_group)
-            printer_page.add(lan_printer_group)
+            printer_page.append(printer_list_group)
+            printer_page.append(lan_printer_group)
             stack.add_titled_with_icon(printer_scroll, "printers", "Máy in", "printer-symbolic")
 
-            # --- Page 4: Quick NidoAgent & Document Report ---
-            agent_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
-            agent_box.set_margin_top(16)
-            agent_box.set_margin_bottom(16)
+            # --- Page 4: Quick AI Task & Document Assistant ---
+            agent_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14)
+            agent_box.set_margin_top(18)
+            agent_box.set_margin_bottom(24)
             agent_box.set_margin_start(20)
             agent_box.set_margin_end(20)
+            agent_box.set_vexpand(True)
 
             ctrl_group = _make_group(
-                title="Trợ lý Điều phối NidoAgent",
-                description="Đính kèm hợp đồng / tài liệu (.docx, .xlsx, .pdf, .md) và xuất báo cáo tự động.",
+                title="Xử lý tài liệu với NidoAgent",
+                description="Đính kèm tài liệu (.docx, .xlsx, .pdf, .md) để tóm tắt hoặc xuất báo cáo nhanh.",
             )
-            prompt_row = _make_plain_row(Adw.EntryRow(), "Yêu cầu công việc")
+            prompt_row = _make_plain_row(Adw.EntryRow(), "Yêu cầu thực hiện")
             prompt_row.set_text("Tổng hợp các thông tin và giá trị chính từ tài liệu đính kèm.")
             ctrl_group.add(prompt_row)
 
@@ -2330,23 +2441,23 @@ def run_gtk_app(
             ctrl_group.add(files_row)
 
             export_modes = [
-                ("", "Chỉ hiển thị câu trả lời"),
-                (".docx", "Xuất báo cáo Word (.docx)"),
-                (".xlsx", "Xuất bảng tổng hợp Excel (.xlsx)"),
+                ("", "Hiển thị trực tiếp trên màn hình"),
+                (".docx", "Xuất tệp Word (.docx)"),
+                (".xlsx", "Xuất bảng tính Excel (.xlsx)"),
             ]
             export_row = _make_plain_row(
                 Adw.ComboRow(model=Gtk.StringList.new([m[1] for m in export_modes])),
-                "Định dạng kết quả",
+                "Định dạng xuất",
             )
             ctrl_group.add(export_row)
             agent_box.append(ctrl_group)
 
             agent_act_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
             agent_act_box.set_halign(Gtk.Align.START)
-            run_btn = Gtk.Button(label="Thực thi với NidoAgent")
+            run_btn = Gtk.Button(label="Chạy tác vụ")
             run_btn.add_css_class("suggested-action")
             run_btn.add_css_class("pill")
-            copy_btn = Gtk.Button(label="Sao chép kết quả")
+            copy_btn = Gtk.Button(label="Sao chép")
             copy_btn.add_css_class("pill")
             copy_btn.set_sensitive(False)
             agent_act_box.append(run_btn)
@@ -2354,16 +2465,22 @@ def run_gtk_app(
             agent_box.append(agent_act_box)
 
             scroller = Gtk.ScrolledWindow(vexpand=True)
+            scroller.set_size_request(-1, 220)
             out_view = Gtk.TextView(editable=False, wrap_mode=Gtk.WrapMode.WORD_CHAR)
             out_view.set_monospace(False)
-            out_view.set_left_margin(14)
-            out_view.set_right_margin(14)
-            out_view.set_top_margin(12)
-            out_view.set_bottom_margin(12)
-            out_view.set_pixels_below_lines(3)
+            out_view.set_left_margin(16)
+            out_view.set_right_margin(16)
+            out_view.set_top_margin(14)
+            out_view.set_bottom_margin(14)
+            out_view.set_pixels_below_lines(4)
             out_buf = out_view.get_buffer()
             scroller.set_child(out_view)
-            agent_box.append(scroller)
+
+            out_frame = Gtk.Frame()
+            out_frame.add_css_class("nido-result-frame")
+            out_frame.set_vexpand(True)
+            out_frame.set_child(scroller)
+            agent_box.append(out_frame)
 
             last_agent_plain: list[str] = [""]
 
@@ -2374,7 +2491,7 @@ def run_gtk_app(
                 try:
                     clipboard = win.get_clipboard()
                     clipboard.set(txt)
-                    _add_toast(toast_overlay, "Đã sao chép văn bản sạch vào bộ nhớ tạm.")
+                    _add_toast(toast_overlay, "Đã sao chép kết quả vào bộ nhớ tạm.")
                 except Exception:
                     pass
 
@@ -2403,7 +2520,7 @@ def run_gtk_app(
             def on_run_agent(_b: Gtk.Button) -> None:
                 _b.set_sensitive(False)
                 copy_btn.set_sensitive(False)
-                out_buf.set_text("Đang xử lý qua NidoAgent...")
+                out_buf.set_text("Đang xử lý yêu cầu...")
                 ext = export_modes[export_row.get_selected()][0]
                 out_file = ""
                 if ext:
@@ -2438,17 +2555,19 @@ def run_gtk_app(
             run_btn.connect("clicked", on_run_agent)
             copy_btn.connect("clicked", on_copy_result)
 
-            stack.add_titled_with_icon(agent_box, "agent", "NidoAgent", "system-run-symbolic")
+            agent_clamp = _wrap_clamped(agent_box, max_width=860)
+            agent_clamp.set_vexpand(True)
+            stack.add_titled_with_icon(agent_clamp, "agent", "Tác vụ AI", "system-run-symbolic")
 
-            if initial_page in {"welcome", "apps", "agent"}:
+            if initial_page in {"welcome", "apps", "printers", "agent"}:
                 stack.set_visible_child_name(initial_page)
 
-            # --- Dedicated Mandatory AI Onboarding Gate (AI ON/OFF + >=1 Required Account + Optional API Key) ---
+            # --- Dedicated Mandatory AI Onboarding Gate ---
             ob_toolbar = Adw.ToolbarView()
             ob_header = Adw.HeaderBar()
             ob_title = Adw.WindowTitle(
-                title="Thiết lập AI ban đầu — NidoOS",
-                subtitle="Chọn bật/tắt AI và kết nối ít nhất 1 tài khoản AI để sẵn sàng sử dụng",
+                title="Thiết lập Trợ lý AI",
+                subtitle="Bật hoặc tắt AI và kết nối ít nhất 1 tài khoản khi bật",
             )
             ob_header.set_title_widget(ob_title)
             ob_toolbar.add_top_bar(ob_header)
@@ -2459,61 +2578,66 @@ def run_gtk_app(
             ob_banner = Adw.Banner()
             if hasattr(ob_banner, "set_use_markup"):
                 ob_banner.set_use_markup(False)
-            ob_banner.set_revealed(True)
+            ob_banner.set_revealed(False)
             ob_outer.append(ob_banner)
 
-            ob_page = Adw.PreferencesPage()
-            ob_page.set_vexpand(True)
+            ob_scroll, ob_page = _make_scrolled_canvas(max_width=760)
+            ob_scroll.set_vexpand(True)
 
-            # Onboarding Group 0: Mandatory AI ON / OFF switch
+            # Onboarding Group 0: AI ON / OFF switch
             ob_toggle_group = _make_group(
-                title="Chọn chế độ AI trên NidoOS (Bắt buộc)",
+                title="Trợ lý AI trên NidoOS",
                 description=(
-                    "Nếu BẬT AI (ON), bạn bắt buộc đăng nhập ít nhất 1 tài khoản (Google/Gemini, ChatGPT hoặc Claude) "
-                    "để NidoAgent & NidoOffice AI hoạt động ngay. Nếu chưa muốn dùng AI, hãy gạt sang TẮT AI (OFF)."
+                    "Bật AI để dùng trợ lý và soạn thảo thông minh, hoặc tắt để giữ máy gọn nhẹ "
+                    "như máy tính truyền thống."
                 ),
             )
             ob_ai_switch = _make_plain_row(
                 Adw.SwitchRow(),
-                "Sử dụng Trợ lý AI NidoOS (AI ON / OFF)",
-                "BẬT (ON): yêu cầu đăng nhập ≥ 1 tài khoản AI bên dưới · TẮT (OFF): vào thẳng desktop không chạy AI.",
+                "Bật Trợ lý AI",
+                "Khi bật, cần đăng nhập ít nhất 1 tài khoản AI bên dưới",
             )
             ob_ai_switch.set_active(True if backend.is_onboarding_required() else backend.is_ai_enabled())
             ob_toggle_group.add(ob_ai_switch)
 
             # Onboarding Group 1: Mandatory Sign-In (visible when AI ON)
             ob_accounts_group = _make_group(
-                title="1. Đăng nhập tài khoản AI (Bắt buộc — chọn ít nhất 1 tài khoản)",
-                description="Bấm 1 chạm để tự tải CLI chính chủ (không cần root) và đăng nhập OAuth qua trình duyệt.",
+                title="Kết nối tài khoản AI",
+                description="Chọn ít nhất 1 tài khoản để bắt đầu (đăng nhập trực tiếp qua trình duyệt)",
             )
             ob_agent_rows: dict[str, tuple[Any, Gtk.Button, Any]] = {}
             ob_latest_states: list[dict[str, Any]] = list(initial_states_list)
 
             ob_check_row = _make_plain_row(
                 Adw.ActionRow(),
-                "Trạng thái xác thực tài khoản AI",
-                "Sau khi hoàn tất đăng nhập trên trình duyệt / cửa sổ dòng lệnh, bấm kiểm tra hoặc đợi tự cập nhật.",
+                "Trạng thái kết nối",
+                "Đang kiểm tra tài khoản đã đăng nhập...",
             )
-            ob_check_btn = Gtk.Button(label="Kiểm tra đăng nhập", valign=Gtk.Align.CENTER)
+            ob_check_btn = Gtk.Button(label="Kiểm tra lại", valign=Gtk.Align.CENTER)
             ob_check_row.add_suffix(ob_check_btn)
 
-            # Onboarding Group 2: Optional API Key (visible when AI ON)
+            # Onboarding Group 2: Optional API Key (collapsed by default inside ExpanderRow)
             ob_apikey_group = _make_group(
-                title="2. Nhập API Key bổ sung (Tùy chọn, nếu có)",
-                description=(
-                    "Không bắt buộc nếu đã đăng nhập tài khoản ở Bước 1. Thêm API Key giúp kích hoạt thêm "
-                    "NidoBox Vision OCR và NidoAI Gateway cục bộ (lưu an toàn trong OS Keyring)."
-                ),
+                title="Tùy chọn nâng cao",
+                description="Không bắt buộc nếu bạn đã đăng nhập tài khoản ở trên.",
             )
+            ob_apikey_expander = _make_plain_row(
+                Adw.ExpanderRow(),
+                "Khóa API cá nhân (tùy chọn)",
+                "Dùng cho đọc ảnh thông minh và dự phòng kết nối",
+            )
+            ob_apikey_expander.set_expanded(False)
+            ob_apikey_group.add(ob_apikey_expander)
+
             ob_prov_model = Gtk.StringList.new([label for _, label in PROVIDERS])
-            ob_prov_row = _make_plain_row(Adw.ComboRow(model=ob_prov_model), "Nguồn API Gateway ưu tiên")
+            ob_prov_row = _make_plain_row(Adw.ComboRow(model=ob_prov_model), "Nhà cung cấp ưu tiên")
             ob_prov_row.set_selected(prov_idx)
-            ob_apikey_group.add(ob_prov_row)
+            ob_apikey_expander.add_row(ob_prov_row)
 
             ob_free_key_row = _make_plain_row(
                 Adw.ActionRow(),
-                "Lấy Google Gemini API Key miễn phí ($0 — tùy chọn)",
-                "Mở Google AI Studio trên trình duyệt nếu bạn muốn thêm khóa dự phòng cho NidoBox OCR.",
+                "Lấy khóa Google Gemini miễn phí",
+                "Mở Google AI Studio trên trình duyệt nếu bạn muốn tạo khóa dự phòng",
             )
             ob_get_key_btn = Gtk.Button(label="Mở AI Studio", valign=Gtk.Align.CENTER)
             ob_get_key_btn.connect(
@@ -2526,29 +2650,29 @@ def run_gtk_app(
                 ),
             )
             ob_free_key_row.add_suffix(ob_get_key_btn)
-            ob_apikey_group.add(ob_free_key_row)
+            ob_apikey_expander.add_row(ob_free_key_row)
 
-            ob_gemini_row = _make_plain_row(Adw.PasswordEntryRow(), "Google Gemini API Key (tùy chọn)")
+            ob_gemini_row = _make_plain_row(Adw.PasswordEntryRow(), "Khóa Google Gemini")
             ob_gemini_row.set_text(env.get("GEMINI_API_KEY", ""))
-            ob_apikey_group.add(ob_gemini_row)
+            ob_apikey_expander.add_row(ob_gemini_row)
 
-            ob_openai_row = _make_plain_row(Adw.PasswordEntryRow(), "OpenAI API Key (tùy chọn)")
+            ob_openai_row = _make_plain_row(Adw.PasswordEntryRow(), "Khóa OpenAI")
             ob_openai_row.set_text(env.get("OPENAI_API_KEY", ""))
-            ob_apikey_group.add(ob_openai_row)
+            ob_apikey_expander.add_row(ob_openai_row)
 
-            ob_anthropic_row = _make_plain_row(Adw.PasswordEntryRow(), "Anthropic API Key (tùy chọn)")
+            ob_anthropic_row = _make_plain_row(Adw.PasswordEntryRow(), "Khóa Anthropic")
             ob_anthropic_row.set_text(env.get("ANTHROPIC_API_KEY", ""))
-            ob_apikey_group.add(ob_anthropic_row)
+            ob_apikey_expander.add_row(ob_anthropic_row)
 
             # Onboarding Group 3: AI OFF Confirmation (visible when AI OFF)
             ob_off_group = _make_group(
-                title="Chế độ TẮT AI (AI OFF)",
-                description="NidoOS sẽ hoạt động hoàn toàn như máy tính để bàn truyền thống, không khởi chạy dịch vụ AI.",
+                title="Chế độ tắt AI",
+                description="Máy chạy gọn nhẹ ở chế độ desktop truyền thống, không khởi chạy dịch vụ AI.",
             )
             ob_off_info_row = _make_plain_row(
                 Adw.ActionRow(),
-                "Tạm tắt NidoAI Gateway, NidoAgent và NidoOffice AI",
-                "Bạn có thể mở NidoHub bất cứ lúc nào để gạt AI sang BẬT (ON) và đăng nhập tài khoản AI sau.",
+                "Bạn có thể bật lại bất cứ lúc nào",
+                "Mở NidoHub để bật AI và đăng nhập tài khoản khi cần dùng.",
             )
             ob_off_group.add(ob_off_info_row)
 
@@ -2556,8 +2680,8 @@ def run_gtk_app(
             ob_footer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
             ob_footer.set_margin_top(10)
             ob_footer.set_margin_bottom(14)
-            ob_footer.set_margin_start(24)
-            ob_footer.set_margin_end(24)
+            ob_footer.set_margin_start(20)
+            ob_footer.set_margin_end(20)
 
             ob_gate_lbl = Gtk.Label(xalign=0.0, wrap=True)
             ob_gate_lbl.add_css_class("dim-label")
@@ -2570,6 +2694,8 @@ def run_gtk_app(
             ob_finish_btn.add_css_class("pill")
             ob_action_row.append(ob_finish_btn)
             ob_footer.append(ob_action_row)
+            ob_footer_wrap = _wrap_clamped(ob_footer, max_width=760)
+            ob_footer_wrap.add_css_class("nido-footer-bar")
 
             def _stop_ob_poll() -> None:
                 if ob_poll_source_id[0]:
@@ -2588,17 +2714,18 @@ def run_gtk_app(
                 ob_apikey_group.set_visible(ai_on)
                 ob_off_group.set_visible(not ai_on)
 
-                banner_txt = f"[{gate['statusBadge']}] {gate['reasonVi']}"
+                banner_txt = gate["reasonVi"]
                 ob_banner.set_title(
                     banner_txt if hasattr(ob_banner, "set_use_markup") else escape_markup(banner_txt)
                 )
+                ob_banner.set_revealed(ai_on and not gate["canComplete"])
                 ob_gate_lbl.set_text(gate["reasonVi"])
                 ob_check_row.set_subtitle(
-                    f"Trạng thái: {gate['statusBadge']} — "
+                    f"{gate['statusBadge']} — "
                     + (
                         ", ".join(gate["signedInLabels"])
                         if gate["signedInLabels"]
-                        else "chưa phát hiện tài khoản nào đã đăng nhập."
+                        else "Chưa có tài khoản nào được kết nối."
                     )
                 )
 
@@ -2609,7 +2736,7 @@ def run_gtk_app(
                     row_w, btn_w, _ = ob_agent_rows[spec.id]
                     row_w.set_subtitle(_format_agent_status_subtitle(spec, st))
                     if st.get("signedIn"):
-                        btn_w.set_label("Đã đăng nhập ✓")
+                        btn_w.set_label("Đã kết nối ✓")
                         btn_w.remove_css_class("suggested-action")
                         btn_w.set_sensitive(True)
                     elif st.get("installed"):
@@ -2617,19 +2744,19 @@ def run_gtk_app(
                         btn_w.add_css_class("suggested-action")
                         btn_w.set_sensitive(True)
                     else:
-                        btn_w.set_label("Cài & Đăng nhập")
+                        btn_w.set_label("Kết nối ngay")
                         btn_w.add_css_class("suggested-action")
                         btn_w.set_sensitive(True)
 
                 if not ai_on:
-                    ob_finish_btn.set_label("Hoàn tất (Tắt AI & vào màn hình chính)")
+                    ob_finish_btn.set_label("Hoàn tất & Vào màn hình chính")
                     ob_finish_btn.set_sensitive(True)
                 elif gate["canComplete"]:
                     ob_finish_btn.set_label("Hoàn tất & Bắt đầu dùng NidoOS")
                     ob_finish_btn.set_sensitive(True)
                     _stop_ob_poll()
                 else:
-                    ob_finish_btn.set_label("Hoàn tất (Cần đăng nhập ≥ 1 tài khoản AI)")
+                    ob_finish_btn.set_label("Hoàn tất (Cần ≥ 1 tài khoản AI)")
                     ob_finish_btn.set_sensitive(False)
 
             def _refresh_onboarding_accounts(show_toast: bool = False) -> None:
@@ -2672,7 +2799,7 @@ def run_gtk_app(
                     spec.display_name,
                     _format_agent_status_subtitle(spec, st),
                 )
-                ob_btn = Gtk.Button(label="Cài & Đăng nhập", valign=Gtk.Align.CENTER)
+                ob_btn = Gtk.Button(label="Kết nối ngay", valign=Gtk.Align.CENTER)
 
                 def on_ob_agent_clicked(_b: Gtk.Button, pid: str = spec.id) -> None:
                     cur_st = next((x for x in ob_latest_states if x.get("id") == pid), {})
@@ -2773,14 +2900,14 @@ def run_gtk_app(
 
             ob_finish_btn.connect("clicked", on_ob_finish_clicked)
 
-            ob_page.add(ob_toggle_group)
-            ob_page.add(ob_accounts_group)
-            ob_page.add(ob_apikey_group)
-            ob_page.add(ob_off_group)
-            ob_outer.append(ob_page)
+            ob_page.append(ob_toggle_group)
+            ob_page.append(ob_accounts_group)
+            ob_page.append(ob_apikey_group)
+            ob_page.append(ob_off_group)
+            ob_outer.append(ob_scroll)
             ob_toast_overlay.set_child(ob_outer)
             ob_toolbar.set_content(ob_toast_overlay)
-            ob_toolbar.add_bottom_bar(ob_footer)
+            ob_toolbar.add_bottom_bar(ob_footer_wrap)
             _update_onboarding_ui()
 
             def _enter_onboarding_view() -> None:
@@ -2804,8 +2931,9 @@ def run_gtk_app(
                         def done_off() -> bool:
                             _add_toast(toast_overlay, msg_t[:150])
                             banner.set_title(
-                                "Chế độ AI đang TẮT trên NidoOS — gạt công tắc Bật AI bên dưới để kích hoạt."
+                                "Trợ lý AI đang tắt trên NidoOS — bật công tắc bên dưới khi bạn muốn sử dụng."
                             )
+                            banner.set_revealed(True)
                             return False
 
                         GLib.idle_add(done_off)
@@ -2819,7 +2947,7 @@ def run_gtk_app(
                             _enter_onboarding_view()
                             _add_toast(
                                 ob_toast_overlay,
-                                "Bật AI yêu cầu đăng nhập ít nhất 1 tài khoản (Google/Gemini, ChatGPT hoặc Claude).",
+                                "Vui lòng đăng nhập ít nhất 1 tài khoản (Google/Gemini, ChatGPT hoặc Claude).",
                             )
                             return False
 

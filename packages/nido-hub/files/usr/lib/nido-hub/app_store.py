@@ -38,9 +38,9 @@ SOURCE_PRIORITY = {
 }
 
 SOURCE_LABELS = {
-    "nido-apt": "Nido DEB",
-    "vendor-apt": "Chính hãng DEB",
-    "ubuntu-apt": "Ubuntu DEB",
+    "nido-apt": "NidoOS",
+    "vendor-apt": "Chính hãng",
+    "ubuntu-apt": "Hệ thống",
     "flatpak": "Flathub",
 }
 

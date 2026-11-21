@@ -20,14 +20,14 @@ from pathlib import Path
 from typing import Any, Callable
 
 UNIVERSAL_ADAPTER_MODELS: dict[str, tuple[str, str]] = {
-    "everywhere": ("IPP Everywhere / AirPrint (Hiện đại — không cần driver)", "everywhere"),
-    "pwgrast": ("Driverless PWG Raster", "drv:///cupsfilters.drv/pwgrast.ppd"),
-    "pcl6": ("Universal PCL 6 / XL (HP, Ricoh, Toshiba, Xerox, Canon lớn)", "drv:///sample.drv/pxlmono.ppd"),
-    "pcl6-color": ("Universal PCL 6 / XL Màu", "drv:///sample.drv/pxlcolor.ppd"),
-    "pcl5e": ("Universal PCL 5e / Laser cổ điển", "drv:///sample.drv/generpcl.ppd"),
-    "postscript": ("Universal PostScript / PDF (Văn phòng)", "drv:///sample.drv/generic.ppd"),
+    "everywhere": ("Tự động hiện đại (AirPrint / IPP)", "everywhere"),
+    "pwgrast": ("Chuẩn in ảnh PWG không cần trình điều khiển", "drv:///cupsfilters.drv/pwgrast.ppd"),
+    "pcl6": ("Máy in văn phòng tiêu chuẩn (PCL 6)", "drv:///sample.drv/pxlmono.ppd"),
+    "pcl6-color": ("Máy in văn phòng màu (PCL 6)", "drv:///sample.drv/pxlcolor.ppd"),
+    "pcl5e": ("Máy in laser đời cũ (PCL 5e)", "drv:///sample.drv/generpcl.ppd"),
+    "postscript": ("Máy in PostScript / PDF", "drv:///sample.drv/generic.ppd"),
     "zebra": ("Máy in mã vạch Zebra (ZPL / EPL)", "drv:///sample.drv/zebra.ppd"),
-    "raw": ("RAW / Máy in bill nhiệt POS (58mm / 80mm ESC/POS)", "raw"),
+    "raw": ("Máy in hóa đơn nhiệt (58mm / 80mm)", "raw"),
 }
 
 ALLOWED_CONFIGURE_URIS = ("ipp://", "ipps://", "usb://", "socket://", "lpd://", "dnssd://")
@@ -266,10 +266,10 @@ def resolve_usb_printer(
                 uri=cups_queues[matched_queue],
                 ieee1284_cmd=cmd,
                 status="ready",
-                adapter_label="Driverless IPP-USB (Sẵn sàng)",
+                adapter_label="Sẵn sàng không cần trình điều khiển",
                 recommended_model="everywhere",
                 configured_queue=matched_queue,
-                note_vi="Máy in hiện đại hỗ trợ IPP-USB/AirPrint — in trực tiếp không cần driver hãng.",
+                note_vi="Máy in hiện đại — cắm là in được ngay.",
             )
         return PrinterProposal(
             id=f"usb:{vid}:{pid}",
@@ -280,19 +280,18 @@ def resolve_usb_printer(
             uri=ipp_uri or usb_uri,
             ieee1284_cmd=cmd,
             status="adapter-available",
-            adapter_label="Adapter IPP Everywhere",
+            adapter_label="Tương thích hiện đại (AirPrint / IPP)",
             recommended_model="everywhere",
-            note_vi="Hỗ trợ IPP-USB hiện đại (kiểu macOS). Bấm Gắn Adapter để tạo hàng đợi in ngay.",
+            note_vi="Hỗ trợ chuẩn in hiện đại — bấm Kết nối ngay để dùng luôn.",
         )
 
     # 2. Legacy Canon CAPT (LBP2900/3000/6000) — proprietary protocol, amd64 only
     if vid == CANON_VENDOR and pid in LEGACY_CAPT_PIDS:
         model_label = LEGACY_CAPT_PIDS[pid]
         arch_note = (
-            "Dòng Canon CAPT cổ dùng giao thức độc quyền (chỉ có driver chính chủ cho x86_64/amd64, "
-            "không hỗ trợ arm64)."
+            "Dòng máy này chỉ có trình điều khiển chính hãng cho x86_64/amd64, chưa hỗ trợ arm64."
             if host_arch != "amd64"
-            else "Dòng Canon CAPT cổ dùng giao thức độc quyền của Canon (cần driver CAPT .deb từ Canon)."
+            else "Dòng Canon CAPT đời cũ — cần cài trình điều khiển chính hãng từ Canon."
         )
         return PrinterProposal(
             id=f"usb:{vid}:{pid}",
@@ -303,7 +302,7 @@ def resolve_usb_printer(
             uri=usb_uri,
             ieee1284_cmd=cmd,
             status="arch-limited",
-            adapter_label="Giao thức Canon CAPT độc quyền",
+            adapter_label="Cần trình điều khiển riêng của Canon",
             configured_queue=matched_queue,
             note_vi=arch_note,
         )
@@ -312,13 +311,13 @@ def resolve_usb_printer(
     if any(c in ("PCLXL", "PCL6", "PXL", "PCL5E", "PCL5", "PCL", "POSTSCRIPT", "PS", "PDF") for c in cmd):
         if any(c in ("POSTSCRIPT", "PS", "PDF") for c in cmd):
             model = "drv:///sample.drv/generic.ppd"
-            label = "Universal PostScript / PDF"
+            label = "Chuẩn văn phòng (PostScript / PDF)"
         elif any(c in ("PCLXL", "PCL6", "PXL") for c in cmd):
             model = "drv:///sample.drv/pxlmono.ppd"
-            label = "Universal PCL 6 / XL"
+            label = "Chuẩn văn phòng (PCL 6)"
         else:
             model = "drv:///sample.drv/generpcl.ppd"
-            label = "Universal PCL 5e"
+            label = "Chuẩn laser đời cũ (PCL 5e)"
         return PrinterProposal(
             id=f"usb:{vid}:{pid}",
             name=display_name,
@@ -331,7 +330,7 @@ def resolve_usb_printer(
             adapter_label=label,
             recommended_model=model,
             configured_queue=matched_queue,
-            note_vi=f"Nhận diện giao thức chuẩn ({', '.join(cmd)}). Dùng {label}, không cần tải thêm driver.",
+            note_vi=f"Hỗ trợ {label} có sẵn trên hệ thống — không cần tải thêm.",
         )
 
     # 4. Thermal POS / Barcode Label (ZPL / EPL / ESC-POS)
@@ -345,10 +344,10 @@ def resolve_usb_printer(
             uri=usb_uri,
             ieee1284_cmd=cmd,
             status="ready" if matched_queue else "adapter-available",
-            adapter_label="Adapter Zebra ZPL/EPL",
+            adapter_label="Máy in mã vạch Zebra",
             recommended_model="drv:///sample.drv/zebra.ppd",
             configured_queue=matched_queue,
-            note_vi="Máy in mã vạch/tem nhãn Zebra — dùng adapter ZPL/EPL có sẵn.",
+            note_vi="Hỗ trợ sẵn chuẩn ZPL/EPL — bấm Kết nối ngay để in tem nhãn.",
         )
 
     if vid in POS_THERMAL_VENDORS or "POS" in prod.upper() or "THERMAL" in prod.upper() or "XPRINTER" in prod.upper():
@@ -361,34 +360,34 @@ def resolve_usb_printer(
             uri=usb_uri,
             ieee1284_cmd=cmd,
             status="ready" if matched_queue else "adapter-available",
-            adapter_label="Adapter RAW / ESC-POS (POS 58/80mm)",
+            adapter_label="Máy in hóa đơn nhiệt (58mm / 80mm)",
             recommended_model="raw",
             configured_queue=matched_queue,
-            note_vi="Máy in hóa đơn nhiệt ESC/POS — hỗ trợ in trực tiếp qua hàng đợi RAW hoặc phần mềm bán hàng.",
+            note_vi="Hỗ trợ in bill trực tiếp qua cổng hệ thống hoặc phần mềm bán hàng.",
         )
 
     # 5. Vendor-specific APT On-Demand Drivers
     needed_pkgs: list[str] = []
-    adapter_desc = "Driver hãng qua APT"
+    adapter_desc = "Trình điều khiển mở rộng"
     if vid == EPSON_VENDOR or any("ESC/P" in c or "ESCPR" in c for c in cmd):
-        adapter_desc = "Epson ESC/P-R (APT On-Demand)"
+        adapter_desc = "Epson phun màu (ESC/P-R)"
         if "printer-driver-escpr" not in installed_packages:
             needed_pkgs.append("printer-driver-escpr")
     elif vid == CANON_VENDOR:
-        adapter_desc = "Canon PIXMA / Gutenprint (APT On-Demand)"
+        adapter_desc = "Canon PIXMA (Gutenprint)"
         if "printer-driver-gutenprint" not in installed_packages:
             needed_pkgs.append("printer-driver-gutenprint")
     elif vid == BROTHER_VENDOR:
-        adapter_desc = "Brother Laser (brlaser)"
+        adapter_desc = "Brother Laser"
         if "printer-driver-brlaser" not in installed_packages:
             needed_pkgs.append("printer-driver-brlaser")
     elif vid == HP_VENDOR:
-        adapter_desc = "HP HPLIP"
+        adapter_desc = "HP chính hãng"
         for pkg in ("hplip", "printer-driver-hpcups"):
             if pkg not in installed_packages:
                 needed_pkgs.append(pkg)
     elif vid in (SAMSUNG_VENDOR, XEROX_VENDOR):
-        adapter_desc = "Samsung / Xerox SPL (splix)"
+        adapter_desc = "Samsung / Xerox Laser"
         if "printer-driver-splix" not in installed_packages:
             needed_pkgs.append("printer-driver-splix")
 
@@ -405,7 +404,7 @@ def resolve_usb_printer(
             adapter_label=adapter_desc,
             recommended_packages=tuple(needed_pkgs),
             configured_queue=matched_queue,
-            note_vi=f"Cần cài gói driver nhẹ từ APT: {', '.join(needed_pkgs)}.",
+            note_vi="Cần tải thêm trình điều khiển phù hợp từ kho hệ thống.",
         )
 
     return PrinterProposal(
@@ -420,7 +419,7 @@ def resolve_usb_printer(
         adapter_label=adapter_desc,
         recommended_model="everywhere",
         configured_queue=matched_queue,
-        note_vi="Driver tương thích đã sẵn sàng. Có thể kiểm tra trong Cài đặt Máy in.",
+        note_vi="Đã sẵn sàng kết nối và kiểm tra trong Cài đặt Máy in.",
     )
 
 
@@ -511,9 +510,9 @@ def probe_printers(
                 transport="cups",
                 uri=q_uri,
                 status="ready",
-                adapter_label="Hàng đợi CUPS đang hoạt động",
+                adapter_label="Đã thiết lập sẵn",
                 configured_queue=q_name,
-                note_vi=f"Đã cấu hình tại {q_uri}",
+                note_vi="Sẵn sàng nhận lệnh in.",
             )
         )
 
@@ -531,9 +530,9 @@ def probe_printers(
                 transport="network",
                 uri=u,
                 status="adapter-available",
-                adapter_label="Driverless IPP / AirPrint",
+                adapter_label="Máy in Wi-Fi / LAN hiện đại",
                 recommended_model="everywhere",
-                note_vi="Tìm thấy qua mạng LAN/Wi-Fi. Bấm Gắn Adapter để in ngay không cần driver.",
+                note_vi="Tìm thấy qua mạng nội bộ — bấm Kết nối ngay để in không cần cài thêm.",
             )
         )
 
