@@ -276,6 +276,7 @@ step_customize() {
     test -f /usr/lib/nido-hub/agent_accounts.py
     test -f /usr/lib/nido-hub/app_store.py
     test -f /usr/lib/nido-hub/markdown_render.py
+    test -f /usr/lib/nido-hub/printer_probe.py
     test -f /usr/lib/systemd/system/nido-native-first-cleanup.service
     /usr/bin/nido-hub --self-test >/dev/null
     test -x /usr/local/bin/genoffice

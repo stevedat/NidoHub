@@ -197,6 +197,7 @@ for fname in expected:
                 "./usr/lib/nido-hub/ai_discovery.py",
                 "./usr/lib/nido-hub/app_store.py",
                 "./usr/lib/nido-hub/markdown_render.py",
+                "./usr/lib/nido-hub/printer_probe.py",
                 "./usr/libexec/nido-hub/nido-pkg-helper",
                 "./usr/share/nido-hub/vendors.json",
                 "./usr/share/polkit-1/actions/com.nidoholdings.nidohub.pkg.policy",
@@ -908,7 +909,33 @@ hook_120 = Path(sys.argv[3]).parents[1] / "config/hooks/live/0120-nido-native-fi
 assert hook_120.is_file() and "--allow-downgrades" in hook_120.read_text(encoding="utf-8"), (
     "0120-nido-native-first.hook.chroot must pass --allow-downgrades for Firefox DEB"
 )
-print("Verified nido-pkg-helper GPG fingerprint enforcement, DEB822 .sources, package-specific APT pinning, --allow-downgrades, and protected-package guard.")
+# Verify on-demand printer APT install & configure-printer dry-run + URI guard
+pr_apt = subprocess.run(
+    [sys.executable, str(helper), "--dry-run", "install-apt", "printer-driver-escpr", "printer-driver-gutenprint"],
+    env=env, capture_output=True, text=True, check=True,
+)
+assert "Dry-run OK: install-apt printer-driver-escpr printer-driver-gutenprint" in pr_apt.stdout
+pr_cfg = subprocess.run(
+    [
+        sys.executable, str(helper), "--dry-run", "configure-printer",
+        "--name", "NidoLAN_192_168_1_50",
+        "--uri", "socket://192.168.1.50:9100",
+        "--model", "drv:///sample.drv/pxlmono.ppd",
+    ],
+    env=env, capture_output=True, text=True, check=True,
+)
+assert "Dry-run OK: configure-printer NidoLAN_192_168_1_50" in pr_cfg.stdout
+pr_bad = subprocess.run(
+    [
+        sys.executable, str(helper), "--dry-run", "configure-printer",
+        "--name", "bad;rm",
+        "--uri", "file:///etc/passwd",
+        "--model", "../../evil.ppd",
+    ],
+    env=env, capture_output=True, text=True, check=False,
+)
+assert pr_bad.returncode != 0, "configure-printer must reject unsafe queue name/URI/model"
+print("Verified nido-pkg-helper GPG fingerprint enforcement, DEB822 .sources, package-specific APT pinning, --allow-downgrades, protected-package guard, and printer adapter dry-run.")
 PY
 
 # Verify Vietnamese fontconfig XML, Sen Viet Telex+VNI IME sync, and AI OFF CLI policy

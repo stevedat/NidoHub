@@ -55,6 +55,31 @@ if command -v flatpak >/dev/null 2>&1; then
   flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo || true
 fi
 
+# Ensure Ubuntu 'universe' component stays enabled in ubuntu.sources so on-demand
+# printer drivers (printer-driver-escpr, printer-driver-gutenprint, etc.) are APT-ready.
+if [ -f /etc/apt/sources.list.d/ubuntu.sources ] && command -v python3 >/dev/null 2>&1; then
+  python3 - <<'PY'
+from pathlib import Path
+p = Path("/etc/apt/sources.list.d/ubuntu.sources")
+raw = p.read_text(encoding="utf-8", errors="replace")
+out = []
+for line in raw.splitlines():
+    if line.startswith("Components:"):
+        comps = line.split(":", 1)[1].split()
+        if "universe" not in comps:
+            comps.append("universe")
+        out.append("Components: " + " ".join(comps))
+    else:
+        out.append(line)
+p.write_text("\n".join(out) + ("\n" if raw.endswith("\n") else ""), encoding="utf-8")
+PY
+fi
+
+# Keep CUPS & Avahi services ready for zero-driver IPP/AirPrint/ipp-usb printers
+if command -v systemctl >/dev/null 2>&1; then
+  systemctl enable cups.service avahi-daemon.service >/dev/null 2>&1 || true
+fi
+
 # Preserve snapd & ubuntu-desktop-bootstrap; schedule post-install removal of snap-store
 if [ -f /usr/lib/systemd/system/nido-native-first-cleanup.service ]; then
   mkdir -p /etc/systemd/system/multi-user.target.wants

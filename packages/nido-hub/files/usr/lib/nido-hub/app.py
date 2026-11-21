@@ -66,6 +66,11 @@ from markdown_render import (  # noqa: E402
     render_markdown_to_gtk_buffer,
     render_markdown_to_plain,
 )
+from printer_probe import (  # noqa: E402
+    UNIVERSAL_ADAPTER_MODELS,
+    build_network_printer_spec,
+    probe_printers,
+)
 
 PROVIDERS = [
     ("gemini", "Google Gemini API (Miễn phí $0 / BYOK)"),
@@ -625,6 +630,21 @@ class NidoHubBackend:
         )
         return ok, msg
 
+    def configure_printer(
+        self,
+        queue_name: str,
+        uri: str,
+        model: str,
+        handle: OperationHandle | None = None,
+        on_progress: Any = None,
+    ) -> tuple[bool, str, bool]:
+        op = handle or OperationHandle(label=f"Cấu hình máy in {queue_name}")
+        return self.app_store._run_streaming_helper(
+            ["configure-printer", "--name", queue_name, "--uri", uri, "--model", model],
+            op,
+            on_progress=on_progress,
+        )
+
     def run_agent_task(
         self,
         prompt: str,
@@ -645,7 +665,7 @@ class NidoHubBackend:
         return res.returncode == 0, output.strip()
 
 
-ALLOWED_SETTINGS_PANELS = frozenset({"online-accounts", "users", "system", "about"})
+ALLOWED_SETTINGS_PANELS = frozenset({"online-accounts", "users", "printers", "system", "about"})
 
 
 def build_settings_panel_argv(panel: str) -> list[str]:
@@ -1073,7 +1093,54 @@ def run_self_test() -> int:
             raise AssertionError("Expected ValueError for disallowed settings panel")
         except ValueError:
             pass
-        assert {"online-accounts", "users"}.issubset(ALLOWED_SETTINGS_PANELS)
+        assert {"online-accounts", "users", "printers"}.issubset(ALLOWED_SETTINGS_PANELS)
+
+        # Verify Global Printer Probe (sysfs + IEEE-1284 + Adapter-First + APT On-Demand)
+        fake_sys = root / "fake_sys"
+        usb_base = fake_sys / "sys/bus/usb/devices"
+        # 1) Universal Office PDL printer (PCLXL/PCL5e)
+        (usb_base / "1-1").mkdir(parents=True)
+        (usb_base / "1-1/idVendor").write_text("03f0\n", encoding="utf-8")
+        (usb_base / "1-1/idProduct").write_text("4117\n", encoding="utf-8")
+        (usb_base / "1-1:1.0").mkdir(parents=True)
+        (usb_base / "1-1:1.0/bInterfaceClass").write_text("07\n", encoding="utf-8")
+        (usb_base / "1-1:1.0/ieee1284_id").write_text(
+            "MFG:HP;MDL:LaserJet Pro;CMD:PCLXL,PCL5E,PJL;\n", encoding="utf-8"
+        )
+        # 2) Epson inkjet needing on-demand APT driver (ESC/P-R)
+        (usb_base / "1-2").mkdir(parents=True)
+        (usb_base / "1-2/idVendor").write_text("04b8\n", encoding="utf-8")
+        (usb_base / "1-2/idProduct").write_text("1135\n", encoding="utf-8")
+        (usb_base / "1-2:1.0").mkdir(parents=True)
+        (usb_base / "1-2:1.0/bInterfaceClass").write_text("07\n", encoding="utf-8")
+        (usb_base / "1-2:1.0/ieee1284_id").write_text(
+            "MFG:EPSON;MDL:L3110 Series;CMD:ESCPL2,BDC,D4;\n", encoding="utf-8"
+        )
+        # 3) Legacy Canon CAPT LBP2900 on arm64
+        (usb_base / "1-3").mkdir(parents=True)
+        (usb_base / "1-3/idVendor").write_text("04a9\n", encoding="utf-8")
+        (usb_base / "1-3/idProduct").write_text("2676\n", encoding="utf-8")
+        (usb_base / "1-3:1.0").mkdir(parents=True)
+        (usb_base / "1-3:1.0/bInterfaceClass").write_text("07\n", encoding="utf-8")
+        (usb_base / "1-3:1.0/ieee1284_id").write_text("MFG:Canon;MDL:LBP2900;CMD:CAPT;\n", encoding="utf-8")
+
+        printers_found = probe_printers(
+            root_dir=fake_sys,
+            host_arch="arm64",
+            installed_packages={"cups", "ipp-usb"},
+            cups_queues={},
+            driverless_uris=[],
+        )
+        assert len(printers_found) == 3, f"Expected 3 USB printers, got {len(printers_found)}"
+        hp_p = next(p for p in printers_found if p.vendor_id == "03f0")
+        assert hp_p.status == "adapter-available" and hp_p.recommended_model == "drv:///sample.drv/pxlmono.ppd"
+        epson_p = next(p for p in printers_found if p.vendor_id == "04b8")
+        assert epson_p.status == "needs-apt" and "printer-driver-escpr" in epson_p.recommended_packages
+        canon_p = next(p for p in printers_found if p.vendor_id == "04a9")
+        assert canon_p.status == "arch-limited" and "arm64" in canon_p.note_vi
+
+        lan_q, lan_uri, lan_mod = build_network_printer_spec("192.168.1.50", "pcl6")
+        assert lan_q == "NidoLAN_192_168_1_50" and lan_uri == "socket://192.168.1.50:9100" and "pxlmono" in lan_mod
         plain_md = render_markdown_to_plain(md_sample)
         assert "**Tên tài liệu:**" not in plain_md and "`v0.13.1`" not in plain_md
         assert "• Tên tài liệu: Biên bản ký số v0.13.1" in plain_md
@@ -2091,7 +2158,156 @@ def run_gtk_app(
 
             stack.add_titled_with_icon(apps_outer, "apps", "Ứng dụng", "system-software-install-symbolic")
 
-            # --- Page 3: Quick NidoAgent & Document Report ---
+            # --- Page 3: Global Printer & Scanner Manager (Adapter-First + APT On-Demand) ---
+            printer_scroll = Gtk.ScrolledWindow()
+            printer_scroll.set_vexpand(True)
+            printer_page = Adw.PreferencesPage()
+            printer_scroll.set_child(printer_page)
+
+            printer_list_group = _make_group(
+                title="Máy in & Máy quét (Adapter-First · Không bloat ISO)",
+                description=(
+                    "Tự động nhận diện IPP Everywhere / AirPrint (kiểu macOS), Universal PCL6/PostScript/RAW "
+                    "(kiểu Windows) và cài đúng driver APT theo dòng máy qua nido-pkg-helper."
+                ),
+            )
+            printer_status_row = _make_plain_row(
+                Adw.ActionRow(),
+                "Đang quét thiết bị máy in USB & mạng LAN...",
+                "Nhấn Làm mới sau khi cắm cáp USB hoặc bật Wi-Fi máy in.",
+            )
+            printer_refresh_btn = Gtk.Button(label="Làm mới", valign=Gtk.Align.CENTER)
+            printer_sys_btn = Gtk.Button(label="Cài đặt Máy in Hệ thống", valign=Gtk.Align.CENTER)
+            printer_sys_btn.connect("clicked", _on_open_panel, "printers")
+            p_hdr_btns = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            p_hdr_btns.append(printer_refresh_btn)
+            p_hdr_btns.append(printer_sys_btn)
+            printer_status_row.add_suffix(p_hdr_btns)
+            printer_list_group.add(printer_status_row)
+
+            printer_dynamic_rows: list[Any] = []
+
+            def _refresh_printers_ui() -> None:
+                printer_refresh_btn.set_sensitive(False)
+
+                def worker() -> None:
+                    detected = probe_printers(host_arch=backend.app_store.host_arch)
+
+                    def _apply() -> bool:
+                        printer_refresh_btn.set_sensitive(True)
+                        for old in printer_dynamic_rows:
+                            printer_list_group.remove(old)
+                        printer_dynamic_rows.clear()
+
+                        if not detected:
+                            printer_status_row.set_title("Chưa phát hiện máy in USB hoặc mạng LAN")
+                            printer_status_row.set_subtitle(
+                                "Cắm máy in USB (hỗ trợ ipp-usb tự động) hoặc thêm máy in IP bên dưới."
+                            )
+                            return False
+
+                        printer_status_row.set_title(f"Phát hiện {len(detected)} máy in / hàng đợi")
+                        printer_status_row.set_subtitle(
+                            "Ưu tiên Adapter không cần driver trước; chỉ tải gói APT khi dòng máy yêu cầu."
+                        )
+                        for pr in detected:
+                            sub_txt = f"{pr.adapter_label} — {pr.note_vi}"
+                            p_row = _make_plain_row(Adw.ActionRow(), pr.name, sub_txt)
+                            if pr.status == "needs-apt" and pr.recommended_packages:
+                                pkgs_list = list(pr.recommended_packages)
+                                act_b = Gtk.Button(label="Cài Driver APT", valign=Gtk.Align.CENTER)
+                                act_b.add_css_class("suggested-action")
+                                act_b.connect(
+                                    "clicked",
+                                    lambda _b, pl=pkgs_list, pname=pr.name: (
+                                        stack.set_visible_child_name("apps"),
+                                        start_store_operation(
+                                            f"Cài driver {pname}",
+                                            lambda h, cb, p=pl: backend.app_store._run_streaming_helper(
+                                                ["install-apt", *p], h, on_progress=cb
+                                            ),
+                                        ),
+                                    ),
+                                )
+                                p_row.add_suffix(act_b)
+                            elif pr.status == "adapter-available" and pr.uri and pr.recommended_model:
+                                act_b = Gtk.Button(label="Gắn Adapter", valign=Gtk.Align.CENTER)
+                                act_b.add_css_class("suggested-action")
+                                q_default = "".join(c if c.isalnum() or c in "_-" else "_" for c in pr.name).strip("_") or "NidoPrinter"
+                                act_b.connect(
+                                    "clicked",
+                                    lambda _b, qn=q_default[:48], u=pr.uri, m=pr.recommended_model, pn=pr.name: (
+                                        stack.set_visible_child_name("apps"),
+                                        start_store_operation(
+                                            f"Gắn adapter {pn}",
+                                            lambda h, cb, q=qn, uri_v=u, mod_v=m: backend.configure_printer(
+                                                q, uri_v, mod_v, handle=h, on_progress=cb
+                                            ),
+                                        ),
+                                    ),
+                                )
+                                p_row.add_suffix(act_b)
+                            else:
+                                act_b = Gtk.Button(label="Mở Cài đặt", valign=Gtk.Align.CENTER)
+                                act_b.connect("clicked", _on_open_panel, "printers")
+                                p_row.add_suffix(act_b)
+
+                            printer_list_group.add(p_row)
+                            printer_dynamic_rows.append(p_row)
+                        return False
+
+                    GLib.idle_add(_apply)
+
+                threading.Thread(target=worker, daemon=True).start()
+
+            printer_refresh_btn.connect("clicked", lambda _b: _refresh_printers_ui())
+            _refresh_printers_ui()
+
+            lan_printer_group = _make_group(
+                title="Thêm máy in mạng văn phòng (IP / IPP / Socket 9100 / POS)",
+                description="Hỗ trợ máy photocopy văn phòng (Ricoh, Toshiba, Canon, Xerox, HP) bằng Universal Adapter.",
+            )
+            lan_ip_row = _make_plain_row(Adw.EntryRow(), "Địa chỉ IP hoặc IPP URI (vd: 192.168.1.50)")
+            lan_printer_group.add(lan_ip_row)
+
+            adapter_keys = list(UNIVERSAL_ADAPTER_MODELS.keys())
+            adapter_labels = Gtk.StringList.new([UNIVERSAL_ADAPTER_MODELS[k][0] for k in adapter_keys])
+            lan_adapter_row = _make_plain_row(Adw.ComboRow(model=adapter_labels), "Chọn Adapter")
+            lan_adapter_row.set_selected(0)
+            lan_printer_group.add(lan_adapter_row)
+
+            lan_add_row = _make_plain_row(
+                Adw.ActionRow(),
+                "Tạo hàng đợi in qua mạng",
+                "Sử dụng Universal Adapter có sẵn trong hệ thống — không cần tải driver ngoài.",
+            )
+            lan_add_btn = Gtk.Button(label="Thêm máy in", valign=Gtk.Align.CENTER)
+            lan_add_btn.add_css_class("suggested-action")
+
+            def _on_add_lan_printer(_btn: Gtk.Button) -> None:
+                host_val = lan_ip_row.get_text().strip()
+                idx = int(lan_adapter_row.get_selected())
+                akey = adapter_keys[idx] if 0 <= idx < len(adapter_keys) else "everywhere"
+                try:
+                    qn, quri, qmod = build_network_printer_spec(host_val, akey)
+                except ValueError as exc:
+                    _add_toast(toast_overlay, str(exc))
+                    return
+                stack.set_visible_child_name("apps")
+                start_store_operation(
+                    f"Thêm máy in {qn}",
+                    lambda h, cb: backend.configure_printer(qn, quri, qmod, handle=h, on_progress=cb),
+                )
+
+            lan_add_btn.connect("clicked", _on_add_lan_printer)
+            lan_add_row.add_suffix(lan_add_btn)
+            lan_printer_group.add(lan_add_row)
+
+            printer_page.add(printer_list_group)
+            printer_page.add(lan_printer_group)
+            stack.add_titled_with_icon(printer_scroll, "printers", "Máy in", "printer-symbolic")
+
+            # --- Page 4: Quick NidoAgent & Document Report ---
             agent_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
             agent_box.set_margin_top(16)
             agent_box.set_margin_bottom(16)
@@ -2689,7 +2905,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="NidoHub Desktop")
     parser.add_argument(
         "--page",
-        choices=("welcome", "apps", "agent"),
+        choices=("welcome", "apps", "printers", "agent"),
         default="welcome",
         help="Initial NidoHub tab to open",
     )

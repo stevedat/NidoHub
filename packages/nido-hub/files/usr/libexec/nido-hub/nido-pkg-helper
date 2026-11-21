@@ -382,6 +382,11 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("ensure-flathub")
 
+    p_cp = sub.add_parser("configure-printer")
+    p_cp.add_argument("--name", required=True)
+    p_cp.add_argument("--uri", required=True)
+    p_cp.add_argument("--model", required=True)
+
     args = parser.parse_args(argv)
 
     try:
@@ -558,6 +563,51 @@ def main(argv: list[str] | None = None) -> int:
             )
             if res.returncode == 0:
                 emit_progress("done", 100, False, "Đã sẵn sàng Flathub.")
+            else:
+                print((res.stderr or res.stdout).strip(), file=sys.stderr)
+            return res.returncode
+
+        if args.action == "configure-printer":
+            q_name = args.name.strip()
+            q_uri = args.uri.strip()
+            q_model = args.model.strip()
+            if not re.match(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$", q_name):
+                raise ValueError(f"Tên hàng đợi máy in không hợp lệ: {q_name!r}")
+            if not q_uri.startswith(("ipp://", "ipps://", "usb://", "socket://", "lpd://", "dnssd://")) or any(
+                c.isspace() for c in q_uri
+            ):
+                raise ValueError(f"URI máy in không hợp lệ: {q_uri!r}")
+            if ".." in q_model or not re.match(r"^[A-Za-z0-9._:/+-]{3,160}$", q_model):
+                raise ValueError(f"Adapter/PPD máy in không hợp lệ: {q_model!r}")
+            if args.dry_run:
+                emit_progress(
+                    "done",
+                    100,
+                    False,
+                    f"Dry-run OK: configure-printer {q_name} -> {q_uri} ({q_model})",
+                )
+                return 0
+            emit_progress("printer", 30, True, "Đang kích hoạt dịch vụ in CUPS & IPP-USB...")
+            systemctl = shutil.which("systemctl")
+            if systemctl:
+                for svc in ("cups", "avahi-daemon", "ipp-usb"):
+                    subprocess.run(
+                        [systemctl, "enable", "--now", svc],
+                        capture_output=True,
+                        check=False,
+                    )
+            lpadmin = shutil.which("lpadmin")
+            if not lpadmin:
+                raise RuntimeError("Không tìm thấy lệnh lpadmin (gói cups).")
+            emit_progress("printer", 70, False, f"Đang gắn adapter {q_model} cho {q_name}...")
+            res = subprocess.run(
+                [lpadmin, "-p", q_name, "-E", "-v", q_uri, "-m", q_model],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if res.returncode == 0:
+                emit_progress("done", 100, False, f"Đã cấu hình máy in {q_name} thành công.")
             else:
                 print((res.stderr or res.stdout).strip(), file=sys.stderr)
             return res.returncode
