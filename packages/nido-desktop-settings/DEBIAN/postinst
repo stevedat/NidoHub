@@ -35,6 +35,29 @@ if [ -f /usr/lib/systemd/system/nido-installer-fonts.service ]; then
     /etc/systemd/system/graphical.target.wants/nido-installer-fonts.service
 fi
 
+# Mask gnome-initial-setup & update-notifier popups on upgraded installs too
+mkdir -p /etc/systemd/user
+for usr_unit in \
+  gnome-initial-setup-first-login.service \
+  gnome-initial-setup-upgrade-login.service \
+  gnome-initial-setup-copy-worker.service \
+  update-notifier-crash.path \
+  update-notifier-crash.service \
+  update-notifier-livepatch.path \
+  update-notifier-livepatch.service \
+  update-notifier-release.path \
+  update-notifier-release.service; do
+  ln -snf /dev/null "/etc/systemd/user/${usr_unit}"
+done
+
+if [ -f /etc/update-manager/release-upgrades ]; then
+  if grep -q '^Prompt=' /etc/update-manager/release-upgrades; then
+    sed -i 's/^Prompt=.*/Prompt=never/' /etc/update-manager/release-upgrades || true
+  else
+    printf '\nPrompt=never\n' >> /etc/update-manager/release-upgrades
+  fi
+fi
+
 if command -v fc-cache >/dev/null 2>&1; then
   fc-cache -rf >/dev/null 2>&1 || true
 fi

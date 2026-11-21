@@ -645,6 +645,34 @@ class NidoHubBackend:
         return res.returncode == 0, output.strip()
 
 
+ALLOWED_SETTINGS_PANELS = frozenset({"online-accounts", "users", "system", "about"})
+
+
+def build_settings_panel_argv(panel: str) -> list[str]:
+    """Build a safe argv list to open an allowlisted GNOME Settings panel."""
+    if panel not in ALLOWED_SETTINGS_PANELS:
+        raise ValueError(f"Unsupported settings panel: {panel!r}")
+    gcc = shutil.which("gnome-control-center")
+    if not gcc:
+        raise FileNotFoundError("Không tìm thấy Cài đặt hệ thống (gnome-control-center).")
+    return [gcc, panel]
+
+
+def launch_settings_panel(panel: str) -> tuple[bool, str]:
+    """Open an allowlisted GNOME Settings panel in a detached process."""
+    try:
+        argv = build_settings_panel_argv(panel)
+        subprocess.Popen(
+            argv,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        return True, f"Đã mở Cài đặt ({panel})."
+    except Exception as exc:
+        return False, str(exc)
+
+
 def run_self_test() -> int:
     with tempfile.TemporaryDirectory(prefix="nidohub-selftest-") as tmp:
         root = Path(tmp)
@@ -1038,6 +1066,14 @@ def run_self_test() -> int:
         blocks_md = parse_markdown_blocks(md_sample)
         assert blocks_md[0]["type"] == "heading" and blocks_md[0]["level"] == 2
         assert any(b["type"] == "bullet" and b["level"] == 1 and b["glyph"] == "◦" for b in blocks_md)
+
+        # Verify allowlisted GNOME Settings panel launcher guard
+        try:
+            build_settings_panel_argv("../../evil")
+            raise AssertionError("Expected ValueError for disallowed settings panel")
+        except ValueError:
+            pass
+        assert {"online-accounts", "users"}.issubset(ALLOWED_SETTINGS_PANELS)
         plain_md = render_markdown_to_plain(md_sample)
         assert "**Tên tài liệu:**" not in plain_md and "`v0.13.1`" not in plain_md
         assert "• Tên tài liệu: Biên bản ký số v0.13.1" in plain_md
@@ -1688,6 +1724,41 @@ def run_gtk_app(
                 ollama_group.add(m_row)
                 ollama_model_btns.append((mid, m_btn))
 
+            cloud_accounts_group = _make_group(
+                title="4. Tài khoản Email, Đám mây & Người dùng hệ thống (Geary Mail · Files)",
+                description=(
+                    "Khác với Tài khoản AI ở trên: đăng nhập Google, Microsoft 365 hoặc Nextcloud tại đây "
+                    "để tự động đồng bộ hộp thư Geary Mail và ổ đĩa đám mây trong Files."
+                ),
+            )
+
+            def _on_open_panel(_btn: Any, panel: str) -> None:
+                ok_open, msg_open = launch_settings_panel(panel)
+                if not ok_open:
+                    _add_toast(toast_overlay, msg_open)
+
+            goa_row = _make_plain_row(
+                Adw.ActionRow(),
+                "Tài khoản trực tuyến (Google / Microsoft / Nextcloud)",
+                "Kết nối 1 chạm cho Geary Mail, Google Drive, OneDrive & Lịch",
+            )
+            goa_btn = Gtk.Button(label="Mở Tài khoản trực tuyến", valign=Gtk.Align.CENTER)
+            goa_btn.connect("clicked", _on_open_panel, "online-accounts")
+            goa_row.add_suffix(goa_btn)
+            goa_row.set_activatable_widget(goa_btn)
+            cloud_accounts_group.add(goa_row)
+
+            users_row = _make_plain_row(
+                Adw.ActionRow(),
+                "Tài khoản người dùng hệ thống",
+                "Quản lý mật khẩu đăng nhập máy, ảnh đại diện & thêm người dùng",
+            )
+            users_btn = Gtk.Button(label="Quản lý người dùng", valign=Gtk.Align.CENTER)
+            users_btn.connect("clicked", _on_open_panel, "users")
+            users_row.add_suffix(users_btn)
+            users_row.set_activatable_widget(users_btn)
+            cloud_accounts_group.add(users_row)
+
             refresh_agents_btn = Gtk.Button(label="Làm mới toàn bộ trạng thái AI")
             refresh_agents_btn.add_css_class("pill")
             refresh_agents_btn.set_halign(Gtk.Align.CENTER)
@@ -1701,6 +1772,7 @@ def run_gtk_app(
             ai_page.add(btn_group)
             ai_page.add(agents_group)
             ai_page.add(ollama_group)
+            ai_page.add(cloud_accounts_group)
             ai_page.add(agents_refresh_group)
             ai_box.append(ai_page)
             stack.add_titled_with_icon(ai_box, "welcome", "Thiết lập AI", "preferences-system-symbolic")
@@ -1818,7 +1890,7 @@ def run_gtk_app(
                 title="Tình trạng hệ thống & Cập nhật độc lập",
                 description=(
                     f"Kiến trúc: {maint_status['hostArch']} ({maint_status['codename']}) · "
-                    f"Bảo mật Ubuntu: {sec_txt} · Firmware: {fw_txt}."
+                    f"Vá bảo mật hệ thống: {sec_txt} · Firmware: {fw_txt}."
                 ),
             )
             apps_page.add(maint_group)

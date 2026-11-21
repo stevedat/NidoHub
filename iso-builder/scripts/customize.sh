@@ -247,7 +247,14 @@ step_customize() {
     test -f /usr/share/desktop-provision/slides/1/slide_vi_VN.html
     test -f /usr/share/ubuntu-nido/skills/ubuntu-nido-email/SKILL.md
     test -f /usr/local/share/applications/thunderbird_thunderbird.desktop
+    test -f /usr/local/share/applications/gnome-initial-setup.desktop
+    test -f /etc/skel/.config/gnome-initial-setup-done
     test ! -e /usr/share/applications/gnome-ubuntu-panel.desktop
+    test ! -e /etc/xdg/autostart/update-notifier.desktop
+    test ! -e /etc/xdg/autostart/ubuntu-advantage-notification.desktop
+    test -L /etc/systemd/user/gnome-initial-setup-first-login.service
+    test -L /etc/systemd/user/update-notifier-release.path
+    grep -q "^Prompt=never$" /etc/update-manager/release-upgrades
     test -f /etc/xdg/autostart/ubuntu-nido-ime-sync.desktop
     grep -q "vielotus-vni" /etc/dconf/db/local.d/00-ubuntu-nido-settings
     grep -q "accent-color='\''teal'\''" /etc/dconf/db/local.d/00-ubuntu-nido-settings

@@ -40,6 +40,7 @@ for hidden_desktop in \
   software-properties-livepatch.desktop \
   update-manager.desktop \
   apport-gtk.desktop \
+  gnome-initial-setup.desktop \
   ubuntu-report-on-upgrade.desktop \
   ibus-setup-Unikey.desktop \
   ibus-setup-hangul.desktop \

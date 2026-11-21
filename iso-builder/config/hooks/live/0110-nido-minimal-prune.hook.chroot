@@ -96,16 +96,24 @@ if [ -e /usr/share/applications/gnome-ubuntu-panel.desktop ]; then
   rm -f /usr/share/applications/gnome-ubuntu-panel.desktop
 fi
 
-# Disable Ubuntu Pro, Ubuntu Insights, Ubuntu Report, Whoopsie, and Apport services
+# Disable Ubuntu Pro, Ubuntu Insights, Ubuntu Report, Whoopsie, Apport,
+# gnome-initial-setup (clashes with NidoHub onboarding), and update-notifier popups
 # (preserves ubuntu-desktop-minimal, unattended-upgrades security updates, and fwupd).
-if [ -e /usr/share/dbus-1/system-services/com.canonical.UbuntuAdvantage.service ]; then
-  if ! dpkg-divert --list /usr/share/dbus-1/system-services/com.canonical.UbuntuAdvantage.service 2>/dev/null | grep -q UbuntuAdvantage; then
-    dpkg-divert --local --rename \
-      --divert /usr/share/dbus-1/system-services/com.canonical.UbuntuAdvantage.service.nido-disabled \
-      --add /usr/share/dbus-1/system-services/com.canonical.UbuntuAdvantage.service >/dev/null 2>&1 || true
+for divert_path in \
+  /usr/share/dbus-1/system-services/com.canonical.UbuntuAdvantage.service \
+  /etc/xdg/autostart/gnome-initial-setup-first-login.desktop \
+  /etc/xdg/autostart/gnome-initial-setup-copy-worker.desktop \
+  /etc/xdg/autostart/update-notifier.desktop \
+  /etc/xdg/autostart/ubuntu-advantage-notification.desktop; do
+  if [ -e "$divert_path" ]; then
+    if ! dpkg-divert --list "$divert_path" 2>/dev/null | grep -q "$(basename "$divert_path")"; then
+      dpkg-divert --local --rename \
+        --divert "${divert_path}.nido-disabled" \
+        --add "$divert_path" >/dev/null 2>&1 || true
+    fi
+    rm -f "$divert_path"
   fi
-  rm -f /usr/share/dbus-1/system-services/com.canonical.UbuntuAdvantage.service
-fi
+done
 
 mkdir -p /etc/systemd/system /etc/systemd/user
 for sys_unit in \
@@ -121,6 +129,15 @@ for sys_unit in \
 done
 
 for usr_unit in \
+  gnome-initial-setup-first-login.service \
+  gnome-initial-setup-upgrade-login.service \
+  gnome-initial-setup-copy-worker.service \
+  update-notifier-crash.path \
+  update-notifier-crash.service \
+  update-notifier-livepatch.path \
+  update-notifier-livepatch.service \
+  update-notifier-release.path \
+  update-notifier-release.service \
   ubuntu-insights-collect.timer \
   ubuntu-insights-upload.timer \
   ubuntu-insights-collect.service \
@@ -128,11 +145,27 @@ for usr_unit in \
   ubuntu-report.path \
   ubuntu-report.service; do
   ln -snf /dev/null "/etc/systemd/user/${usr_unit}"
-  rm -f "/etc/systemd/user/default.target.wants/${usr_unit}" 2>/dev/null || true
+  rm -f \
+    "/etc/systemd/user/default.target.wants/${usr_unit}" \
+    "/etc/systemd/user/gnome-session.target.wants/${usr_unit}" \
+    "/etc/systemd/user/graphical-session.target.wants/${usr_unit}" \
+    "/etc/systemd/user/graphical-session-pre.target.wants/${usr_unit}" 2>/dev/null || true
 done
 
 if [ -f /etc/default/apport ]; then
   sed -i 's/^enabled=.*/enabled=0/' /etc/default/apport || true
+fi
+
+# Prevent Ubuntu non-LTS release upgrade prompts (updates flow via NidoHub + unattended-upgrades)
+if [ -f /etc/update-manager/release-upgrades ]; then
+  if grep -q '^Prompt=' /etc/update-manager/release-upgrades; then
+    sed -i 's/^Prompt=.*/Prompt=never/' /etc/update-manager/release-upgrades || true
+  else
+    printf '\nPrompt=never\n' >> /etc/update-manager/release-upgrades
+  fi
+else
+  mkdir -p /etc/update-manager
+  printf '[DEFAULT]\nPrompt=never\n' > /etc/update-manager/release-upgrades
 fi
 
 # Ensure Geary is the default email handler instead of Thunderbird
