@@ -80,6 +80,7 @@ show-volumes=false
 sources=[('ibus', 'vielotus'), ('ibus', 'vielotus-vni'), ('xkb', 'us')]
 mru-sources=[('ibus', 'vielotus'), ('xkb', 'us'), ('ibus', 'vielotus-vni')]
 per-window=false
+show-all-sources=true
 
 [org/gnome/desktop/wm/keybindings]
 switch-input-source=['<Super>space']

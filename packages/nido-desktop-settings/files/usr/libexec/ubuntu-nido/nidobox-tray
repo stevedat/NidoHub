@@ -27,7 +27,10 @@ MENU_PATH = "/MenuBar"
 WATCHER_BUS = "org.kde.StatusNotifierWatcher"
 WATCHER_PATH = "/StatusNotifierWatcher"
 WATCHER_IFACE = "org.kde.StatusNotifierWatcher"
-ICON_THEME_PATH = "/usr/share/icons/hicolor"
+# Empty SNI IconThemePath lets ubuntu-appindicators use system Gio.ThemedIcon search path (/usr/share/icons),
+# avoiding a bogus hicolor/hicolor lookup that falls back to image-loading-symbolic ("...").
+SNI_ICON_THEME_PATH = ""
+DBUSMENU_ICON_THEME_PATHS = ["/usr/share/icons"]
 ICON_NAME = "nidobox-symbolic"
 
 # Omit Activate so ubuntu-appindicators sets supportsActivation=false and opens
@@ -569,7 +572,7 @@ def run_tray() -> int:
         if prop == "WindowId":
             return GLib.Variant("i", 0)
         if prop == "IconThemePath":
-            return GLib.Variant("s", ICON_THEME_PATH)
+            return GLib.Variant("s", SNI_ICON_THEME_PATH)
         if prop == "Menu":
             return GLib.Variant("o", MENU_PATH)
         if prop == "ItemIsMenu":
@@ -622,7 +625,7 @@ def run_tray() -> int:
         if prop == "Status":
             return GLib.Variant("s", "normal")
         if prop == "IconThemePath":
-            return GLib.Variant("as", [ICON_THEME_PATH])
+            return GLib.Variant("as", DBUSMENU_ICON_THEME_PATHS)
         return None
 
     def _menu_method_call(
@@ -778,6 +781,8 @@ def run_self_test() -> int:
     assert "Activate" not in sni_methods, "Activate must be omitted for instant single-click menu"
     assert {"SecondaryActivate", "XAyatanaSecondaryActivate", "ProvideXdgActivationToken"} <= sni_methods
     assert {"ItemIsMenu", "IconName", "IconThemePath", "IconPixmap", "Menu", "ToolTip"} <= sni_props
+    assert SNI_ICON_THEME_PATH == "", "SNI IconThemePath must be empty so GNOME searches /usr/share/icons/hicolor"
+    assert "/usr/share/icons/hicolor" not in DBUSMENU_ICON_THEME_PATHS, DBUSMENU_ICON_THEME_PATHS
 
     menu_root = ET.fromstring(DBUSMENU_XML)
     menu_iface = menu_root.find("interface")

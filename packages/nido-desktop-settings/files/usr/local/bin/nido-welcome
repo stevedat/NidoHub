@@ -79,10 +79,6 @@ fix_live_installer_shortcuts() {
 
 fix_live_installer_shortcuts
 
-if [[ -x /usr/libexec/ubuntu-nido/ensure-vietnamese-ime ]]; then
-  /usr/libexec/ubuntu-nido/ensure-vietnamese-ime >/dev/null 2>&1 &
-fi
-
 if command -v nidoagent >/dev/null 2>&1; then
   nidoagent skills sync >/dev/null 2>&1 &
 fi

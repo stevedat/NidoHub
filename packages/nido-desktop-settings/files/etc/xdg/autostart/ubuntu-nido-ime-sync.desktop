@@ -9,5 +9,5 @@ Icon=vielotus
 Terminal=false
 NoDisplay=true
 X-GNOME-Autostart-enabled=true
-X-GNOME-Autostart-Delay=2
+X-GNOME-Autostart-Delay=3
 OnlyShowIn=GNOME;

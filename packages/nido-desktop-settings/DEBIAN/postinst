@@ -29,6 +29,16 @@ if [ -d /etc/dconf/db/gdm.d ] && command -v dconf >/dev/null 2>&1; then
   dconf compile /etc/dconf/db/gdm /etc/dconf/db/gdm.d >/dev/null 2>&1 || dconf update >/dev/null 2>&1 || true
 fi
 
+# Disable vendor vielotus-onboard autostart so only NidoOS ensure-vietnamese-ime binds GNOME sources cleanly
+if [ -e /etc/xdg/autostart/vielotus-onboard.desktop ]; then
+  if ! dpkg-divert --list /etc/xdg/autostart/vielotus-onboard.desktop 2>/dev/null | grep -q vielotus-onboard.desktop; then
+    dpkg-divert --local --rename \
+      --divert /etc/xdg/autostart/vielotus-onboard.desktop.nido-disabled \
+      --add /etc/xdg/autostart/vielotus-onboard.desktop >/dev/null 2>&1 || true
+  fi
+  rm -f /etc/xdg/autostart/vielotus-onboard.desktop
+fi
+
 if [ -f /usr/lib/systemd/system/nido-installer-fonts.service ]; then
   mkdir -p /etc/systemd/system/graphical.target.wants
   ln -snf /usr/lib/systemd/system/nido-installer-fonts.service \

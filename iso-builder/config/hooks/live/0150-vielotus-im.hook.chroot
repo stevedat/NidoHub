@@ -51,17 +51,28 @@ SMART_BILINGUAL=true
 MODERN_ORTHOGRAPHY=true
 VLCONF
 
-# Enforce pure IBus across GNOME Wayland & X11 and remove any Fcitx5 skeleton/desktop leftovers
+# Let GNOME Shell Wayland manage org.freedesktop.IBus.session.GNOME.service natively;
+# remove im-config/xinputrc overrides that spawn duplicate conflicting ibus-daemon instances.
 rm -rf /etc/skel/.config/fcitx5 \
+  /etc/skel/.xinputrc \
   /etc/profile.d/ubuntu-nido-fcitx5.sh \
   /etc/xdg/autostart/ubuntu-nido-im-enable.desktop \
   /etc/xdg/autostart/*fcitx*.desktop \
   /usr/share/applications/*fcitx*.desktop
 
 if command -v im-config >/dev/null 2>&1; then
-  im-config -n ibus >/dev/null 2>&1 || true
+  im-config -n default >/dev/null 2>&1 || true
 fi
-printf 'run_im ibus\n' > /etc/skel/.xinputrc
+
+# Prevent upstream vielotus-onboard autostart from racing ensure-vietnamese-ime at login
+if [ -e /etc/xdg/autostart/vielotus-onboard.desktop ]; then
+  if ! dpkg-divert --list /etc/xdg/autostart/vielotus-onboard.desktop 2>/dev/null | grep -q vielotus-onboard.desktop; then
+    dpkg-divert --local --rename \
+      --divert /etc/xdg/autostart/vielotus-onboard.desktop.nido-disabled \
+      --add /etc/xdg/autostart/vielotus-onboard.desktop >/dev/null 2>&1 || true
+  fi
+  rm -f /etc/xdg/autostart/vielotus-onboard.desktop
+fi
 
 if command -v ibus >/dev/null 2>&1; then
   ibus write-cache --system >/dev/null 2>&1 || true
