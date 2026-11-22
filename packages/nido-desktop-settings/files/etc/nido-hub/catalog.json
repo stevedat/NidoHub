@@ -145,6 +145,7 @@
       "category": "social",
       "source": "flatpak",
       "flatpakId": "com.discordapp.Discord",
+      "arches": ["amd64"],
       "description": "Ứng dụng trò chuyện nhóm và gọi thoại Discord qua Flathub."
     },
     {
@@ -153,6 +154,7 @@
       "category": "media",
       "source": "flatpak",
       "flatpakId": "com.spotify.Client",
+      "arches": ["amd64"],
       "description": "Nghe nhạc trực tuyến Spotify qua Flathub."
     },
     {
@@ -161,6 +163,7 @@
       "category": "media",
       "source": "flatpak",
       "flatpakId": "org.blender.Blender",
+      "arches": ["amd64"],
       "description": "Bộ công cụ thiết kế đồ họa 3D mã nguồn mở Blender bản mới nhất từ Flathub."
     }
   ]

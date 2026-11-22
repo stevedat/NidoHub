@@ -1331,6 +1331,20 @@ for pk_file in (
     assert "/usr/share/dbus-1/system-services/org.freedesktop.PackageKit.service" in pk_txt, f"Missing PackageKit D-Bus divert in {pk_file}"
     assert "/etc/apt/apt.conf.d/20packagekit" in pk_txt, f"Missing 20packagekit divert in {pk_file}"
 
+# Verify real catalog.json hides x86_64-only apps on arm64/aarch64 while preserving arm64 apps
+sys.dont_write_bytecode = True
+sys.path.insert(0, str(root / "packages/nido-hub/files/usr/lib/nido-hub"))
+from app_store import NidoAppStore
+real_cat = root / "packages/nido-desktop-settings/files/etc/nido-hub/catalog.json"
+real_vendors = root / "packages/nido-hub/files/usr/share/nido-hub/vendors.json"
+arm64_ids = {it["id"] for it in NidoAppStore(real_cat, real_vendors, host_arch="aarch64").load_catalog_entries(include_arch_probe=False)}
+amd64_ids = {it["id"] for it in NidoAppStore(real_cat, real_vendors, host_arch="amd64").load_catalog_entries(include_arch_probe=False)}
+for x86_only in ("discord-flatpak", "spotify-flatpak", "blender-flatpak"):
+    assert x86_only not in arm64_ids, f"{x86_only} must not be displayed on arm64/aarch64"
+    assert x86_only in amd64_ids, f"{x86_only} should remain available on amd64"
+for arm64_ok in ("core", "firefox-deb", "google-chrome", "brave-browser", "vscode", "docker-ce", "telegram-flatpak"):
+    assert arm64_ok in arm64_ids, f"{arm64_ok} should be displayed on arm64"
+
 unit_txt = (root / "packages/nido-desktop-settings/files/usr/lib/systemd/system/nido-installer-fonts.service").read_text(encoding="utf-8")
 assert "ConditionPathExists=/snap/ubuntu-desktop-bootstrap" in unit_txt, "nido-installer-fonts.service must key off /snap/ubuntu-desktop-bootstrap, not boot=casper"
 assert "ConditionKernelCommandLine=boot=casper" not in unit_txt

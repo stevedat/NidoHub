@@ -64,12 +64,57 @@ FLATPAK_PCT_RE = re.compile(r"(\d{1,3})%")
 
 ProgressCallback = Callable[[int, str, bool], None]
 UrlFetcher = Callable[[str, float], bytes]
+JsonPoster = Callable[[str, dict[str, Any], float], dict[str, Any]]
 
 
 def default_url_fetcher(url: str, timeout: float = 6.0) -> bytes:
     req = urllib.request.Request(url, headers={"User-Agent": "NidoHub-AppStore/1.0"})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return resp.read()
+
+
+def default_json_poster(url: str, payload: dict[str, Any], timeout: float = 5.0) -> dict[str, Any]:
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": "NidoHub-AppStore/1.0",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        data = json.loads(resp.read().decode("utf-8", errors="replace"))
+        return data if isinstance(data, dict) else {}
+
+
+def normalize_arch_name(arch: str) -> str:
+    val = str(arch or "").strip().lower()
+    mapping = {
+        "x86_64": "amd64",
+        "amd64": "amd64",
+        "aarch64": "arm64",
+        "arm64": "arm64",
+        "arm": "armhf",
+        "armhf": "armhf",
+        "i386": "i386",
+        "i686": "i386",
+        "all": "all",
+        "any": "all",
+        "noarch": "all",
+    }
+    return mapping.get(val, val)
+
+
+def is_declared_arch_supported(declared_arches: Any, host_arch: str) -> bool | None:
+    """Evaluate a declared architecture list (Debian or Flatpak names) against ``host_arch``."""
+    if not isinstance(declared_arches, (list, tuple, set)) or not declared_arches:
+        return None
+    norm_host = normalize_arch_name(host_arch)
+    norm_set = {normalize_arch_name(str(a)) for a in declared_arches if str(a).strip()}
+    if not norm_set:
+        return None
+    return "all" in norm_set or norm_host in norm_set
 
 
 def detect_host_arch() -> str:
@@ -178,6 +223,7 @@ class NidoAppStore:
         pkg_helper_path: Path | None = None,
         host_arch: str | None = None,
         url_fetcher: UrlFetcher | None = None,
+        json_poster: JsonPoster | None = None,
     ) -> None:
         self.catalog_path = catalog_path
         self.vendors_path = vendors_path or Path(
@@ -186,10 +232,11 @@ class NidoAppStore:
         self.pkg_helper_path = pkg_helper_path or Path(
             os.environ.get("NIDOHUB_PKG_HELPER", str(PKG_HELPER_DEFAULT))
         )
-        self.host_arch = host_arch or detect_host_arch()
+        self.host_arch = normalize_arch_name(host_arch or detect_host_arch())
         self.flatpak_arch = debian_arch_to_flatpak(self.host_arch)
         self.codename = detect_ubuntu_codename()
         self.url_fetcher = url_fetcher or default_url_fetcher
+        self.json_poster = json_poster or default_json_poster
         self._arch_cache: dict[str, tuple[float, bool | None, str]] = {}
         self._cache_ttl_sec = 300.0
 
@@ -315,23 +362,50 @@ class NidoAppStore:
         self._arch_cache[cache_key] = (now, res[0], res[1])
         return res
 
+    def _cached_arch_support(self, item: dict[str, Any]) -> tuple[bool | None, str] | None:
+        now = time.monotonic()
+        source = item.get("source", "nido-apt")
+        cache_key = ""
+        if source == "vendor-apt" and item.get("vendorId"):
+            cache_key = f"vendor:{item['vendorId']}:{self.host_arch}"
+        elif source == "flatpak" and item.get("flatpakId"):
+            cache_key = f"flatpak:{item['flatpakId']}:{self.flatpak_arch}"
+        if cache_key and cache_key in self._arch_cache:
+            ts, ok_cached, note = self._arch_cache[cache_key]
+            if now - ts < self._cache_ttl_sec and ok_cached is not None:
+                return ok_cached, note
+        return None
+
     def check_item_arch_support(self, item: dict[str, Any]) -> tuple[bool | None, str]:
         source = item.get("source", "nido-apt")
+        live_ok: bool | None = None
+        live_note = f"Kiến trúc hệ thống: {self.host_arch}"
         if source == "vendor-apt" and item.get("vendorId"):
-            return self.probe_vendor_arch_support(str(item["vendorId"]))
-        if source == "flatpak" and item.get("flatpakId"):
-            return self.probe_flathub_arch_support(str(item["flatpakId"]))
-        if source in ("ubuntu-apt", "nido-apt"):
+            live_ok, live_note = self.probe_vendor_arch_support(str(item["vendorId"]))
+        elif source == "flatpak" and item.get("flatpakId"):
+            live_ok, live_note = self.probe_flathub_arch_support(str(item["flatpakId"]))
+        elif source in ("ubuntu-apt", "nido-apt"):
             pkgs = item.get("packages", [])
             if pkgs:
                 avail = self.probe_apt_candidate_available(str(pkgs[0]))
                 if avail is True:
-                    return True, f"Có sẵn gói .deb native cho {self.host_arch}"
-                if avail is False:
-                    return False, f"Không tìm thấy gói .deb trên APT cho {self.host_arch}"
-        return None, f"Kiến trúc hệ thống: {self.host_arch}"
+                    live_ok, live_note = True, f"Có sẵn gói .deb native cho {self.host_arch}"
+                elif avail is False:
+                    live_ok, live_note = False, f"Không tìm thấy gói .deb trên APT cho {self.host_arch}"
 
-    def load_catalog_entries(self, include_arch_probe: bool = False) -> list[dict[str, Any]]:
+        if live_ok is not None:
+            return live_ok, live_note
+
+        declared_ok = is_declared_arch_supported(item.get("arches"), self.host_arch)
+        if declared_ok is False:
+            return False, f"Không hỗ trợ kiến trúc {self.host_arch}"
+        return live_ok, live_note
+
+    def load_catalog_entries(
+        self,
+        include_arch_probe: bool = False,
+        hide_unsupported: bool = True,
+    ) -> list[dict[str, Any]]:
         if not self.catalog_path.is_file():
             return []
         raw = json.loads(self.catalog_path.read_text(encoding="utf-8"))
@@ -353,6 +427,7 @@ class NidoAppStore:
             pkgs = [str(p) for p in entry.get("packages", []) if p]
             flatpak_id = str(entry.get("flatpakId", "")).strip()
             vendor_id = str(entry.get("vendorId", "")).strip()
+            declared_arches = entry.get("arches") if isinstance(entry.get("arches"), list) else []
 
             if source == "flatpak" and flatpak_id:
                 installed = self.is_flatpak_installed(flatpak_id)
@@ -363,6 +438,18 @@ class NidoAppStore:
             arch_note = ""
             if include_arch_probe:
                 arch_supported, arch_note = self.check_item_arch_support(entry)
+            else:
+                cached = self._cached_arch_support(entry)
+                if cached is not None:
+                    arch_supported, arch_note = cached
+                else:
+                    declared_ok = is_declared_arch_supported(declared_arches, self.host_arch)
+                    if declared_ok is False:
+                        arch_supported = False
+                        arch_note = f"Không hỗ trợ kiến trúc {self.host_arch}"
+
+            if hide_unsupported and arch_supported is False and not installed:
+                continue
 
             items.append(
                 {
@@ -375,6 +462,7 @@ class NidoAppStore:
                     "vendorId": vendor_id,
                     "packages": pkgs,
                     "flatpakId": flatpak_id,
+                    "arches": list(declared_arches),
                     "protected": bool(entry.get("protected", source == "nido-apt")),
                     "installed": installed,
                     "archSupported": arch_supported,
@@ -386,20 +474,30 @@ class NidoAppStore:
         return items
 
     def search_packages_native_first(
-        self, query: str, include_flathub: bool = True, limit: int = 12
+        self,
+        query: str,
+        include_flathub: bool = True,
+        limit: int = 12,
+        hide_unsupported: bool = True,
     ) -> list[dict[str, Any]]:
         """Search local catalog, Ubuntu APT (preferred native DEB), then optional Flathub API v2."""
         q = query.strip()
         if not q:
-            return self.load_catalog_entries(include_arch_probe=False)
+            return self.load_catalog_entries(
+                include_arch_probe=False,
+                hide_unsupported=hide_unsupported,
+            )
 
         q_low = q.lower()
         results: list[dict[str, Any]] = []
         seen_keys: set[str] = set()
         curated_ids: set[str] = set()
 
-        # 1. Matching curated entries first (preserving Native-First priority)
-        for item in self.load_catalog_entries(include_arch_probe=False):
+        # 1. Matching curated entries first (preserving Native-First priority & arch filter)
+        for item in self.load_catalog_entries(
+            include_arch_probe=False,
+            hide_unsupported=hide_unsupported,
+        ):
             hay = f"{item['name']} {item['description']} {' '.join(item['packages'])} {item['flatpakId']}".lower()
             if q_low in hay:
                 results.append(item)
@@ -474,28 +572,26 @@ class NidoAppStore:
         # 3. Optional Flathub API v2 live search (ranked strictly after native DEB)
         if include_flathub and len(q) >= 2:
             try:
-                payload = json.dumps({"query": q, "hits_per_page": min(limit, 8)}).encode("utf-8")
-                req = urllib.request.Request(
+                sdata = self.json_poster(
                     f"{FLATHUB_API_BASE}/search",
-                    data=payload,
-                    headers={
-                        "Content-Type": "application/json",
-                        "User-Agent": "NidoHub-AppStore/1.0",
-                    },
-                    method="POST",
+                    {"query": q, "hits_per_page": min(max(limit * 2, 12), 20)},
+                    5.0,
                 )
-                with urllib.request.urlopen(req, timeout=5.0) as resp:
-                    sdata = json.loads(resp.read().decode("utf-8", errors="replace"))
+                added_flathub = 0
+                flathub_cap = min(limit, 8)
                 for hit in sdata.get("hits", []):
                     app_id = str(hit.get("app_id", "")).strip()
                     if not app_id or f"flatpak:{app_id}" in seen_keys:
                         continue
                     seen_keys.add(f"flatpak:{app_id}")
+                    is_installed = self.is_flatpak_installed(app_id)
                     arches = hit.get("arches")
                     arch_ok: bool | None = None
                     arch_note = ""
                     if isinstance(arches, list) and arches:
-                        arch_ok = self.flatpak_arch in arches
+                        arch_ok = is_declared_arch_supported(arches, self.host_arch)
+                        if hide_unsupported and arch_ok is False and not is_installed:
+                            continue
                         arch_note = (
                             f"Hỗ trợ {self.flatpak_arch} trên Flathub"
                             if arch_ok
@@ -512,12 +608,16 @@ class NidoAppStore:
                             "vendorId": "",
                             "packages": [],
                             "flatpakId": app_id,
+                            "arches": list(arches) if isinstance(arches, list) else [],
                             "protected": False,
-                            "installed": self.is_flatpak_installed(app_id),
+                            "installed": is_installed,
                             "archSupported": arch_ok,
                             "archNote": arch_note,
                         }
                     )
+                    added_flathub += 1
+                    if added_flathub >= flathub_cap:
+                        break
             except Exception:
                 pass
 

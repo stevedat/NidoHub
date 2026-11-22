@@ -63,6 +63,7 @@ from app_store import (  # noqa: E402
     SOURCE_LABELS,
     NidoAppStore,
     OperationHandle,
+    normalize_arch_name,
 )
 from markdown_render import (  # noqa: E402
     parse_inline_spans,
@@ -817,8 +818,15 @@ class NidoHubBackend:
         )
         return res.returncode == 0 and "install ok installed" in res.stdout
 
-    def load_catalog_items(self, include_arch_probe: bool = False) -> list[dict[str, Any]]:
-        return self.app_store.load_catalog_entries(include_arch_probe=include_arch_probe)
+    def load_catalog_items(
+        self,
+        include_arch_probe: bool = False,
+        hide_unsupported: bool = True,
+    ) -> list[dict[str, Any]]:
+        return self.app_store.load_catalog_entries(
+            include_arch_probe=include_arch_probe,
+            hide_unsupported=hide_unsupported,
+        )
 
     def install_packages(self, packages: list[str]) -> tuple[bool, str]:
         ok, msg, _ = self.app_store.install_item(
@@ -1143,7 +1151,15 @@ def run_self_test() -> int:
                             "name": "Spotify",
                             "source": "flatpak",
                             "flatpakId": "com.spotify.Client",
+                            "arches": ["amd64"],
                             "description": "Music",
+                        },
+                        {
+                            "id": "telegram",
+                            "name": "Telegram",
+                            "source": "flatpak",
+                            "flatpakId": "org.telegram.desktop",
+                            "description": "Chat",
                         },
                         {
                             "id": "vlc",
@@ -1171,23 +1187,78 @@ def run_self_test() -> int:
                 return b"Origin: Google LLC\nArchitectures: amd64 arm64\nComponents: main\n"
             if "com.spotify.Client" in url:
                 return json.dumps({"arches": ["x86_64"], "download_size": 160_000_000}).encode()
+            if "org.telegram.desktop" in url:
+                return json.dumps({"arches": ["aarch64", "x86_64"], "download_size": 80_000_000}).encode()
             raise RuntimeError(f"Unexpected URL: {url}")
+
+        def mock_flathub_search(_url: str, _payload: dict[str, Any], _timeout: float) -> dict[str, Any]:
+            return {
+                "hits": [
+                    {
+                        "app_id": "com.spotify.Client",
+                        "name": "Spotify",
+                        "summary": "Music",
+                        "arches": ["x86_64"],
+                    },
+                    {
+                        "app_id": "dev.diegovsky.Riff",
+                        "name": "Riff",
+                        "summary": "Spotify player for arm64",
+                        "arches": ["x86_64", "aarch64"],
+                    },
+                ]
+            }
 
         store_arm64 = NidoAppStore(
             catalog_path=cat_v2,
             vendors_path=vendors_test,
             host_arch="arm64",
             url_fetcher=mock_fetcher,
+            json_poster=mock_flathub_search,
         )
+        # Pre-probe / offline load immediately hides known x86_64-only apps on arm64
+        instant_arm64 = store_arm64.load_catalog_entries(include_arch_probe=False)
+        assert "spotify" not in [r["id"] for r in instant_arm64], (
+            f"x86_64-only app must be hidden immediately on arm64: {[r['id'] for r in instant_arm64]}"
+        )
+        # Dynamic probe hides unsupported apps by default while preserving Native-First order
         ranked = store_arm64.load_catalog_entries(include_arch_probe=True)
-        # Native-First ordering: nido-apt -> vendor-apt -> ubuntu-apt -> flatpak
-        assert [r["source"] for r in ranked] == ["nido-apt", "vendor-apt", "ubuntu-apt", "flatpak"], (
-            f"Expected Native-First ordering, got {[r['source'] for r in ranked]}"
+        assert [r["id"] for r in ranked] == ["core", "chrome", "vlc", "telegram"], (
+            f"Expected only arm64-supported apps in Native-First order, got {[r['id'] for r in ranked]}"
         )
         chrome_entry = next(r for r in ranked if r["id"] == "chrome")
         assert chrome_entry["archSupported"] is True, "Chrome arm64 must be dynamically detected as supported"
-        spotify_entry = next(r for r in ranked if r["id"] == "spotify")
-        assert spotify_entry["archSupported"] is False, "Spotify x86_64-only must be dynamically detected on aarch64"
+        # Raw diagnostic view still marks x86_64-only app as archSupported=False
+        raw_arm64 = store_arm64.load_catalog_entries(include_arch_probe=True, hide_unsupported=False)
+        spotify_raw = next(r for r in raw_arm64 if r["id"] == "spotify")
+        assert spotify_raw["archSupported"] is False, "Spotify x86_64-only must be dynamically detected on aarch64"
+        # Flathub search on arm64 must hide x86_64-only hits and keep aarch64 hits
+        search_arm64 = store_arm64.search_packages_native_first("spotify", include_flathub=True)
+        search_flatpak_ids = [r["flatpakId"] for r in search_arm64 if r["source"] == "flatpak"]
+        assert "com.spotify.Client" not in search_flatpak_ids, f"x86_64-only Flathub search hit leaked on arm64: {search_flatpak_ids}"
+        assert "dev.diegovsky.Riff" in search_flatpak_ids, f"aarch64 Flathub search hit missing: {search_flatpak_ids}"
+        # Same catalog on amd64 must show Spotify
+        store_amd64 = NidoAppStore(
+            catalog_path=cat_v2,
+            vendors_path=vendors_test,
+            host_arch="amd64",
+            url_fetcher=mock_fetcher,
+            json_poster=mock_flathub_search,
+        )
+        ranked_amd64 = store_amd64.load_catalog_entries(include_arch_probe=True)
+        assert "spotify" in [r["id"] for r in ranked_amd64], "amd64 must display x86_64 apps"
+        # Live probe takes precedence if upstream adds aarch64 support later
+        store_future = NidoAppStore(
+            catalog_path=cat_v2,
+            vendors_path=vendors_test,
+            host_arch="arm64",
+            url_fetcher=lambda u, _t: (
+                json.dumps({"arches": ["x86_64", "aarch64"]}).encode()
+                if "com.spotify.Client" in u
+                else mock_fetcher(u, _t)
+            ),
+        )
+        assert "spotify" in [r["id"] for r in store_future.load_catalog_entries(include_arch_probe=True)]
 
         op_handle = OperationHandle(label="test-op")
         ok_cancel, _ = op_handle.cancel()
@@ -2826,19 +2897,31 @@ def run_gtk_app(
                         title="Cài đặt gói phần mềm (.deb)",
                         description=f"Tệp đã mở: {package_file.name}",
                     )
+                    local_pkg_arch = normalize_arch_name(str(local_pkg_meta.get("arch") or ""))
+                    local_pkg_arch_incompatible = bool(
+                        local_pkg_arch
+                        and local_pkg_arch != "all"
+                        and local_pkg_arch != backend.app_store.host_arch
+                    )
                     pkg_title = (
                         f"{local_pkg_meta['package']} {local_pkg_meta['version']}".strip()
                         + (f" ({local_pkg_meta['arch']})" if local_pkg_meta.get("arch") else "")
                     )
+                    local_summary = (
+                        f"Tệp cài đặt này dành cho {local_pkg_meta['arch']}, không tương thích với máy tính hiện tại ({backend.app_store.host_arch})."
+                        if local_pkg_arch_incompatible
+                        else str(local_pkg_meta.get("summary") or str(package_file))
+                    )
                     local_row = _make_plain_row(
                         Adw.ActionRow(),
                         pkg_title,
-                        str(local_pkg_meta.get("summary") or str(package_file)),
+                        local_summary,
                     )
                     local_pkg_install_btn = Gtk.Button(label="Cài đặt", valign=Gtk.Align.CENTER)
-                    local_pkg_install_btn.add_css_class("suggested-action")
-                    if local_pkg_meta.get("invalid"):
+                    if local_pkg_meta.get("invalid") or local_pkg_arch_incompatible:
                         local_pkg_install_btn.set_sensitive(False)
+                    else:
+                        local_pkg_install_btn.add_css_class("suggested-action")
                     local_row.add_suffix(local_pkg_install_btn)
                     local_pkg_group.add(local_row)
                     apps_page.append(local_pkg_group)
@@ -2876,7 +2959,7 @@ def run_gtk_app(
 
             apps_group = _make_group(
                 title="Kho ứng dụng",
-                description="Ứng dụng được kiểm duyệt và tối ưu cho NidoOS.",
+                description="Chỉ hiển thị các ứng dụng được kiểm duyệt và tương thích với thiết bị này.",
             )
             apps_page.append(apps_group)
 
@@ -2984,6 +3067,8 @@ def run_gtk_app(
                 q_low = search_entry.get_text().strip().lower()
 
                 for item in items_to_show:
+                    if item.get("archSupported") is False and not item.get("installed"):
+                        continue
                     if selected_cat != "all" and item.get("category") != selected_cat:
                         continue
                     if q_low:
@@ -3003,10 +3088,7 @@ def run_gtk_app(
                         label="Cập nhật" if item["installed"] else "Cài đặt",
                         valign=Gtk.Align.CENTER,
                     )
-                    if item.get("archSupported") is False:
-                        act_btn.set_sensitive(False)
-                        act_btn.set_label("Không hỗ trợ arch")
-                    elif not item["installed"]:
+                    if not item["installed"]:
                         act_btn.add_css_class("suggested-action")
 
                     act_btn.connect(
@@ -3036,6 +3118,15 @@ def run_gtk_app(
                     row.add_suffix(btn_box_row)
                     apps_group.add(row)
                     rendered_rows.append(row)
+
+                if not rendered_rows:
+                    empty_row = _make_plain_row(
+                        Adw.ActionRow(),
+                        "Không tìm thấy ứng dụng tương thích",
+                        "Thử từ khóa khác hoặc chọn danh mục Tất cả.",
+                    )
+                    apps_group.add(empty_row)
+                    rendered_rows.append(empty_row)
 
             def reload_catalog_view(query: str = "", online_search: bool = False) -> None:
                 def worker() -> None:
