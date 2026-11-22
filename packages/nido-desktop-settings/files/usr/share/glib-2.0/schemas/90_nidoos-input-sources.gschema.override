@@ -1,0 +1,5 @@
+[org.gnome.desktop.input-sources]
+sources=[('ibus', 'vielotus'), ('ibus', 'vielotus-vni'), ('xkb', 'us')]
+mru-sources=[('ibus', 'vielotus'), ('xkb', 'us'), ('ibus', 'vielotus-vni')]
+per-window=false
+show-all-sources=true

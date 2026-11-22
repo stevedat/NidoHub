@@ -51,6 +51,23 @@ SMART_BILINGUAL=true
 MODERN_ORTHOGRAPHY=true
 VLCONF
 
+# Keep base console/GDM/installer XKB layout on clean US so Sen Viet Telex
+# handles Vietnamese diacritics instead of the legacy XKB 'vn' number-row layout.
+if [ -f /etc/default/keyboard ]; then
+  if grep -Eq '^XKBLAYOUT="?vn"?$' /etc/default/keyboard; then
+    sed -i 's/^XKBLAYOUT=.*/XKBLAYOUT="us"/' /etc/default/keyboard || true
+  fi
+else
+  mkdir -p /etc/default
+  cat > /etc/default/keyboard <<'KBDCONF'
+XKBMODEL="pc105"
+XKBLAYOUT="us"
+XKBVARIANT=""
+XKBOPTIONS=""
+BACKSPACE="guess"
+KBDCONF
+fi
+
 # Let GNOME Shell Wayland manage org.freedesktop.IBus.session.GNOME.service natively;
 # remove im-config/xinputrc overrides that spawn duplicate conflicting ibus-daemon instances.
 rm -rf /etc/skel/.config/fcitx5 \
@@ -80,6 +97,10 @@ fi
 
 if [ -d /etc/dconf/db/local.d ] && command -v dconf >/dev/null 2>&1; then
   dconf compile /etc/dconf/db/local /etc/dconf/db/local.d >/dev/null 2>&1 || dconf update >/dev/null 2>&1 || true
+fi
+
+if [ -d /usr/share/glib-2.0/schemas ] && command -v glib-compile-schemas >/dev/null 2>&1; then
+  glib-compile-schemas /usr/share/glib-2.0/schemas >/dev/null 2>&1 || true
 fi
 
 dpkg -s vielotus >/dev/null

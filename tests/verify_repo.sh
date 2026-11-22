@@ -163,6 +163,7 @@ for fname in expected:
                 "./etc/dconf/profile/gdm",
                 "./etc/dconf/db/local.d/00-ubuntu-nido-settings",
                 "./etc/dconf/db/gdm.d/01-nidoos-logo",
+                "./usr/share/glib-2.0/schemas/90_nidoos-input-sources.gschema.override",
                 "./etc/fonts/conf.d/52-ubuntu-nido-vietnamese.conf",
                 "./usr/share/backgrounds/ubuntu-nido/wallpaper.png",
                 "./usr/share/pixmaps/nidoos-logo.png",
@@ -999,6 +1000,16 @@ for wl_tok in ('accent-color: "#0D9488"', 'nidoos-logo-dark.svg', 'nidoos-logo-l
 
 ime_script = root / "packages/nido-desktop-settings/files/usr/libexec/ubuntu-nido/ensure-vietnamese-ime"
 subprocess.run([sys.executable, str(ime_script), "--self-test"], check=True)
+
+gschema_override = (root / "packages/nido-desktop-settings/files/usr/share/glib-2.0/schemas/90_nidoos-input-sources.gschema.override").read_text(encoding="utf-8")
+for expected_gs in (
+    "[org.gnome.desktop.input-sources]",
+    "sources=[('ibus', 'vielotus'), ('ibus', 'vielotus-vni'), ('xkb', 'us')]",
+    "mru-sources=[('ibus', 'vielotus'), ('xkb', 'us'), ('ibus', 'vielotus-vni')]",
+    "per-window=false",
+    "show-all-sources=true",
+):
+    assert expected_gs in gschema_override, f"Missing expected gschema override line: {expected_gs}"
 
 bind_fonts_script = root / "packages/nido-desktop-settings/files/usr/libexec/ubuntu-nido/bind-installer-fonts"
 subprocess.run(["bash", str(bind_fonts_script), "--self-test"], check=True)

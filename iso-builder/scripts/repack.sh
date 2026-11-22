@@ -147,6 +147,7 @@ repack_layered_live_overlays() {
     dpkg -s geary >/dev/null
     test -f /etc/xdg/autostart/ubuntu-nido-ime-sync.desktop
     grep -q "vielotus-vni" /etc/dconf/db/local.d/00-ubuntu-nido-settings
+    grep -q "vielotus" /usr/share/glib-2.0/schemas/90_nidoos-input-sources.gschema.override
     test -x /usr/bin/nidoai
     test -x /usr/bin/nidoagent
     test -x /usr/bin/nido-hub

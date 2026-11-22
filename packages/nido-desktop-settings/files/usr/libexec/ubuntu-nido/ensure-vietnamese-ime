@@ -1,10 +1,16 @@
 #!/usr/bin/env python3
-"""Ensure Sen Viet (VieLotusIM) Telex + VNI are pre-activated in GNOME Input Sources.
+"""Ensure Sen Viet (VieLotusIM) Telex is pre-activated as default in GNOME.
 
-Runs once per user on desktop login (both Live ISO and installed NidoOS), letting
-GNOME Shell manage IBus natively on Wayland/X11 while preventing Ubuntu Desktop
-Installer (Subiquity), legacy ``im-config``/``.xinputrc`` overrides, or vendor
-auto-onboard scripts from leaving the user without active Vietnamese input.
+Works cleanly on BOTH Live ISO sessions and installed NidoOS systems:
+- Lets GNOME Shell manage ``org.freedesktop.IBus.session.GNOME.service`` natively
+  on Wayland/X11 without spawning duplicate conflicting ``ibus-daemon`` instances.
+- Verifies that Sen Viet Telex (``('ibus', 'vielotus')`` -> ``🇻🇳 tex``) is first
+  in ``sources``, first in ``mru-sources``, and actively bound by GNOME Shell's
+  ``InputSourceManager`` (confirmed via ``ibus engine == 'vielotus'``).
+- On Live ISO sessions, keeps a zero-CPU ``gsettings monitor`` guard so whenever
+  ``ubuntu-desktop-bootstrap`` / Subiquity overwrites ``sources`` to pure XKB
+  (``[('xkb', 'us')]`` or ``[('xkb', 'vn')]``), Sen Viet Telex is immediately
+  restored while never interfering with user ``Super+Space`` switching.
 """
 
 from __future__ import annotations
@@ -15,7 +21,9 @@ import datetime
 import fcntl
 import glob
 import os
+import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -28,7 +36,7 @@ TELEX_SOURCE = ("ibus", "vielotus")
 VNI_SOURCE = ("ibus", "vielotus-vni")
 US_SOURCE = ("xkb", "us")
 IBus_SYSTEMD_UNIT = "org.freedesktop.IBus.session.GNOME.service"
-MARKER_VALUE = "v2:vielotus+vielotus-vni\n"
+MARKER_VALUE = "v3:vielotus-telex-default\n"
 
 DEFAULT_VIELOTUS_CONF = (
     "INPUT_METHOD=telex\n"
@@ -68,7 +76,7 @@ def format_gsettings_sources(sources: list[tuple[str, str]]) -> str:
 def build_target_input_sources(
     existing: list[tuple[str, str]],
 ) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
-    """Return ``(sources, mru_sources)`` with Sen Viet Telex + VNI + English US ready."""
+    """Return ``(sources, mru_sources)`` with Sen Viet Telex default + VNI + English US."""
     extras: list[tuple[str, str]] = []
     for src in existing:
         if src in (TELEX_SOURCE, VNI_SOURCE, US_SOURCE):
@@ -83,6 +91,69 @@ def build_target_input_sources(
     sources = [TELEX_SOURCE, VNI_SOURCE, US_SOURCE, *extras]
     mru_sources = [TELEX_SOURCE, US_SOURCE, VNI_SOURCE, *extras]
     return sources, mru_sources
+
+
+def is_telex_active_default(
+    sources: list[tuple[str, str]],
+    mru_sources: list[tuple[str, str]],
+    active_engine: str | None = None,
+) -> bool:
+    """Return True when Sen Viet Telex is first in sources/MRU and actively bound."""
+    if len(sources) < 2 or sources[0] != TELEX_SOURCE:
+        return False
+    if VNI_SOURCE not in sources or ("xkb", "vn") in sources:
+        return False
+    if mru_sources and mru_sources[0] != TELEX_SOURCE:
+        return False
+    if active_engine is not None and active_engine != "vielotus":
+        return False
+    return True
+
+
+def needs_live_installer_restore(sources: list[tuple[str, str]]) -> bool:
+    """Return True when the Live installer wiped Sen Viet or wrote legacy ``('xkb', 'vn')``."""
+    return TELEX_SOURCE not in sources or ("xkb", "vn") in sources
+
+
+def parse_gsettings_monitor_line(line: str) -> list[tuple[str, str]] | None:
+    """Parse a ``gsettings monitor org.gnome.desktop.input-sources sources`` line."""
+    stripped = (line or "").strip()
+    if not stripped.startswith("sources:"):
+        return None
+    payload = stripped.split(":", 1)[1].strip()
+    return parse_gsettings_sources(payload)
+
+
+def is_live_session(env: dict[str, str] | None = None) -> bool:
+    """Return True when running inside a Live ISO / Casper / bootstrap installer session."""
+    check_env = os.environ if env is None else env
+    override = (check_env.get("NIDO_TEST_LIVE_SESSION") or "").strip()
+    if override == "1":
+        return True
+    if override == "0":
+        return False
+
+    try:
+        cmdline = Path("/proc/cmdline").read_text(encoding="utf-8", errors="replace")
+        if re.search(r"(^|\s)boot=casper(\s|$)", cmdline):
+            return True
+    except OSError:
+        pass
+
+    if (
+        Path("/run/casper").is_dir()
+        or Path("/etc/casper.conf").is_file()
+        or Path("/cdrom/casper").is_dir()
+        or Path("/snap/ubuntu-desktop-bootstrap").is_dir()
+    ):
+        return True
+
+    pgrep = shutil.which("pgrep")
+    if pgrep:
+        res = _run([pgrep, "-f", "ubuntu-desktop-bootstrap"], dict(check_env), timeout=2.0)
+        if res.returncode == 0:
+            return True
+    return False
 
 
 def is_marker_current(marker: Path) -> bool:
@@ -202,15 +273,16 @@ def ensure_vielotus_config(home_dir: Path) -> None:
 
 
 @contextmanager
-def _single_instance_lock() -> Iterator[bool]:
+def _named_lock(filename: str, blocking: bool = False) -> Iterator[bool]:
     runtime_dir = Path(os.environ.get("XDG_RUNTIME_DIR", tempfile.gettempdir()))
     runtime_dir.mkdir(parents=True, exist_ok=True)
-    lock_path = runtime_dir / f"nido-ensure-ime-{os.getuid()}.lock"
+    lock_path = runtime_dir / filename
     fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
     acquired = False
     try:
+        flags = fcntl.LOCK_EX if blocking else (fcntl.LOCK_EX | fcntl.LOCK_NB)
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(fd, flags)
             acquired = True
         except OSError:
             acquired = False
@@ -224,6 +296,14 @@ def _single_instance_lock() -> Iterator[bool]:
         os.close(fd)
 
 
+def _single_instance_lock(blocking: bool = False):
+    return _named_lock(f"nido-ensure-ime-{os.getuid()}.lock", blocking=blocking)
+
+
+def _live_guard_lock():
+    return _named_lock(f"nido-ime-live-guard-{os.getuid()}.lock", blocking=False)
+
+
 def _ibus_has_both(ibus_bin: str, home_dir: Path, env: dict[str, str]) -> bool:
     cur_env = discover_ibus_env(home_dir, env)
     if "IBUS_ADDRESS" not in cur_env:
@@ -233,6 +313,18 @@ def _ibus_has_both(ibus_bin: str, home_dir: Path, env: dict[str, str]) -> bool:
         return False
     engines = {ln.strip().split()[0].rstrip(":") for ln in res.stdout.splitlines() if ln.strip()}
     return "vielotus" in engines and "vielotus-vni" in engines
+
+
+def get_active_ibus_engine(ibus_bin: str | None, home_dir: Path, env: dict[str, str]) -> str:
+    if not ibus_bin:
+        return ""
+    cur_env = discover_ibus_env(home_dir, env)
+    if "IBUS_ADDRESS" not in cur_env:
+        return ""
+    res = _run([ibus_bin, "engine"], cur_env, timeout=3.0)
+    if res.returncode != 0:
+        return ""
+    return (res.stdout or "").strip()
 
 
 def _poll_ibus_until(ibus_bin: str, home_dir: Path, env: dict[str, str], deadline: float) -> bool:
@@ -312,21 +404,137 @@ def refresh_ibus_registry_if_needed(
     return _poll_ibus_until(ibus_bin, home_dir, env, post_deadline), reloaded
 
 
+def _get_gsettings_list(gsettings: str, key: str, env: dict[str, str]) -> tuple[bool, list[tuple[str, str]]]:
+    res = _run([gsettings, "get", "org.gnome.desktop.input-sources", key], env, timeout=4.0)
+    if res.returncode != 0:
+        return False, []
+    return True, parse_gsettings_sources(res.stdout)
+
+
+def _apply_and_verify_telex(
+    gsettings: str,
+    ibus_bin: str | None,
+    home_dir: Path,
+    env: dict[str, str],
+    ibus_visible: bool,
+    force: bool = False,
+    max_attempts: int = 3,
+) -> tuple[bool, list[tuple[str, str]], list[tuple[str, str]], str]:
+    """Bind Sen Viet Telex as the active GNOME input source and verify live activation."""
+    ok_src, cur_sources = _get_gsettings_list(gsettings, "sources", env)
+    if not ok_src:
+        return False, [], [], ""
+    _, cur_mru = _get_gsettings_list(gsettings, "mru-sources", env)
+    active_engine = get_active_ibus_engine(ibus_bin, home_dir, env) if ibus_visible else ""
+
+    _run([gsettings, "set", "org.gnome.desktop.input-sources", "show-all-sources", "true"], env, timeout=4.0)
+    _run([gsettings, "set", "org.gnome.desktop.input-sources", "per-window", "false"], env, timeout=4.0)
+
+    # Zero-flicker fast path when GNOME Shell already has '🇻🇳 tex' active as default
+    if not force and is_telex_active_default(
+        cur_sources,
+        cur_mru,
+        active_engine if (ibus_visible and ibus_bin) else None,
+    ):
+        _, target_mru = build_target_input_sources(cur_sources)
+        if not cur_mru:
+            _run(
+                [gsettings, "set", "org.gnome.desktop.input-sources", "mru-sources", format_gsettings_sources(target_mru)],
+                env,
+                timeout=4.0,
+            )
+            cur_mru = target_mru
+        return True, cur_sources, cur_mru, active_engine
+
+    final_sources = cur_sources
+    final_mru = cur_mru
+    final_engine = active_engine
+
+    for attempt in range(1, max(1, max_attempts) + 1):
+        _, existing = _get_gsettings_list(gsettings, "sources", env)
+        target_sources, target_mru = build_target_input_sources(existing)
+        sources_str = format_gsettings_sources(target_sources)
+        mru_str = format_gsettings_sources(target_mru)
+
+        # Bounce via 1-element [('xkb', 'us')] so GNOME Shell's InputSourceManager._updateMruSources()
+        # sees _mruSources.length === 1 and resets _mruSources to target_sources, activating index 0
+        # (('ibus', 'vielotus') -> '🇻🇳 tex') directly via IBusManager.setEngine('vielotus').
+        _run(
+            [gsettings, "set", "org.gnome.desktop.input-sources", "sources", format_gsettings_sources([US_SOURCE])],
+            env,
+            timeout=4.0,
+        )
+        time.sleep(0.35)
+        _run([gsettings, "set", "org.gnome.desktop.input-sources", "mru-sources", mru_str], env, timeout=4.0)
+        _run([gsettings, "set", "org.gnome.desktop.input-sources", "sources", sources_str], env, timeout=4.0)
+        time.sleep(0.35)
+        _run([gsettings, "set", "org.gnome.desktop.input-sources", "mru-sources", mru_str], env, timeout=4.0)
+        _run([gsettings, "set", "org.gnome.desktop.input-sources", "current", "uint32 0"], env, timeout=4.0)
+
+        # Wait up to 2.0s for GNOME Shell IBusManager to finish binding 'vielotus' natively
+        poll_deadline = time.monotonic() + 2.0
+        verified = False
+        while True:
+            _, final_sources = _get_gsettings_list(gsettings, "sources", env)
+            _, final_mru = _get_gsettings_list(gsettings, "mru-sources", env)
+            final_engine = get_active_ibus_engine(ibus_bin, home_dir, env) if ibus_visible else ""
+            if is_telex_active_default(
+                final_sources,
+                final_mru,
+                final_engine if (ibus_visible and ibus_bin) else None,
+            ):
+                verified = True
+                break
+            if time.monotonic() >= poll_deadline:
+                break
+            time.sleep(0.25)
+
+        if verified:
+            # Brief settle check to catch concurrent startup writers (e.g. gsd-keyboard / Subiquity)
+            time.sleep(0.5)
+            _, final_sources = _get_gsettings_list(gsettings, "sources", env)
+            _, final_mru = _get_gsettings_list(gsettings, "mru-sources", env)
+            final_engine = get_active_ibus_engine(ibus_bin, home_dir, env) if ibus_visible else ""
+            if is_telex_active_default(
+                final_sources,
+                final_mru,
+                final_engine if (ibus_visible and ibus_bin) else None,
+            ):
+                return True, final_sources, final_mru, final_engine
+
+        if attempt < max_attempts:
+            time.sleep(1.0)
+
+    # Last-resort engine switch if GNOME Shell didn't report 'vielotus' within retries
+    if ibus_bin and ibus_visible and final_engine != "vielotus":
+        live_env = discover_ibus_env(home_dir, env)
+        _run([ibus_bin, "engine", "vielotus"], live_env, timeout=4.0)
+        final_engine = get_active_ibus_engine(ibus_bin, home_dir, env)
+
+    return False, final_sources, final_mru, final_engine
+
+
 def _write_diag_log(
     home_dir: Path,
+    live_session: bool,
     ibus_visible: bool,
     reloaded: bool,
     cleaned_xinputrc: bool,
-    final_sources: list[tuple[str, str]],
+    verified: bool,
     marker_written: bool,
+    active_engine: str,
+    final_mru: list[tuple[str, str]],
+    final_sources: list[tuple[str, str]],
 ) -> None:
     try:
         log_dir = home_dir / ".cache" / "ubuntu-nido"
         log_dir.mkdir(parents=True, exist_ok=True)
         ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         line = (
-            f"{ts} ibus_visible={ibus_visible} reloaded={reloaded} "
-            f"cleaned_xinputrc={cleaned_xinputrc} marker_written={marker_written} "
+            f"{ts} live={live_session} ibus_visible={ibus_visible} reloaded={reloaded} "
+            f"cleaned_xinputrc={cleaned_xinputrc} verified={verified} "
+            f"marker_written={marker_written} engine={active_engine or 'none'} "
+            f"mru={format_gsettings_sources(final_mru)} "
             f"sources={format_gsettings_sources(final_sources)}\n"
         )
         (log_dir / "ime-sync.log").write_text(line, encoding="utf-8")
@@ -334,92 +542,193 @@ def _write_diag_log(
         pass
 
 
+def _mark_vielotus_onboarded(home_dir: Path) -> None:
+    try:
+        vl_marker = home_dir / ".config" / "vielotus" / ".onboarded"
+        vl_marker.parent.mkdir(parents=True, exist_ok=True)
+        vl_marker.write_text("ubuntu-nido\n", encoding="utf-8")
+    except OSError:
+        pass
+
+
+def watch_live_session_sources(
+    home_dir: Path,
+    gsettings: str,
+    ibus_bin: str | None,
+    env: dict[str, str],
+) -> None:
+    """Keep Sen Viet Telex intact when Live ISO installer overwrites ``sources``."""
+    with _live_guard_lock() as guard_acquired:
+        if not guard_acquired:
+            return
+
+        proc: subprocess.Popen[str] | None = None
+        stop_requested = False
+
+        def _handle_stop(_signum: int, _frame: object) -> None:
+            nonlocal stop_requested
+            stop_requested = True
+            if proc is not None and proc.poll() is None:
+                try:
+                    proc.terminate()
+                except OSError:
+                    pass
+
+        signal.signal(signal.SIGTERM, _handle_stop)
+        signal.signal(signal.SIGINT, _handle_stop)
+
+        try:
+            proc = subprocess.Popen(
+                [gsettings, "monitor", "org.gnome.desktop.input-sources", "sources"],
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                bufsize=1,
+            )
+        except OSError:
+            return
+
+        ignore_until = 0.0
+
+        def _restore_if_clobbered() -> None:
+            nonlocal ignore_until
+            with _single_instance_lock(blocking=True) as acquired:
+                if not acquired:
+                    return
+                ok_src, latest_sources = _get_gsettings_list(gsettings, "sources", env)
+                if not ok_src or not needs_live_installer_restore(latest_sources):
+                    return
+                ibus_vis = bool(ibus_bin and _ibus_has_both(ibus_bin, home_dir, env))
+                reloaded = False
+                if not ibus_vis:
+                    ibus_vis, reloaded = refresh_ibus_registry_if_needed(
+                        home_dir, env, wait_seconds=4.0
+                    )
+                verified, final_sources, final_mru, final_engine = _apply_and_verify_telex(
+                    gsettings,
+                    ibus_bin,
+                    home_dir,
+                    env,
+                    ibus_visible=ibus_vis,
+                    force=True,
+                    max_attempts=2,
+                )
+                ignore_until = time.monotonic() + 1.5
+                _write_diag_log(
+                    home_dir,
+                    live_session=True,
+                    ibus_visible=ibus_vis,
+                    reloaded=reloaded,
+                    cleaned_xinputrc=False,
+                    verified=verified,
+                    marker_written=False,
+                    active_engine=final_engine,
+                    final_mru=final_mru,
+                    final_sources=final_sources,
+                )
+
+        try:
+            # Close any window between initial sync and monitor attachment
+            _restore_if_clobbered()
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                if stop_requested:
+                    break
+                if time.monotonic() < ignore_until:
+                    continue
+                observed = parse_gsettings_monitor_line(line)
+                if observed is None or not needs_live_installer_restore(observed):
+                    continue
+                # Coalesce back-to-back Subiquity + Flutter gsettings writes
+                time.sleep(0.35)
+                if stop_requested:
+                    break
+                _restore_if_clobbered()
+        finally:
+            if proc is not None and proc.poll() is None:
+                try:
+                    proc.terminate()
+                    proc.wait(timeout=2.0)
+                except (OSError, subprocess.TimeoutExpired):
+                    try:
+                        proc.kill()
+                    except OSError:
+                        pass
+
+
 def sync_gnome_input_sources(
     home_dir: Path,
     force: bool = False,
     wait_seconds: float = 12.0,
+    watch_live: bool = True,
 ) -> bool:
     if not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
         return False
 
+    env = dict(os.environ)
+    live_session = is_live_session(env)
     cfg_dir = home_dir / ".config" / "ubuntu-nido"
     marker = cfg_dir / "ime-telex-vni-ready"
 
-    with _single_instance_lock() as acquired:
+    gsettings = shutil.which("gsettings")
+    ibus_bin = shutil.which("ibus")
+    if not gsettings:
+        return False
+
+    synced_ok = False
+    with _single_instance_lock(blocking=False) as acquired:
         if not acquired:
             return is_marker_current(marker)
 
         cleaned_xinputrc = cleanup_stale_xinputrc(home_dir)
-        if is_marker_current(marker) and not force and not cleaned_xinputrc:
+        if not live_session and is_marker_current(marker) and not force and not cleaned_xinputrc:
             return True
 
-        gsettings = shutil.which("gsettings")
-        if not gsettings:
-            return False
-
-        env = dict(os.environ)
         ensure_vielotus_config(home_dir)
 
         ibus_visible, was_reloaded = refresh_ibus_registry_if_needed(
             home_dir, env, wait_seconds=wait_seconds
         )
 
-        cur_res = _run(
-            [gsettings, "get", "org.gnome.desktop.input-sources", "sources"],
+        verified, final_sources, final_mru, active_engine = _apply_and_verify_telex(
+            gsettings,
+            ibus_bin,
+            home_dir,
             env,
-            timeout=4.0,
+            ibus_visible=ibus_visible,
+            force=force,
+            max_attempts=3,
         )
-        if cur_res.returncode != 0:
-            _write_diag_log(home_dir, ibus_visible, was_reloaded, cleaned_xinputrc, [], False)
-            return False
 
-        existing = parse_gsettings_sources(cur_res.stdout)
-        target_sources, target_mru = build_target_input_sources(existing)
-        sources_str = format_gsettings_sources(target_sources)
-        mru_str = format_gsettings_sources(target_mru)
-
-        # Bounce GNOME Shell input-sources cleanly so IBusManager binds '🇻🇳 tex' / '🇻🇳 vni'
-        _run([gsettings, "set", "org.gnome.desktop.input-sources", "show-all-sources", "true"], env, timeout=4.0)
-        _run([gsettings, "set", "org.gnome.desktop.input-sources", "per-window", "false"], env, timeout=4.0)
-        _run(
-            [gsettings, "set", "org.gnome.desktop.input-sources", "sources", format_gsettings_sources([US_SOURCE])],
-            env,
-            timeout=4.0,
-        )
-        time.sleep(0.25)
-        _run([gsettings, "set", "org.gnome.desktop.input-sources", "mru-sources", mru_str], env, timeout=4.0)
-        _run([gsettings, "set", "org.gnome.desktop.input-sources", "sources", sources_str], env, timeout=4.0)
-        time.sleep(0.25)
-        _run([gsettings, "set", "org.gnome.desktop.input-sources", "mru-sources", mru_str], env, timeout=4.0)
-        _run([gsettings, "set", "org.gnome.desktop.input-sources", "current", "uint32 0"], env, timeout=4.0)
-
-        ibus_bin = shutil.which("ibus")
-        if ibus_bin and ibus_visible:
-            live_env = discover_ibus_env(home_dir, env)
-            _run([ibus_bin, "engine", "vielotus"], live_env, timeout=4.0)
-
-        # Wait briefly before final verification so racing startup writers are caught
-        time.sleep(1.0)
-        verify_res = _run(
-            [gsettings, "get", "org.gnome.desktop.input-sources", "sources"],
-            env,
-            timeout=4.0,
-        )
-        final_sources = parse_gsettings_sources(verify_res.stdout)
         marker_written = False
-        if ibus_visible and TELEX_SOURCE in final_sources and VNI_SOURCE in final_sources:
-            cfg_dir.mkdir(parents=True, exist_ok=True)
-            marker.write_text(MARKER_VALUE, encoding="utf-8")
-            # Mark vendor vielotus-onboard complete too if somehow invoked manually
-            vl_marker = home_dir / ".config" / "vielotus" / ".onboarded"
-            vl_marker.parent.mkdir(parents=True, exist_ok=True)
-            vl_marker.write_text("ubuntu-nido\n", encoding="utf-8")
-            marker_written = True
+        if ibus_visible and verified:
+            _mark_vielotus_onboarded(home_dir)
+            if not live_session:
+                cfg_dir.mkdir(parents=True, exist_ok=True)
+                marker.write_text(MARKER_VALUE, encoding="utf-8")
+                marker_written = True
+            synced_ok = True
+        elif TELEX_SOURCE in final_sources and VNI_SOURCE in final_sources:
+            _mark_vielotus_onboarded(home_dir)
 
         _write_diag_log(
-            home_dir, ibus_visible, was_reloaded, cleaned_xinputrc, final_sources, marker_written
+            home_dir,
+            live_session=live_session,
+            ibus_visible=ibus_visible,
+            reloaded=was_reloaded,
+            cleaned_xinputrc=cleaned_xinputrc,
+            verified=verified,
+            marker_written=marker_written,
+            active_engine=active_engine,
+            final_mru=final_mru,
+            final_sources=final_sources,
         )
-        return marker_written
+
+    if live_session and watch_live:
+        watch_live_session_sources(home_dir, gsettings, ibus_bin, env)
+
+    return synced_ok
 
 
 def run_self_test() -> int:
@@ -444,7 +753,30 @@ def run_self_test() -> int:
     formatted = format_gsettings_sources(s4)
     assert parse_gsettings_sources(formatted) == s4, formatted
 
-    # 6. Stale .xinputrc cleanup, live bus discovery, and versioned marker validation
+    # 6. Telex default verification (sources + MRU + active IBus engine)
+    assert is_telex_active_default(s1, m1, "vielotus") is True
+    assert is_telex_active_default(s1, [], "vielotus") is True
+    assert is_telex_active_default(s1, [("xkb", "us"), ("ibus", "vielotus")], "vielotus") is False
+    assert is_telex_active_default(s1, m1, "xkb:us::eng") is False
+    assert is_telex_active_default([("xkb", "us"), ("ibus", "vielotus"), ("ibus", "vielotus-vni")], m1, "vielotus") is False
+    assert is_telex_active_default([("ibus", "vielotus"), ("xkb", "us")], m1, "vielotus") is False
+    assert is_telex_active_default([("ibus", "vielotus"), ("ibus", "vielotus-vni"), ("xkb", "vn")], m1, "vielotus") is False
+
+    # 7. Live installer clobber detection & monitor line parsing
+    assert is_live_session({"NIDO_TEST_LIVE_SESSION": "1"}) is True
+    assert is_live_session({"NIDO_TEST_LIVE_SESSION": "0"}) is False
+    assert needs_live_installer_restore([("xkb", "us")]) is True
+    assert needs_live_installer_restore([("xkb", "vn")]) is True
+    assert needs_live_installer_restore([]) is True
+    assert needs_live_installer_restore([("ibus", "vielotus"), ("xkb", "vn")]) is True
+    assert needs_live_installer_restore(s1) is False
+    assert needs_live_installer_restore(s4) is False
+    assert parse_gsettings_monitor_line("sources: [('xkb', 'us')]") == [("xkb", "us")]
+    assert parse_gsettings_monitor_line("sources: @a(ss) [('xkb', 'vn')]") == [("xkb", "vn")]
+    assert parse_gsettings_monitor_line("sources: @a(ss) []") == []
+    assert parse_gsettings_monitor_line("mru-sources: [('xkb', 'us')]") is None
+
+    # 8. Stale .xinputrc cleanup, live bus discovery, and v3 versioned marker validation
     with tempfile.TemporaryDirectory() as td:
         tmp_home = Path(td)
         assert cleanup_stale_xinputrc(tmp_home) is False
@@ -487,6 +819,8 @@ def run_self_test() -> int:
         assert is_marker_current(marker) is False
         marker.write_text("vielotus+vielotus-vni\n", encoding="utf-8")
         assert is_marker_current(marker) is False
+        marker.write_text("v2:vielotus+vielotus-vni\n", encoding="utf-8")
+        assert is_marker_current(marker) is False
         marker.write_text(MARKER_VALUE, encoding="utf-8")
         assert is_marker_current(marker) is True
 
@@ -495,8 +829,9 @@ def run_self_test() -> int:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Pre-activate Sen Viet Telex & VNI in GNOME")
+    parser = argparse.ArgumentParser(description="Pre-activate Sen Viet Telex as default in GNOME")
     parser.add_argument("--force", action="store_true", help="Re-apply even if marker exists")
+    parser.add_argument("--once", action="store_true", help="Sync once and exit (skip Live ISO monitor)")
     parser.add_argument("--wait", type=float, default=12.0, help="Max seconds to wait for IBus")
     parser.add_argument("--self-test", action="store_true", help="Run headless unit tests")
     args = parser.parse_args()
@@ -505,7 +840,12 @@ def main() -> int:
         return run_self_test()
 
     home_dir = Path(os.environ.get("HOME", str(Path.home())))
-    sync_gnome_input_sources(home_dir, force=args.force, wait_seconds=args.wait)
+    sync_gnome_input_sources(
+        home_dir,
+        force=args.force,
+        wait_seconds=args.wait,
+        watch_live=not args.once,
+    )
     return 0
 
 

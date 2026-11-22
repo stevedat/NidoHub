@@ -29,6 +29,14 @@ if [ -d /etc/dconf/db/gdm.d ] && command -v dconf >/dev/null 2>&1; then
   dconf compile /etc/dconf/db/gdm /etc/dconf/db/gdm.d >/dev/null 2>&1 || dconf update >/dev/null 2>&1 || true
 fi
 
+if [ -d /usr/share/glib-2.0/schemas ] && command -v glib-compile-schemas >/dev/null 2>&1; then
+  glib-compile-schemas /usr/share/glib-2.0/schemas >/dev/null 2>&1 || true
+fi
+
+if command -v ibus >/dev/null 2>&1; then
+  ibus write-cache --system >/dev/null 2>&1 || true
+fi
+
 # Disable vendor vielotus-onboard autostart so only NidoOS ensure-vietnamese-ime binds GNOME sources cleanly
 if [ -e /etc/xdg/autostart/vielotus-onboard.desktop ]; then
   if ! dpkg-divert --list /etc/xdg/autostart/vielotus-onboard.desktop 2>/dev/null | grep -q vielotus-onboard.desktop; then
