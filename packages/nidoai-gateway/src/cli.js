@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { ensureClientTokenBootstrapped, loadConfig, maskSecret } from './config.js';
 import { runDoctor } from './doctor/doctor.js';
@@ -7,6 +9,58 @@ import { startGatewayServer } from './gateway/server.js';
 import { getRuntimeDiscoveryPath, readRuntimeDiscovery, resolveNidoAiStateDir, } from './runtime-discovery.js';
 function resolveConfigCwd() {
     return process.env.NIDOAI_HOME?.trim() ? resolveNidoAiStateDir() : process.cwd();
+}
+function isOffFlag(val) {
+    const norm = String(val ?? '').trim().toLowerCase();
+    return norm === '0' || norm === 'false' || norm === 'off' || norm === 'no';
+}
+function isAiDisabledByPolicy(stateDir) {
+    if (isOffFlag(process.env.NIDOAI_ENABLED))
+        return true;
+    const xdgConfig = (process.env.XDG_CONFIG_HOME ?? '').trim() || path.join(os.homedir(), '.config');
+    const policyPath = path.join(xdgConfig, 'ubuntu-nido', 'ai-policy.json');
+    if (fs.existsSync(policyPath)) {
+        try {
+            const parsed = JSON.parse(fs.readFileSync(policyPath, 'utf8'));
+            if (parsed && typeof parsed.aiEnabled === 'boolean' && parsed.aiEnabled === false) {
+                return true;
+            }
+        }
+        catch {
+            // ignore malformed ai-policy.json
+        }
+    }
+    const envPath = path.join(stateDir, '.env.local');
+    if (fs.existsSync(envPath)) {
+        try {
+            for (const raw of fs.readFileSync(envPath, 'utf8').split(/\r?\n/)) {
+                const line = raw.trim();
+                if (!line || line.startsWith('#'))
+                    continue;
+                const eq = line.indexOf('=');
+                if (eq > 0 && line.slice(0, eq).trim() === 'NIDOAI_ENABLED') {
+                    if (isOffFlag(line.slice(eq + 1).trim().replace(/^["']|["']$/g, ''))) {
+                        return true;
+                    }
+                }
+            }
+        }
+        catch {
+            // ignore unreadable .env.local
+        }
+    }
+    return false;
+}
+function removeStaleRuntimeDiscovery() {
+    const runtimePath = getRuntimeDiscoveryPath();
+    if (fs.existsSync(runtimePath)) {
+        try {
+            fs.unlinkSync(runtimePath);
+        }
+        catch {
+            // ignore unlink failures
+        }
+    }
 }
 async function main() {
     const cmd = process.argv[2] ?? 'doctor';
@@ -25,6 +79,14 @@ async function main() {
     }
     if (cmd === 'serve') {
         const stateDir = resolveConfigCwd();
+        if (isAiDisabledByPolicy(stateDir)) {
+            removeStaleRuntimeDiscovery();
+            console.log(JSON.stringify({
+                event: 'gateway_disabled',
+                reason: 'AI is disabled by NidoOS policy',
+            }));
+            return;
+        }
         const { config, bootstrapped } = ensureClientTokenBootstrapped(stateDir, {
             useSecretStore: process.env.NIDOAI_SECRET_STORE !== 'file',
         });

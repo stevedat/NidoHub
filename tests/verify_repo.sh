@@ -1360,15 +1360,105 @@ with tempfile.TemporaryDirectory() as wtmp:
     subprocess.run(["bash", str(welcome_script)], env=wenv, check=True)
     assert not sentinel.exists(), "nido-welcome must NOT auto-launch nido-hub during a Live ISO session!"
 
-# 3. Verify nidoagent respects NIDOAI_ENABLED=0 (AI OFF policy)
+# 3. Verify nidoagent respects NIDOAI_ENABLED=0 (AI OFF policy) and unsigned-in preflight guard (zero fetch failed)
 cli_mjs = root / "packages/nidoagent-cli/files/usr/lib/nidoagent-cli/cli.mjs"
-env_off = dict(os.environ, NIDOAI_ENABLED="0")
-st_off = subprocess.run(["node", str(cli_mjs), "status"], env=env_off, capture_output=True, text=True, check=True)
-st_json = json.loads(st_off.stdout)
-assert st_json.get("ok") is True and st_json.get("aiEnabled") is False and st_json.get("aiReady") is False, st_json
-ask_off = subprocess.run(["node", str(cli_mjs), "ask", "Xin chào"], env=env_off, capture_output=True, text=True, check=False)
-assert ask_off.returncode != 0 and "đang TẮT" in ask_off.stderr, (ask_off.returncode, ask_off.stderr)
-print("Verified Vietnamese Fontconfig XML, Sen Viet Telex+VNI sync self-test, and AI OFF CLI guard.")
+nidoai_cli_js = root / "packages/nidoai-gateway/src/cli.js"
+sandbox_empty_home = Path(tempfile.mkdtemp(prefix="nidohub-off-"))
+env_off = dict(
+    os.environ,
+    NIDOAI_ENABLED="0",
+    HOME=str(sandbox_empty_home),
+    XDG_CONFIG_HOME=str(sandbox_empty_home / ".config"),
+    NIDOAI_HOME=str(sandbox_empty_home / ".nidoai"),
+)
+try:
+    os.makedirs(sandbox_empty_home, exist_ok=True)
+    # AI OFF: nidoagent status & ask must refuse cleanly
+    st_off = subprocess.run(["node", str(cli_mjs), "status"], env=env_off, capture_output=True, text=True, check=True)
+    st_json = json.loads(st_off.stdout)
+    assert st_json.get("ok") is True and st_json.get("aiEnabled") is False and st_json.get("aiReady") is False, st_json
+    ask_off = subprocess.run(["node", str(cli_mjs), "ask", "Xin chào"], env=env_off, capture_output=True, text=True, check=False)
+    assert ask_off.returncode != 0 and "đang TẮT" in ask_off.stderr, (ask_off.returncode, ask_off.stderr)
+
+    # AI OFF: nidoai serve with ai-policy.json aiEnabled=false must remove stale runtime.json and exit 0 immediately
+    off_cfg = Path(sandbox_empty_home) / ".config" / "ubuntu-nido"
+    off_state = Path(sandbox_empty_home) / ".nidoai"
+    off_cfg.mkdir(parents=True, exist_ok=True)
+    off_state.mkdir(parents=True, exist_ok=True)
+    (off_cfg / "ai-policy.json").write_text('{"aiEnabled":false,"setupCompleted":true}\n', encoding="utf-8")
+    stale_rt = off_state / "runtime.json"
+    stale_rt.write_text('{"baseUrl":"http://127.0.0.1:18090","clientToken":"stale"}\n', encoding="utf-8")
+    env_policy_off = {
+        k: v for k, v in os.environ.items() if k != "NIDOAI_ENABLED"
+    }
+    env_policy_off.update({
+        "HOME": str(sandbox_empty_home),
+        "XDG_CONFIG_HOME": str(Path(sandbox_empty_home) / ".config"),
+        "NIDOAI_HOME": str(off_state),
+        "NIDOAI_SECRET_STORE": "file",
+    })
+    gw_off = subprocess.run(["node", str(nidoai_cli_js), "serve"], env=env_policy_off, capture_output=True, text=True, check=True, timeout=5)
+    assert "gateway_disabled" in gw_off.stdout and not stale_rt.exists(), (gw_off.stdout, stale_rt.exists())
+
+    # AI ON (no policy disable), but 0 signed-in accounts & no running gateway -> status returns structured JSON (no fetch failed), ask & chat exit cleanly without fetch failed
+    env_unsigned = {
+        k: v for k, v in os.environ.items()
+        if k not in ("NIDOAI_ENABLED", "NIDOAI_BASE_URL", "NIDOAI_GATEWAY_PORT", "NIDOAI_PORT", "NIDOAI_CLIENT_TOKEN")
+    }
+    unsigned_home = Path(sandbox_empty_home) / "unsigned"
+    unsigned_cfg = unsigned_home / ".config"
+    unsigned_nidoai = unsigned_home / ".nidoai"
+    (unsigned_cfg / "ubuntu-nido").mkdir(parents=True, exist_ok=True)
+    unsigned_nidoai.mkdir(parents=True, exist_ok=True)
+    env_unsigned.update({
+        "HOME": str(unsigned_home),
+        "XDG_CONFIG_HOME": str(unsigned_cfg),
+        "NIDOAI_HOME": str(unsigned_nidoai),
+        "NIDOAI_PORT": "18999",
+        "NIDOAI_GATEWAY_PORT": "18999",
+    })
+    st_unsigned = subprocess.run(["node", str(cli_mjs), "status"], env=env_unsigned, capture_output=True, text=True, check=True)
+    st_u = json.loads(st_unsigned.stdout)
+    assert st_u.get("ok") is True and st_u.get("gatewayReady") is False and st_u.get("aiReady") is False, st_u
+    assert "fetch failed" not in (st_unsigned.stdout + st_unsigned.stderr).lower()
+
+    ask_unsigned = subprocess.run(["node", str(cli_mjs), "ask", "--json", "hello"], env=env_unsigned, capture_output=True, text=True, check=False)
+    assert ask_unsigned.returncode != 0
+    ask_u_err = json.loads(ask_unsigned.stderr)
+    assert ask_u_err.get("ok") is False and "chưa đăng nhập" in ask_u_err.get("error", "").lower()
+    assert "fetch failed" not in ask_unsigned.stderr.lower()
+
+    chat_unsigned = subprocess.run(["node", str(cli_mjs), "chat"], input="hello\nexit\n", env=env_unsigned, capture_output=True, text=True, check=False)
+    assert chat_unsigned.returncode != 0
+    assert "chưa đăng nhập" in chat_unsigned.stderr.lower() and "fetch failed" not in chat_unsigned.stderr.lower()
+
+    # Verify SIGTERM to live nidoai serve cleans up runtime.json
+    sig_proc = subprocess.Popen(
+        ["node", str(nidoai_cli_js), "serve"],
+        env={**env_unsigned, "NIDOAI_PORT": "18993", "NIDOAI_SECRET_STORE": "file"},
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    try:
+        sig_rt = unsigned_nidoai / "runtime.json"
+        import time as _t
+        for _ in range(40):
+            if sig_rt.is_file():
+                break
+            _t.sleep(0.1)
+        assert sig_rt.is_file(), "Expected live nidoai serve to write runtime.json"
+        sig_proc.terminate()
+        sig_proc.wait(timeout=5)
+        assert not sig_rt.exists(), "Expected SIGTERM shutdown to remove stale runtime.json"
+    finally:
+        if sig_proc.poll() is None:
+            sig_proc.kill()
+            sig_proc.wait(timeout=3)
+finally:
+    import shutil as _sh
+    _sh.rmtree(sandbox_empty_home, ignore_errors=True)
+print("Verified Vietnamese Fontconfig XML, Sen Viet Telex+VNI sync self-test, AI OFF & unsigned-in guards.")
 PY
 pass "Live nidoai-gateway <-> nidoagent-cli, nido-hub, and nidooffice smoke tests passed"
 

@@ -1022,14 +1022,29 @@ async function cmdStatus() {
         2
       )
     );
-  } catch (err) {
-    console.error(
-      `nidoagent: không kết nối được tới NidoAI Gateway (${healthUrl}): ${
-        err instanceof Error ? err.message : String(err)
-      }`
+  } catch (_err) {
+    const aiReady = signedInAgents.length > 0;
+    console.log(
+      JSON.stringify(
+        {
+          ok: true,
+          version: VERSION,
+          aiEnabled: true,
+          healthUrl,
+          runtimeFound: conn.runtimeFound,
+          tokenConfigured: conn.clientToken.length >= 16,
+          gatewayReady: false,
+          gatewayReachable: false,
+          nidoAccount: localAccount,
+          signedInAgents: signedInAgents.map((a) => a.id),
+          aiReady,
+          capabilities,
+          ...(aiReady ? {} : { setupHint: NOT_SIGNED_IN_AI_MESSAGE }),
+        },
+        null,
+        2
+      )
     );
-    console.error('Gợi ý: chạy `systemctl --user start nidoai-gateway` hoặc `nidoai serve`.');
-    process.exit(1);
   }
 }
 
@@ -1410,16 +1425,47 @@ function readAttachedFile(filePath) {
   ].join('\n');
 }
 
-async function isGatewayReadyFast(conn) {
+async function probeGatewayReadiness(conn) {
+  const explicitOverride = Boolean((process.env.NIDOAI_BASE_URL || '').trim());
   try {
     const res = await fetch(`${conn.baseUrl}/healthz`, { signal: AbortSignal.timeout(1000) });
-    if (!res.ok) return false;
-    const payload = await res.json().catch(() => null);
-    const pb = payload && typeof payload === 'object' ? payload.primaryBackend : null;
-    return Boolean(pb && pb.configured && pb.reachable);
+    if (res.ok) {
+      const payload = await res.json().catch(() => null);
+      const pb = payload && typeof payload === 'object' ? payload.primaryBackend : null;
+      return {
+        reachable: true,
+        configured: Boolean(pb && pb.configured && pb.reachable),
+        customEndpoint: false,
+      };
+    }
+    if (explicitOverride && conn.clientToken && conn.clientToken.length >= 16) {
+      return { reachable: true, configured: true, customEndpoint: true };
+    }
+    return { reachable: false, configured: false, customEndpoint: false };
   } catch {
-    return false;
+    return { reachable: false, configured: false, customEndpoint: false };
   }
+}
+
+async function isGatewayReadyFast(conn) {
+  const probe = await probeGatewayReadiness(conn);
+  return probe.configured;
+}
+
+const NOT_SIGNED_IN_AI_MESSAGE =
+  'Chưa đăng nhập tài khoản AI hoặc chưa có nguồn AI sẵn sàng. Mở NidoHub (`nido-hub --onboarding` hoặc `nido-hub --page welcome`) để đăng nhập Tài khoản Nido, Google/Gemini, ChatGPT, Claude hoặc cấu hình khóa API / Ollama.';
+
+async function ensureAiReadyForExecution(conn) {
+  if (!isAiEnabledByPolicy()) {
+    return { ready: false, message: AI_DISABLED_MESSAGE };
+  }
+  const signedInAgents = readSignedInAgentClis();
+  const nidoAccount = readSanitizedNidoAccount();
+  const gw = await probeGatewayReadiness(conn);
+  if (gw.configured || signedInAgents.length > 0 || (nidoAccount.signedIn && gw.reachable)) {
+    return { ready: true, gw, signedInAgents };
+  }
+  return { ready: false, message: NOT_SIGNED_IN_AI_MESSAGE };
 }
 
 async function sendChatCompletion(conn, messages, options = {}) {
@@ -1462,7 +1508,7 @@ async function sendChatCompletion(conn, messages, options = {}) {
       if (unconfigured) {
         throw new Error(
           `Chưa cấu hình AI sẵn sàng (${msg}).\n` +
-            'Gợi ý thiết lập nhanh (30 giây): chạy `nido-hub --page welcome` để đăng nhập Google Antigravity (Ultra/Pro/Free), dán Google AI Studio GEMINI_API_KEY miễn phí ($0), đăng nhập OpenAI Codex / Claude Code, hoặc tải model cục bộ Ollama.'
+            'Gợi ý thiết lập nhanh (30 giây): chạy `nido-hub --page welcome` để đăng nhập Tài khoản Nido, Google Antigravity (Ultra/Pro/Free), dán Google AI Studio GEMINI_API_KEY miễn phí ($0), đăng nhập OpenAI Codex / Claude Code, hoặc tải model cục bộ Ollama.'
         );
       }
       throw new Error(`Lỗi NidoAI Gateway: ${msg}`);
@@ -1470,6 +1516,11 @@ async function sendChatCompletion(conn, messages, options = {}) {
       if (fallbackAgents.length > 0 && err instanceof TypeError) {
         const cliRes = await executeViaOfficialAgentCli(fallbackAgents[0], messages, options);
         return { ...cliRes, backend: fallbackAgents[0].id, model: options.model || 'default' };
+      }
+      if (err instanceof TypeError) {
+        throw new Error(
+          `Không kết nối được tới NidoAI Gateway (${conn.baseUrl}). Mở NidoHub (\`nido-hub --page welcome\`) để bật Trợ lý AI hoặc đăng nhập tài khoản AI.`
+        );
       }
       throw err;
     }
@@ -1495,9 +1546,6 @@ function emitAskError(message, asJson, exitCode = 1) {
 
 async function cmdAsk(args) {
   const flagJsonEarly = args.includes('--json');
-  if (!isAiEnabledByPolicy()) {
-    emitAskError(AI_DISABLED_MESSAGE, flagJsonEarly, 1);
-  }
   const files = [];
   const promptParts = [];
   let outPath = '';
@@ -1543,6 +1591,12 @@ async function cmdAsk(args) {
     }
   }
 
+  const conn = resolveGatewayConnection();
+  const readiness = await ensureAiReadyForExecution(conn);
+  if (!readiness.ready) {
+    emitAskError(readiness.message, flagJson || flagJsonEarly, 1);
+  }
+
   const prompt = promptParts.join(' ').trim();
   if (!prompt && files.length === 0) {
     emitAskError(
@@ -1571,7 +1625,6 @@ async function cmdAsk(args) {
       ' Khi xuất báo cáo bảng tính (.xlsx), hãy trình bày dữ liệu chính dưới dạng bảng Markdown (| Cột | Giá trị |) để hệ thống trích xuất sang Excel chính xác.';
   }
 
-  const conn = resolveGatewayConnection();
   const outMode = resolveOutputMode(flagPlain, flagRaw);
   const writer = new MarkdownStreamWriter(outMode, (s) => process.stdout.write(s));
   let completion;
@@ -1648,10 +1701,6 @@ async function cmdAsk(args) {
 }
 
 async function cmdChat(args = []) {
-  if (!isAiEnabledByPolicy()) {
-    console.error(AI_DISABLED_MESSAGE);
-    process.exit(1);
-  }
   let model = '';
   let effort = '';
   let flagPlain = false;
@@ -1672,8 +1721,13 @@ async function cmdChat(args = []) {
   const outMode = resolveOutputMode(flagPlain, flagRaw);
 
   const conn = resolveGatewayConnection();
-  const fallbackAgents = readSignedInAgentClis();
-  const gwReady = await isGatewayReadyFast(conn);
+  const readiness = await ensureAiReadyForExecution(conn);
+  if (!readiness.ready) {
+    console.error(readiness.message);
+    process.exit(1);
+  }
+  const fallbackAgents = readiness.signedInAgents || readSignedInAgentClis();
+  const gwReady = Boolean(readiness.gw?.configured);
   const agyAgent = !gwReady ? fallbackAgents.find((a) => a.id === 'agy') : null;
   const warmAgy = agyAgent ? new AgyWarmSession(agyAgent, { model, effort }) : null;
   if (warmAgy) {

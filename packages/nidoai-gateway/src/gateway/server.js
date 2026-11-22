@@ -9,7 +9,7 @@ import { probeLocalBackendReachability } from './live-probe.js';
 import { renderControlPanelHtml } from './ui-html.js';
 import { runDoctor } from '../doctor/doctor.js';
 import { CodexAppServerWorker } from '../agent/codex-worker.js';
-import { getRuntimeDiscoveryPath, readAgentsStatus, resolveNidoAiStateDir, writeRuntimeDiscovery, } from '../runtime-discovery.js';
+import { getRuntimeDiscoveryPath, readAgentsStatus, readRuntimeDiscovery, resolveNidoAiStateDir, writeRuntimeDiscovery, } from '../runtime-discovery.js';
 import { formatSecretStoreLabel } from '../security/secret-store.js';
 const MAX_TEXT_BODY_BYTES = 1_048_576; // 1 MiB for plain text/JSON requests
 const MAX_MULTIMODAL_BODY_BYTES = 4_194_304; // 4 MiB for vision image_url requests
@@ -1514,6 +1514,18 @@ export async function startGatewayServer(initialConfig, options = {}) {
                     if (codexWorker) {
                         await codexWorker.stop();
                         codexWorker = null;
+                    }
+                    if (options.writeRuntimeDiscovery) {
+                        const runtimePath = getRuntimeDiscoveryPath();
+                        const currentDisc = readRuntimeDiscovery();
+                        if (currentDisc && currentDisc.pid === process.pid && fs.existsSync(runtimePath)) {
+                            try {
+                                fs.unlinkSync(runtimePath);
+                            }
+                            catch {
+                                // ignore runtime cleanup error on shutdown
+                            }
+                        }
                     }
                     await new Promise((resClose, rejClose) => {
                         server.close((err) => (err ? rejClose(err) : resClose()));

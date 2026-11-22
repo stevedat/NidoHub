@@ -305,6 +305,13 @@ class NidoHubBackend:
         return payload
 
     def _apply_gateway_service_state(self, active: bool, restart_service: bool = True) -> None:
+        if not active:
+            runtime_file = self.nidoai_dir / "runtime.json"
+            if runtime_file.exists():
+                try:
+                    runtime_file.unlink()
+                except OSError:
+                    pass
         if not restart_service or not shutil.which("systemctl"):
             return
         if active:
@@ -322,6 +329,12 @@ class NidoHubBackend:
                     stderr=subprocess.DEVNULL,
                 )
         else:
+            subprocess.run(
+                ["systemctl", "--user", "disable", "--now", "nidoai-gateway.service"],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
             subprocess.run(
                 ["systemctl", "--user", "stop", "nidoai-gateway.service"],
                 check=False,
@@ -783,12 +796,41 @@ class NidoHubBackend:
             on_progress=on_progress,
         )
 
+    def is_agent_execution_ready(self) -> tuple[bool, str]:
+        if not self.is_ai_enabled():
+            return (
+                False,
+                "Trợ lý AI đang TẮT trên NidoOS. Mở tab Trợ lý AI để bật lại và đăng nhập ít nhất 1 tài khoản AI trước khi chạy tác vụ.",
+            )
+        if os.environ.get("NIDOAGENT_ALLOW_UNCONFIGURED_TEST") == "1":
+            return True, ""
+        nido_acct = self.get_nido_account_status(refresh_quota=False)
+        if nido_acct.get("signedIn"):
+            return True, ""
+        agents_list = self.probe_agent_accounts(persist=False)
+        if any(bool(a.get("signedIn")) for a in agents_list):
+            return True, ""
+        gw_detail = self.probe_gateway_health_detail() or {}
+        if bool((gw_detail.get("primaryBackend") or {}).get("configured")):
+            return True, ""
+        local_info = probe_local_ai_runtimes(self.home_dir)
+        ol = local_info.get("ollama") or {}
+        if bool(ol.get("running")) and bool(local_info.get("installedModels")):
+            return True, ""
+        return (
+            False,
+            "Chưa đăng nhập tài khoản AI hoặc chưa cấu hình nguồn AI sẵn sàng. Vào tab Trợ lý AI để đăng nhập Tài khoản Nido, Google/Gemini, ChatGPT, Claude hoặc cấu hình khóa API / Ollama.",
+        )
+
     def run_agent_task(
         self,
         prompt: str,
         files: list[str] | None = None,
         out_path: str | None = None,
     ) -> tuple[bool, str]:
+        ready, block_msg = self.is_agent_execution_ready()
+        if not ready:
+            return False, block_msg
         self.ensure_gateway_ready(start_service="NIDOAGENT_BIN" not in os.environ)
         agent_bin = os.environ.get("NIDOAGENT_BIN") or shutil.which("nidoagent") or "/usr/bin/nidoagent"
         argv = [agent_bin, "ask"]
@@ -1467,7 +1509,10 @@ def run_self_test() -> int:
         assert not ok_block and "bắt buộc đăng nhập" in msg_block.lower()
         assert ob_backend.is_onboarding_required(), "Blocked onboarding must not mark complete"
 
-        # AI OFF must succeed immediately and write NIDOAI_ENABLED=0
+        # AI OFF must succeed immediately, write NIDOAI_ENABLED=0, delete stale runtime.json, and block run_agent_task cleanly
+        stale_rt = ob_home / ".nidoai" / "runtime.json"
+        stale_rt.parent.mkdir(parents=True, exist_ok=True)
+        stale_rt.write_text('{"baseUrl":"http://127.0.0.1:18090"}\n', encoding="utf-8")
         ok_off, _ = ob_backend.complete_ai_onboarding(
             ai_enabled=False,
             restart_service=False,
@@ -1476,7 +1521,35 @@ def run_self_test() -> int:
         assert ok_off
         assert not ob_backend.is_onboarding_required()
         assert not ob_backend.is_ai_enabled()
+        assert not stale_rt.exists(), "Turning AI OFF must remove stale runtime.json"
         assert ob_backend.load_env_file_only().get("NIDOAI_ENABLED") == "0"
+        ok_task_off, msg_task_off = ob_backend.run_agent_task("test off")
+        assert not ok_task_off and "tắt" in msg_task_off.lower() and "fetch failed" not in msg_task_off.lower()
+
+        # AI ON with 0 signed-in accounts / 0 configured backends must refuse run_agent_task cleanly before fetch
+        unsigned_home = root / "unsigned_home"
+        unsigned_home.mkdir()
+        unsigned_backend = NidoHubBackend(
+            home_dir=unsigned_home,
+            catalog_path=cat_file,
+            secret_store=NidoSecretStore(platform="linux", env={"NIDO_SECRET_STORE": "file"}),
+        )
+        unsigned_backend._write_env_file({"NIDOAI_PORT": "18999", "NIDOAI_ENABLED": "1"})
+        unsigned_backend.probe_agent_accounts = lambda persist=False: []  # type: ignore[method-assign]
+        orig_probe_local = globals()["probe_local_ai_runtimes"]
+        globals()["probe_local_ai_runtimes"] = lambda _h: {
+            "ollama": {"running": False},
+            "installedModels": [],
+        }
+        try:
+            ok_task_unsigned, msg_task_unsigned = unsigned_backend.run_agent_task("test unsigned")
+        finally:
+            globals()["probe_local_ai_runtimes"] = orig_probe_local
+        assert not ok_task_unsigned and "chưa đăng nhập" in msg_task_unsigned.lower(), (
+            ok_task_unsigned,
+            msg_task_unsigned,
+        )
+        assert "fetch failed" not in msg_task_unsigned.lower()
 
         # Switching to AI ON with >=1 signed-in account + optional API key must succeed
         ok_on, _ = ob_backend.complete_ai_onboarding(
@@ -2076,18 +2149,27 @@ def run_gtk_app(
                     states_map = {e["id"]: e for e in agents_list}
 
                     def apply_ui() -> bool:
+                        ai_on_now = backend.is_ai_enabled()
                         banner.set_title(
                             banner_line if hasattr(banner, "set_use_markup") else escape_markup(banner_line)
                         )
-                        banner.set_revealed(not backend.is_ai_enabled())
+                        banner.set_revealed(not ai_on_now)
                         hw_row.set_subtitle(
                             f"{rep['hardwareLineVi']} · {rep['ollamaStatusVi']}"
                         )
                         for ck in ("nidobox_ocr", "nidooffice_ai", "nidoagent"):
                             c_info = rep["capabilities"][ck]
                             _, b_lbl, d_lbl = cap_tiles[ck]
-                            _set_badge_state(b_lbl, c_info["badge"], bool(c_info.get("ready")))
-                            d_lbl.set_text(c_info["detail"])
+                            if not ai_on_now:
+                                _set_badge_state(b_lbl, "Đang tắt", False)
+                                d_lbl.set_text("Đã tắt trên NidoOS — bật lại Trợ lý AI khi cần.")
+                            else:
+                                _set_badge_state(b_lbl, c_info["badge"], bool(c_info.get("ready")))
+                                d_lbl.set_text(c_info["detail"])
+                        _apply_agent_tab_availability(
+                            ai_on_now,
+                            bool(rep["capabilities"]["nidoagent"].get("ready")),
+                        )
                         _apply_nido_account_main_ui(nido_acct)
                         _apply_agent_rows_ui(states_map)
                         cur_env = backend.load_env_file_only()
@@ -3041,6 +3123,21 @@ def run_gtk_app(
             agent_box.set_margin_end(20)
             agent_box.set_vexpand(True)
 
+            agent_gate_group = _make_group(
+                title="Chưa sẵn sàng chạy Trợ lý AI",
+                description="Bật Trợ lý AI và đăng nhập ít nhất 1 tài khoản để sử dụng tác vụ thông minh.",
+            )
+            agent_gate_row = _make_plain_row(
+                Adw.ActionRow(),
+                "Chưa đăng nhập tài khoản AI",
+                "Đăng nhập Tài khoản Nido, Google/Gemini, ChatGPT hoặc Claude trong tab Trợ lý AI.",
+            )
+            agent_gate_btn = Gtk.Button(label="Mở Cài đặt AI", valign=Gtk.Align.CENTER)
+            agent_gate_btn.add_css_class("suggested-action")
+            agent_gate_row.add_suffix(agent_gate_btn)
+            agent_gate_group.add(agent_gate_row)
+            agent_box.append(agent_gate_group)
+
             ctrl_group = _make_group(
                 title="Xử lý tài liệu với NidoAgent",
                 description="Đính kèm tài liệu (.docx, .xlsx, .pdf, .md) để tóm tắt hoặc xuất báo cáo nhanh.",
@@ -3099,6 +3196,36 @@ def run_gtk_app(
             agent_box.append(out_frame)
 
             last_agent_plain: list[str] = [""]
+            agent_tab_usable: list[bool] = [False]
+
+            def _apply_agent_tab_availability(ai_on: bool, agent_ready: bool) -> None:
+                usable = bool(ai_on and agent_ready)
+                agent_tab_usable[0] = usable
+                agent_gate_group.set_visible(not usable)
+                if not ai_on:
+                    agent_gate_row.set_title("Trợ lý AI đang tắt trên NidoOS")
+                    agent_gate_row.set_subtitle(
+                        "Hệ thống không chạy dịch vụ AI. Bật lại Trợ lý AI khi bạn cần xử lý tài liệu."
+                    )
+                    agent_gate_btn.set_label("Bật Trợ lý AI")
+                elif not agent_ready:
+                    agent_gate_row.set_title("Chưa đăng nhập tài khoản AI")
+                    agent_gate_row.set_subtitle(
+                        "Vui lòng đăng nhập Tài khoản Nido, Google/Gemini, ChatGPT hoặc Claude để bắt đầu."
+                    )
+                    agent_gate_btn.set_label("Mở Cài đặt AI")
+                for w in (ctrl_group, prompt_row, pick_btn, clear_btn, export_row, run_btn):
+                    w.set_sensitive(usable)
+                if not usable:
+                    copy_btn.set_sensitive(False)
+
+            def _on_agent_gate_clicked(_b: Gtk.Button) -> None:
+                if not backend.is_ai_enabled():
+                    _enter_onboarding_view()
+                else:
+                    stack.set_visible_child_name("welcome")
+
+            agent_gate_btn.connect("clicked", _on_agent_gate_clicked)
 
             def on_copy_result(_b: Gtk.Button) -> None:
                 txt = last_agent_plain[0].strip()
@@ -3156,7 +3283,7 @@ def run_gtk_app(
                     )
 
                     def finish_agent() -> bool:
-                        _b.set_sensitive(True)
+                        _b.set_sensitive(agent_tab_usable[0])
                         render_markdown_to_gtk_buffer(out_buf, result_txt)
                         last_agent_plain[0] = render_markdown_to_plain(result_txt)
                         copy_btn.set_sensitive(bool(last_agent_plain[0].strip()))
@@ -3170,6 +3297,11 @@ def run_gtk_app(
             clear_btn.connect("clicked", on_clear_files)
             run_btn.connect("clicked", on_run_agent)
             copy_btn.connect("clicked", on_copy_result)
+
+            _apply_agent_tab_availability(
+                backend.is_ai_enabled(),
+                bool(initial_report["capabilities"]["nidoagent"].get("ready")),
+            )
 
             agent_clamp = _wrap_clamped(agent_box, max_width=860)
             agent_clamp.set_vexpand(True)
@@ -3606,6 +3738,12 @@ def run_gtk_app(
                                 "Trợ lý AI đang tắt trên NidoOS — bật công tắc bên dưới khi bạn muốn sử dụng."
                             )
                             banner.set_revealed(True)
+                            for ck in ("nidobox_ocr", "nidooffice_ai", "nidoagent"):
+                                if ck in cap_tiles:
+                                    _, b_lbl, d_lbl = cap_tiles[ck]
+                                    _set_badge_state(b_lbl, "Đang tắt", False)
+                                    d_lbl.set_text("Đã tắt trên NidoOS — bật lại Trợ lý AI khi cần.")
+                            _apply_agent_tab_availability(False, False)
                             return False
 
                         GLib.idle_add(done_off)
