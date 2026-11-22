@@ -32,6 +32,9 @@ WATCHER_IFACE = "org.kde.StatusNotifierWatcher"
 SNI_ICON_THEME_PATH = ""
 DBUSMENU_ICON_THEME_PATHS = ["/usr/share/icons"]
 ICON_NAME = "nidobox-symbolic"
+ICON_NAME_IDLE = ICON_NAME
+ICON_NAME_ACTIVE = "com.nidoholdings.NidoBox-active-symbolic"
+ACTIVE_ICON_SVG = Path("/usr/share/icons/hicolor/symbolic/apps/com.nidoholdings.NidoBox-active-symbolic.svg")
 
 # Omit Activate so ubuntu-appindicators sets supportsActivation=false and opens
 # the quick menu immediately on single left-click without a 400ms double-click wait.
@@ -255,9 +258,50 @@ def probe_nidodrop_state(
         snap = resp.get("snapshot") or {}
         if not bool(snap.get("isRunning", True)):
             return (False, "")
-        return (True, str(snap.get("url") or "").strip())
+        return (True, str(snap.get("baseUrl") or snap.get("url") or "").strip())
     except Exception:
         return (False, "")
+
+
+def resolve_tray_icon_name(drop_running: bool, active_icon_path: Path | None = None) -> str:
+    """Return active symbolic icon (with emerald dot) when NidoDrop LAN is sharing."""
+    if drop_running:
+        target = active_icon_path if active_icon_path is not None else ACTIVE_ICON_SVG
+        if target.is_file():
+            return ICON_NAME_ACTIVE
+    return ICON_NAME_IDLE
+
+
+def _copy_text_to_clipboard(text: str) -> bool:
+    """Copy ``text`` to the Wayland or X11 clipboard using standard CLI tools."""
+    payload = (text or "").strip()
+    if not payload:
+        return False
+    candidates: list[list[str]] = []
+    if os.environ.get("WAYLAND_DISPLAY") and shutil.which("wl-copy"):
+        candidates.append(["wl-copy"])
+    if shutil.which("xclip"):
+        candidates.append(["xclip", "-selection", "clipboard"])
+    if shutil.which("xsel"):
+        candidates.append(["xsel", "--clipboard", "--input"])
+    if not candidates and shutil.which("wl-copy"):
+        candidates.append(["wl-copy"])
+    for cmd in candidates:
+        try:
+            res = subprocess.run(
+                cmd,
+                input=payload,
+                text=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=3.0,
+                check=False,
+            )
+            if res.returncode == 0:
+                return True
+        except Exception:
+            continue
+    return False
 
 
 def build_menu_items(drop_running: bool, drop_url: str = "") -> list[dict[str, Any]]:
@@ -288,6 +332,18 @@ def build_menu_items(drop_running: bool, drop_url: str = "") -> list[dict[str, A
         },
     ]
     if drop_running:
+        if (drop_url or "").strip():
+            items.append(
+                {
+                    "id": 4,
+                    "type": "standard",
+                    "label": "Chép liên kết LAN",
+                    "icon-name": "edit-copy-symbolic",
+                    "visible": True,
+                    "enabled": True,
+                    "action": "copy_drop_url",
+                }
+            )
         items.append(
             {
                 "id": 3,
@@ -342,7 +398,6 @@ def build_menu_items(drop_running: bool, drop_url: str = "") -> list[dict[str, A
             },
         ]
     )
-    _ = drop_url
     return items
 
 
@@ -455,14 +510,32 @@ def run_tray() -> int:
         ]
         return (nid, _props_to_variant_dict(props), encoded_children)
 
+    def _emit_icon_updated() -> None:
+        conn = state["conn"]
+        if conn is None:
+            return
+        try:
+            conn.emit_signal(
+                None,
+                SNI_PATH,
+                "org.kde.StatusNotifierItem",
+                "NewIcon",
+                None,
+            )
+        except Exception:
+            pass
+
     def _refresh_items() -> bool:
         running, url = probe_nidodrop_state()
-        changed = (running != state["drop_running"]) or (url != state["drop_url"])
+        prev_running = bool(state["drop_running"])
+        changed = (running != prev_running) or (url != state["drop_url"])
         if changed:
             state["drop_running"] = running
             state["drop_url"] = url
             state["items"] = build_menu_items(running, url)
             state["revision"] += 1
+            if running != prev_running:
+                _emit_icon_updated()
         return changed
 
     def _emit_layout_updated() -> None:
@@ -517,6 +590,25 @@ def run_tray() -> int:
             nh = _find_binary("nido-hub", ("/usr/bin/nido-hub", "/usr/local/bin/nido-hub"))
             if nh:
                 _spawn_gui([nh, "--page", "welcome"])
+            return True
+        if action == "copy_drop_url":
+            drop_url = str(state.get("drop_url") or "").strip()
+            if drop_url:
+                def copy_worker() -> None:
+                    copied = _copy_text_to_clipboard(drop_url)
+                    if copied and shutil.which("notify-send"):
+                        try:
+                            subprocess.Popen(
+                                ["notify-send", "-i", "nidobox-symbolic", "NidoBox", f"Đã chép liên kết LAN: {drop_url}"],
+                                stdin=subprocess.DEVNULL,
+                                stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL,
+                                start_new_session=True,
+                            )
+                        except Exception:
+                            pass
+
+                threading.Thread(target=copy_worker, daemon=True).start()
             return True
         if action == "stop_drop":
             nb = _find_binary("nidobox", ("/usr/bin/nidobox", "/usr/local/bin/nidobox"))
@@ -578,7 +670,7 @@ def run_tray() -> int:
         if prop == "ItemIsMenu":
             return GLib.Variant("b", True)
         if prop == "IconName":
-            return GLib.Variant("s", ICON_NAME)
+            return GLib.Variant("s", resolve_tray_icon_name(bool(state["drop_running"])))
         if prop == "IconPixmap":
             return GLib.Variant("a(iiay)", [(22, 22, icon_pixmap)])
         if prop in ("OverlayIconName", "AttentionIconName", "AttentionMovieName"):
@@ -586,9 +678,10 @@ def run_tray() -> int:
         if prop in ("OverlayIconPixmap", "AttentionIconPixmap"):
             return GLib.Variant("a(iiay)", [])
         if prop == "ToolTip":
+            cur_icon = resolve_tray_icon_name(bool(state["drop_running"]))
             return GLib.Variant(
                 "(sa(iiay)ss)",
-                (ICON_NAME, [], "NidoBox", "Chụp màn hình OCR & tiện ích NidoOS"),
+                (cur_icon, [], "NidoBox", "Chụp màn hình OCR & tiện ích NidoOS"),
             )
         return None
 
@@ -800,11 +893,15 @@ def run_self_test() -> int:
     idle_items = build_menu_items(False, "")
     idle_ids = [it["id"] for it in idle_items]
     assert idle_ids == [1, 2, 10, 11, 12, 20, 21], idle_ids
-    assert 3 not in idle_ids
+    assert 3 not in idle_ids and 4 not in idle_ids
+
+    active_no_url = build_menu_items(True, "")
+    assert [it["id"] for it in active_no_url] == [1, 2, 3, 10, 11, 12, 20, 21]
 
     active_items = build_menu_items(True, "http://192.168.1.50:8765")
     active_ids = [it["id"] for it in active_items]
-    assert active_ids == [1, 2, 3, 10, 11, 12, 20, 21], active_ids
+    assert active_ids == [1, 2, 4, 3, 10, 11, 12, 20, 21], active_ids
+    assert any(it["id"] == 4 and it["label"] == "Chép liên kết LAN" for it in active_items)
     assert any(it["id"] == 3 and it["label"] == "Dừng chia sẻ LAN" for it in active_items)
     for it in active_items:
         lbl = str(it.get("label") or "")
@@ -813,7 +910,14 @@ def run_self_test() -> int:
     root_id, root_props, children = get_layout_tree(active_items, 0, -1, ["type", "children-display"])
     assert root_id == 0 and root_props == {"children-display": "submenu"}
     assert len(children) == len(active_items)
-    assert children[3][1] == {"type": "separator"}
+    assert children[4][1] == {"type": "separator"}
+
+    with tempfile.TemporaryDirectory() as icon_td:
+        fake_svg = Path(icon_td) / "com.nidoholdings.NidoBox-active-symbolic.svg"
+        assert resolve_tray_icon_name(False, active_icon_path=fake_svg) == ICON_NAME_IDLE
+        assert resolve_tray_icon_name(True, active_icon_path=fake_svg) == ICON_NAME_IDLE
+        fake_svg.write_text("<svg/>", encoding="utf-8")
+        assert resolve_tray_icon_name(True, active_icon_path=fake_svg) == ICON_NAME_ACTIVE
 
     all_groups = get_group_properties(active_items, [1, 3], [])
     assert len(all_groups) == 2
@@ -838,7 +942,7 @@ def run_self_test() -> int:
             conn, _ = srv.accept()
             with conn:
                 conn.recv(256)
-                payload = json.dumps({"ok": True, "snapshot": {"isRunning": True, "url": "http://127.0.0.1:8765"}})
+                payload = json.dumps({"ok": True, "snapshot": {"isRunning": True, "baseUrl": "http://127.0.0.1:8765"}})
                 conn.sendall((payload + "\n").encode("utf-8"))
 
         t = threading.Thread(target=serve_once, daemon=True)
