@@ -6,7 +6,7 @@ set -euo pipefail
 
 NIDOOFFICE_REPO="${NIDOOFFICE_REPO:-stevedat/nidooffice-releases}"
 NIDOOFFICE_VERSION="${NIDOOFFICE_VERSION:-latest}"
-NIDOOFFICE_FALLBACK_VERSION="${NIDOOFFICE_FALLBACK_VERSION:-0.13.0}"
+NIDOOFFICE_FALLBACK_VERSION="${NIDOOFFICE_FALLBACK_VERSION:-0.13.1}"
 NIDOOFFICE_INSTALL_DIR="${NIDOOFFICE_INSTALL_DIR:-/opt/NidoOffice}"
 FORCE=0
 CHECK_ONLY=0
@@ -23,7 +23,7 @@ while [ "$#" -gt 0 ]; do
       ;;
     --version)
       if [ "$#" -lt 2 ] || [ -z "${2:-}" ]; then
-        echo "ERROR: --version requires a value (e.g. latest or 0.13.0)" >&2
+        echo "ERROR: --version requires a value (e.g. latest or 0.13.1)" >&2
         exit 2
       fi
       NIDOOFFICE_VERSION="$2"

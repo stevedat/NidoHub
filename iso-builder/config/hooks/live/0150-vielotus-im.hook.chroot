@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Hook 0150: Install and configure first-party Sen Viet (VieLotusIM v2.0.4) over native GNOME IBus (no Fcitx5)
+# Hook 0150: Install and configure first-party Sen Viet (VieLotusIM v2.0.8) over native GNOME IBus (no Fcitx5)
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 
 APT_LOCK_TIMEOUT="${APT_LOCK_TIMEOUT:-600}"
 APT_GET=(apt-get -o "DPkg::Lock::Timeout=${APT_LOCK_TIMEOUT}")
-VIELOTUS_VERSION="2.0.4"
+VIELOTUS_VERSION="2.0.8"
 ARCH="$(dpkg --print-architecture)"
 
 # Remove Fcitx5 daemon/frontends/config packages if any exist (keep libfcitx5* C++ shared libs required by vielotus)

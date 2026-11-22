@@ -229,7 +229,7 @@ for fname in expected:
                 ctrl_tar = ctrl_raw
             with tarfile.open(fileobj=io.BytesIO(ctrl_tar), mode="r:") as ctf:
                 ctrl_txt = ctf.extractfile("./control").read().decode("utf-8")
-                for dep in ("nido-desktop-settings", "nido-hub", "nidoagent-cli", "nidoai-gateway", "nidooffice-cli", "nidooffice-desktop", "vielotus", "nidobox (>= 1.4.7)", "geary", "showtime | totem"):
+                for dep in ("nido-desktop-settings", "nido-hub", "nidoagent-cli", "nidoai-gateway", "nidooffice-cli", "nidooffice-desktop", "vielotus (>= 2.0.8)", "nidobox (>= 1.4.7)", "geary", "showtime | totem"):
                     assert dep in ctrl_txt, f"{fname}: missing dependency {dep}"
             for req_st in (
                 "./usr/libexec/ubuntu-nido/showtime-launch",
@@ -271,22 +271,26 @@ for suite in ("resolute", "noble"):
         pkg_text = gzip.decompress(pkg_gz.read_bytes()).decode("utf-8")
         for pkg in ("nidoai-gateway", "nidoagent-cli", "nido-desktop-settings", "nido-hub", "nidooffice-cli", "nidooffice-desktop", "nido-desktop"):
             assert f"Package: {pkg}" in pkg_text, f"{pkg} missing in {suite}/{arch}"
-        nidobox_vendor = sorted((repo.parent / "packages" / "vendor").glob(f"nidobox_*_{arch}.deb"))
-        if nidobox_vendor:
-            assert len(nidobox_vendor) == 1, f"Duplicate nidobox vendor debs for {arch}: {[p.name for p in nidobox_vendor]}"
-            assert "Package: nidobox" in pkg_text, f"nidobox missing in {suite}/{arch}"
-            nb_ver = ""
+        def _ver_tuple(v: str) -> tuple[int, ...]:
+            base = v.split("-", 1)[0].split("+", 1)[0]
+            return tuple(int(x) for x in base.split(".") if x.isdigit())
+
+        for v_pkg, min_ver in (("nidobox", (1, 4, 7)), ("vielotus", (2, 0, 8))):
+            vendor_debs = sorted((repo.parent / "packages" / "vendor").glob(f"{v_pkg}_*_{arch}.deb"))
+            if not vendor_debs:
+                continue
+            assert len(vendor_debs) == 1, f"Duplicate {v_pkg} vendor debs for {arch}: {[p.name for p in vendor_debs]}"
+            assert f"Package: {v_pkg}" in pkg_text, f"{v_pkg} missing in {suite}/{arch}"
+            v_ver = ""
             for stanza in pkg_text.strip().split("\n\n"):
                 lines = stanza.splitlines()
-                if "Package: nidobox" in lines:
+                if f"Package: {v_pkg}" in lines:
                     for ln in lines:
                         if ln.startswith("Version:"):
-                            nb_ver = ln.split(":", 1)[1].strip()
+                            v_ver = ln.split(":", 1)[1].strip()
                             break
-            def _ver_tuple(v: str) -> tuple[int, ...]:
-                base = v.split("-", 1)[0].split("+", 1)[0]
-                return tuple(int(x) for x in base.split(".") if x.isdigit())
-            assert _ver_tuple(nb_ver) >= (1, 4, 7), f"Expected nidobox >= 1.4.7 in {suite}/{arch}, got {nb_ver!r}"
+            min_str = ".".join(str(x) for x in min_ver)
+            assert _ver_tuple(v_ver) >= min_ver, f"Expected {v_pkg} >= {min_str} in {suite}/{arch}, got {v_ver!r}"
         digest = hashlib.sha256(pkg_gz.read_bytes()).hexdigest()
         assert digest in rel_text, f"SHA256 mismatch for {pkg_gz} in Release"
 print("Verified static APT repo Release & Packages.gz checksums for resolute & noble (amd64/arm64).")
@@ -1474,7 +1478,7 @@ with tempfile.TemporaryDirectory() as td:
         "Package: libc6\nStatus: install ok installed\nVersion: 2.39-nido\n\n"
         "Package: dracut\nStatus: install ok installed\nVersion: 110-11\n\n"
         "Package: dracut-core\nStatus: install ok installed\nVersion: 110-11\n\n"
-        "Package: vielotus\nStatus: install ok installed\nVersion: 2.0.4\n\n"
+        "Package: vielotus\nStatus: install ok installed\nVersion: 2.0.8\n\n"
         "Package: nidobox\nStatus: install ok installed\nVersion: 1.4.7\n\n"
         "Package: nido-hub\nStatus: install ok installed\nVersion: 0.1.0\n",
         encoding="utf-8",
