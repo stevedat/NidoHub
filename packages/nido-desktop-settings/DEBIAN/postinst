@@ -57,6 +57,20 @@ fi
 mkdir -p /etc/systemd/user /etc/systemd/system
 ln -snf /dev/null /etc/systemd/system/packagekit.service
 ln -snf /dev/null /etc/systemd/system/packagekit-offline-update.service
+# Divert PackageKit D-Bus activation & APT post-invoke hook so apt-get update never emits
+# "GDBus.Error:org.freedesktop.systemd1.UnitMasked: Unit packagekit.service is masked."
+for pk_divert in \
+  /usr/share/dbus-1/system-services/org.freedesktop.PackageKit.service \
+  /etc/apt/apt.conf.d/20packagekit; do
+  if [ -e "$pk_divert" ]; then
+    if ! dpkg-divert --list "$pk_divert" 2>/dev/null | grep -q "$(basename "$pk_divert")"; then
+      dpkg-divert --local --rename \
+        --divert "${pk_divert}.nido-disabled" \
+        --add "$pk_divert" >/dev/null 2>&1 || true
+    fi
+    rm -f "$pk_divert"
+  fi
+done
 for usr_unit in \
   localsearch-3.service \
   localsearch-control-3.service \

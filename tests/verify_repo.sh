@@ -1287,14 +1287,26 @@ fc_xml = root / "packages/nido-desktop-settings/files/etc/fonts/conf.d/52-ubuntu
 assert fc_xml.is_file(), "Missing 52-ubuntu-nido-vietnamese.conf"
 fc_text = fc_xml.read_text(encoding="utf-8")
 ET.fromstring(fc_text)
-for token in ("Ubuntu", "Ubuntu Sans", "Be Vietnam Pro", "Noto Sans", "Noto Sans Mono"):
-    assert token in fc_text, f"Missing expected font family {token!r} in 52-ubuntu-nido-vietnamese.conf"
+for token in (
+    "Ubuntu",
+    "Ubuntu Sans",
+    "Ubuntu Mono",
+    "UbuntuMono",
+    "Be Vietnam Pro",
+    "Noto Sans",
+    "Noto Mono",
+    "Liberation Mono",
+    "<rejectfont>",
+    "/usr/share/fonts/truetype/ubuntu/*",
+):
+    assert token in fc_text, f"Missing expected font rule {token!r} in 52-ubuntu-nido-vietnamese.conf"
 
 # 2. Validate dconf defaults, installer white-label/font bind, Live welcome suppression & IME sync
 dconf_txt = (root / "packages/nido-desktop-settings/files/etc/dconf/db/local.d/00-ubuntu-nido-settings").read_text(encoding="utf-8")
 for expected_dconf in (
     "('ibus', 'vielotus')",
     "('ibus', 'vielotus-vni')",
+    "monospace-font-name='Noto Mono 10'",
     "accent-color='teal'",
     "gtk-theme='Yaru-prussiangreen-dark'",
     "icon-theme='Yaru-prussiangreen-dark'",
@@ -1309,6 +1321,15 @@ for expected_dconf in (
     "report-technical-problems=false",
 ):
     assert expected_dconf in dconf_txt, f"Missing expected dconf setting: {expected_dconf}"
+
+# Verify PackageKit APT/D-Bus hooks are diverted wherever packagekit.service is masked
+for pk_file in (
+    root / "iso-builder/config/hooks/live/0110-nido-minimal-prune.hook.chroot",
+    root / "packages/nido-desktop-settings/DEBIAN/postinst",
+):
+    pk_txt = pk_file.read_text(encoding="utf-8")
+    assert "/usr/share/dbus-1/system-services/org.freedesktop.PackageKit.service" in pk_txt, f"Missing PackageKit D-Bus divert in {pk_file}"
+    assert "/etc/apt/apt.conf.d/20packagekit" in pk_txt, f"Missing 20packagekit divert in {pk_file}"
 
 unit_txt = (root / "packages/nido-desktop-settings/files/usr/lib/systemd/system/nido-installer-fonts.service").read_text(encoding="utf-8")
 assert "ConditionPathExists=/snap/ubuntu-desktop-bootstrap" in unit_txt, "nido-installer-fonts.service must key off /snap/ubuntu-desktop-bootstrap, not boot=casper"
@@ -1496,9 +1517,11 @@ print("Verified Vietnamese Fontconfig XML, Sen Viet Telex+VNI sync self-test, AI
 PY
 pass "Live nidoai-gateway <-> nidoagent-cli, nido-hub, and nidooffice smoke tests passed"
 
-echo "=== 6. Layered Casper Updater & Live-Layer Reconciliation Unit Tests ==="
+echo "=== 6. Layered Casper Updater, Live-Layer Reconciliation & CDROM Signature Tests ==="
 python3 - "${ROOT_DIR}/iso-builder/scripts/update_install_sources.py" \
-           "${ROOT_DIR}/iso-builder/scripts/reconcile_live_layer.py" <<'PY'
+           "${ROOT_DIR}/iso-builder/scripts/reconcile_live_layer.py" \
+           "${ROOT_DIR}/iso-builder/scripts/verify_cdrom_signature.py" \
+           "${ROOT_DIR}/iso-builder/scripts/customize.sh" <<'PY'
 import importlib.util
 import subprocess
 import sys
@@ -1662,9 +1685,77 @@ with tempfile.TemporaryDirectory() as td:
         text=True,
     )
 
-print("Verified update_install_sources.py (24.04 & 26.04) and reconcile_live_layer.py cleanly.")
+# Unit test verify_cdrom_signature.py with real ephemeral Ed25519 Deb822 inline Signed-By key
+vcs_spec = importlib.util.spec_from_file_location("vcs", sys.argv[3])
+vcs = importlib.util.module_from_spec(vcs_spec)
+vcs_spec.loader.exec_module(vcs)
+
+customize_txt = Path(sys.argv[4]).read_text(encoding="utf-8")
+assert "stashed-cdrom-sources" in customize_txt, "customize.sh must stash cdrom.sources instead of deleting it"
+assert "restore_and_verify_cdrom_sources" in customize_txt, "customize.sh must restore and verify cdrom.sources"
+assert 'Path(p).unlink' not in customize_txt, "customize.sh must never unlink /etc/apt/sources.list.d/*cdrom*"
+
+import os, shutil
+if shutil.which("gpg"):
+    with tempfile.TemporaryDirectory(prefix="ncdt-", dir="/tmp" if Path("/tmp").is_dir() else None) as td:
+        troot = Path(td)
+        gnupg = troot / "gnupg"
+        gnupg.mkdir(mode=0o700)
+        genv = os.environ.copy()
+        genv["GNUPGHOME"] = str(gnupg)
+        subprocess.run(
+            ["gpg", "--batch", "--passphrase", "", "--quick-generate-key",
+             "NidoOS Test CDROM Key <test@nido-holdings.com>", "ed25519", "sign", "never"],
+            env=genv, check=True, capture_output=True,
+        )
+        pub_asc = subprocess.run(
+            ["gpg", "--batch", "--armor", "--export", "test@nido-holdings.com"],
+            env=genv, check=True, capture_output=True, text=True,
+        ).stdout
+
+        iso_tree = troot / "iso"
+        rootfs = troot / "rootfs"
+        rel_file = iso_tree / "dists/resolute/Release"
+        sig_file = iso_tree / "dists/resolute/Release.gpg"
+        rel_file.parent.mkdir(parents=True)
+        rel_file.write_text("Suite: resolute\nComponents: main\n", encoding="utf-8")
+        subprocess.run(
+            ["gpg", "--batch", "--yes", "--detach-sign", "--output", str(sig_file), str(rel_file)],
+            env=genv, check=True, capture_output=True,
+        )
+
+        # Format Deb822 inline Signed-By block exactly like Ubuntu 26.04 cdrom.sources
+        deb822_key_lines = []
+        for ln in pub_asc.strip().splitlines():
+            deb822_key_lines.append(" ." if not ln.strip() else " " + ln)
+        cdrom_sources = rootfs / "etc/apt/sources.list.d/cdrom.sources"
+        cdrom_sources.parent.mkdir(parents=True)
+        cdrom_sources.write_text(
+            "Types: deb\n"
+            "URIs: file:/cdrom\n"
+            "Suites: resolute\n"
+            "Components: main restricted\n"
+            "Signed-By:\n"
+            + "\n".join(deb822_key_lines)
+            + "\n",
+            encoding="utf-8",
+        )
+        (rootfs / "etc/apt/trusted.gpg.d").mkdir(parents=True)
+
+        assert vcs.verify_iso_cdrom_signatures(iso_tree, rootfs) == 1, "Expected valid cdrom.sources signature to pass"
+
+        # Simulate the exact NO_PUBKEY bug (deleting cdrom.sources) and ensure verifier catches it
+        cdrom_sources.unlink()
+        failed_as_expected = False
+        try:
+            vcs.verify_iso_cdrom_signatures(iso_tree, rootfs)
+        except RuntimeError:
+            failed_as_expected = True
+        assert failed_as_expected, "verify_cdrom_signature must fail when cdrom.sources is missing"
+
+print("Verified update_install_sources.py (24.04 & 26.04), reconcile_live_layer.py, and verify_cdrom_signature.py cleanly.")
 PY
-pass "update_install_sources.py and reconcile_live_layer.py unit tests passed"
+pass "update_install_sources.py, reconcile_live_layer.py, and verify_cdrom_signature.py unit tests passed"
 
 # Verify FAST_ISO=1, OUTPUT_DIR, BASE_ISO_CACHE_DIR, and local-arm64.sh --dry-run
 bash -c '

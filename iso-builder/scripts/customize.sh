@@ -11,13 +11,27 @@ cleanup_chroot_package_state() {
 }
 
 sanitize_chroot_apt_sources() {
-  info "  → Sanitizing chroot APT sources (removing file:/cdrom & enabling universe)..."
+  info "  → Sanitizing chroot APT sources (stashing cdrom.sources & enabling universe)..."
+  # Ubuntu 26.04+ embeds the per-ISO ephemeral Ed25519 signing key inline inside
+  # /etc/apt/sources.list.d/cdrom.sources. Stash it on the host while chroot
+  # apt-get runs (when /cdrom is unmounted) and restore it before repacking so
+  # Subiquity can verify file:/cdrom without NO_PUBKEY failures.
+  local cdrom_stash="$WORK_DIR/stashed-cdrom-sources"
+  mkdir -p "$cdrom_stash"
+  local cdrom_src
+  shopt -s nullglob
+  for cdrom_src in "$WORK_DIR/squashfs/etc/apt/sources.list.d"/*cdrom*; do
+    if [ -f "$cdrom_src" ]; then
+      cp -a "$cdrom_src" "$cdrom_stash/$(basename "$cdrom_src")"
+      rm -f "$cdrom_src"
+      info "  → Stashed ISO pool APT source for Subiquity: $(basename "$cdrom_src")"
+    fi
+  done
+  shopt -u nullglob
+
   chroot "$WORK_DIR/squashfs" python3 - <<'PY'
 import glob
 from pathlib import Path
-
-for p in glob.glob("/etc/apt/sources.list.d/*cdrom*"):
-    Path(p).unlink(missing_ok=True)
 
 for list_path_str in ["/etc/apt/sources.list", *glob.glob("/etc/apt/sources.list.d/*.list")]:
     lp = Path(list_path_str)
@@ -63,6 +77,29 @@ for src_path_str in glob.glob("/etc/apt/sources.list.d/*.sources"):
         kept.append("\n".join(lines))
     sp.write_text("\n\n".join(kept) + ("\n" if kept else ""), encoding="utf-8")
 PY
+}
+
+restore_and_verify_cdrom_sources() {
+  local cdrom_stash="$WORK_DIR/stashed-cdrom-sources"
+  if [ -d "$cdrom_stash" ]; then
+    local stashed_src
+    shopt -s nullglob
+    for stashed_src in "$cdrom_stash"/*; do
+      if [ -f "$stashed_src" ]; then
+        cp -a "$stashed_src" "$WORK_DIR/squashfs/etc/apt/sources.list.d/$(basename "$stashed_src")"
+        chmod 0644 "$WORK_DIR/squashfs/etc/apt/sources.list.d/$(basename "$stashed_src")"
+        info "  → Restored ISO pool APT source: $(basename "$stashed_src")"
+      fi
+    done
+    shopt -u nullglob
+  fi
+
+  if [ -d "$WORK_DIR/custom/dists" ] && [ -f "$SCRIPT_DIR/scripts/verify_cdrom_signature.py" ]; then
+    info "  → Verifying ISO dists/*/Release.gpg against rootfs APT keyrings..."
+    python3 "$SCRIPT_DIR/scripts/verify_cdrom_signature.py" \
+      --iso-tree "$WORK_DIR/custom" \
+      --rootfs "$WORK_DIR/squashfs"
+  fi
 }
 
 ensure_chroot_nodejs_22() {
@@ -234,11 +271,34 @@ step_customize() {
     ! ls /usr/share/fonts/truetype/be-vietnam-pro/*\[wght\]*.ttf >/dev/null 2>&1
     fc-match -f "%{family}\n" ":charset=1ec7" | grep -Eq "Be Vietnam Pro|Noto Sans"
     fc-match -f "%{family}\n" "Ubuntu:charset=1ec7" | grep -Eq "Be Vietnam Pro|Noto Sans"
+    fc-match -f "%{family}\n" "Ubuntu Mono" | grep -Eq "Noto Mono|Liberation Mono"
+    fc-match -f "%{family}\n" "Ubuntu Mono:charset=1ec3" | grep -Eq "Noto Mono|Liberation Mono"
+    fc-match -f "%{family}\n" "Ubuntu Mono:charset=1ecd" | grep -Eq "Noto Mono|Liberation Mono"
+    fc-match -f "%{family}\n" "monospace:charset=1ec3" | grep -Eq "Noto Mono|Liberation Mono"
+    ! fc-list : file | grep -q "/usr/share/fonts/truetype/ubuntu/"
     test -x /usr/libexec/ubuntu-nido/ensure-vietnamese-ime
     /usr/libexec/ubuntu-nido/ensure-vietnamese-ime --self-test >/dev/null
     test -x /usr/libexec/ubuntu-nido/bind-installer-fonts
     /usr/libexec/ubuntu-nido/bind-installer-fonts --self-test >/dev/null
-    python3 -c "import struct; from pathlib import Path; data=Path(\"/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf\").read_bytes(); nt=struct.unpack(\">H\",data[4:6])[0]; off=next(o for i in range(nt) for tag,_,o,_ in [struct.unpack(\">4sIII\",data[12+i*16:28+i*16])] if tag==b\"cmap\"); ns=struct.unpack(\">H\",data[off+2:off+4])[0]; chars=set(); [chars.update(range(s,e+1)) for i in range(ns) for _,_,so in [struct.unpack(\">HHI\",data[off+4+i*8:off+12+i*8])] for so2 in [off+so] if struct.unpack(\">H\",data[so2:so2+2])[0]==4 for sc in [struct.unpack(\">H\",data[so2+6:so2+8])[0]//2] for s,e in zip(struct.unpack(f\">{sc}H\",data[so2+16+sc*2:so2+16+sc*4]),struct.unpack(f\">{sc}H\",data[so2+14:so2+14+sc*2])) if s!=0xFFFF]; [chars.update(range(s,e+1)) for i in range(ns) for _,_,so in [struct.unpack(\">HHI\",data[off+4+i*8:off+12+i*8])] for so2 in [off+so] if struct.unpack(\">H\",data[so2:so2+2])[0]==12 for g in range(struct.unpack(\">I\",data[so2+12:so2+16])[0]) for s,e,_ in [struct.unpack(\">III\",data[so2+16+g*12:so2+28+g*12])]]; missing=[hex(cp) for cp in (0x1ECD,0x1EC7,0x1EA3,0x1EED,0x1EBF,0x1EEF) if cp not in chars]; assert not missing, f\"NotoSans missing {missing}\""
+    /usr/libexec/ubuntu-nido/bind-installer-fonts --verify-system >/dev/null
+    python3 -c "import struct; from pathlib import Path
+def check_vi(p):
+    data=Path(p).read_bytes(); nt=struct.unpack(\">H\",data[4:6])[0]
+    off=next(o for i in range(nt) for tag,_,o,_ in [struct.unpack(\">4sIII\",data[12+i*16:28+i*16])] if tag==b\"cmap\")
+    ns=struct.unpack(\">H\",data[off+2:off+4])[0]; chars=set()
+    for i in range(ns):
+        _,_,so=struct.unpack(\">HHI\",data[off+4+i*8:off+12+i*8]); so2=off+so; fmt=struct.unpack(\">H\",data[so2:so2+2])[0]
+        if fmt==4:
+            sc=struct.unpack(\">H\",data[so2+6:so2+8])[0]//2
+            for s,e in zip(struct.unpack(f\">{sc}H\",data[so2+16+sc*2:so2+16+sc*4]),struct.unpack(f\">{sc}H\",data[so2+14:so2+14+sc*2])):
+                if s!=0xFFFF: chars.update(range(s,e+1))
+        elif fmt==12:
+            for g in range(struct.unpack(\">I\",data[so2+12:so2+16])[0]):
+                s,e,_=struct.unpack(\">III\",data[so2+16+g*12:so2+28+g*12]); chars.update(range(s,e+1))
+    missing=[hex(cp) for cp in (0x1ECD,0x1EC3,0x1EC7,0x1EA3,0x1EED,0x1EBF,0x1EEF,0x1EB5) if cp not in chars]
+    assert not missing, f\"{p} missing {missing}\"
+check_vi(\"/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf\")
+check_vi(\"/usr/share/fonts/truetype/noto/NotoMono-Regular.ttf\")"
     test -f /usr/lib/systemd/system/nido-installer-fonts.service
     test -L /etc/systemd/system/graphical.target.wants/nido-installer-fonts.service
     test -f /usr/share/desktop-provision/whitelabel.yaml
@@ -257,6 +317,8 @@ step_customize() {
     test ! -e /etc/xdg/autostart/localsearch-3.desktop
     test ! -e /etc/xdg/autostart/org.gnome.Evolution-alarm-notify.desktop
     test ! -e /etc/xdg/autostart/snap-userd-autostart.desktop
+    test ! -e /etc/apt/apt.conf.d/20packagekit
+    test ! -e /usr/share/dbus-1/system-services/org.freedesktop.PackageKit.service
     test -L /etc/systemd/system/packagekit.service
     test -L /etc/systemd/user/localsearch-3.service
     test -L /etc/systemd/user/gnome-initial-setup-first-login.service
@@ -329,6 +391,7 @@ step_customize() {
     date -u +"%Y-%m-%dT%H:%M:%SZ" > /etc/ubuntu-nido-customized
   '
 
+  restore_and_verify_cdrom_sources
   umount_chroot
   ok "Customization verified and chroot unmounted."
 }

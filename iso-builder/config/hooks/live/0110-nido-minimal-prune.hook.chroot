@@ -101,6 +101,8 @@ fi
 # (preserves ubuntu-desktop-minimal, unattended-upgrades security updates, and fwupd).
 for divert_path in \
   /usr/share/dbus-1/system-services/com.canonical.UbuntuAdvantage.service \
+  /usr/share/dbus-1/system-services/org.freedesktop.PackageKit.service \
+  /etc/apt/apt.conf.d/20packagekit \
   /etc/xdg/autostart/gnome-initial-setup-first-login.desktop \
   /etc/xdg/autostart/gnome-initial-setup-copy-worker.desktop \
   /etc/xdg/autostart/update-notifier.desktop \

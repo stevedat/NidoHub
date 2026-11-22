@@ -135,10 +135,15 @@ repack_layered_live_overlays() {
     ! ls /usr/share/fonts/truetype/be-vietnam-pro/*\[wght\]*.ttf >/dev/null 2>&1
     fc-match -f "%{family}\n" ":charset=1ec7" | grep -Eq "Be Vietnam Pro|Noto Sans"
     fc-match -f "%{family}\n" "Ubuntu:charset=1ec7" | grep -Eq "Be Vietnam Pro|Noto Sans"
+    fc-match -f "%{family}\n" "Ubuntu Mono" | grep -Eq "Noto Mono|Liberation Mono"
+    fc-match -f "%{family}\n" "Ubuntu Mono:charset=1ec3" | grep -Eq "Noto Mono|Liberation Mono"
+    fc-match -f "%{family}\n" "monospace:charset=1ec3" | grep -Eq "Noto Mono|Liberation Mono"
+    ! fc-list : file | grep -q "/usr/share/fonts/truetype/ubuntu/"
     test -x /usr/libexec/ubuntu-nido/ensure-vietnamese-ime
     /usr/libexec/ubuntu-nido/ensure-vietnamese-ime --self-test >/dev/null
     test -x /usr/libexec/ubuntu-nido/bind-installer-fonts
     /usr/libexec/ubuntu-nido/bind-installer-fonts --self-test >/dev/null
+    /usr/libexec/ubuntu-nido/bind-installer-fonts --verify-system >/dev/null
     test -L /etc/systemd/system/graphical.target.wants/nido-installer-fonts.service
     test -f /usr/share/desktop-provision/whitelabel.yaml
     test -f /usr/share/desktop-provision/images/nidoos-logo-dark.svg

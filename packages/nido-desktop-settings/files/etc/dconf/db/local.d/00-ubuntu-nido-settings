@@ -10,7 +10,7 @@ show-battery-percentage=true
 enable-hot-corners=false
 font-name='Be Vietnam Pro 10'
 document-font-name='Be Vietnam Pro 11'
-monospace-font-name='Noto Sans Mono 10'
+monospace-font-name='Noto Mono 10'
 font-antialiasing='rgba'
 font-hinting='slight'
 

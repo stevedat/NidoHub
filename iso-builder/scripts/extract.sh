@@ -72,7 +72,7 @@ step_extract() {
   umount "$WORK_DIR/mnt" 2>/dev/null || true
   rm -rf "${WORK_DIR:?}/squashfs" "${WORK_DIR:?}/custom" "${WORK_DIR:?}/layers" \
     "${WORK_DIR:?}/live_delta" "${WORK_DIR:?}/live_work" "${WORK_DIR:?}/live_merged" \
-    "${WORK_DIR:?}/empty_standard" "$WORK_DIR/orig_live.squashfs"
+    "${WORK_DIR:?}/empty_standard" "${WORK_DIR:?}/stashed-cdrom-sources" "$WORK_DIR/orig_live.squashfs"
   mkdir -p "$WORK_DIR/mnt" "$WORK_DIR/custom"
 
   local use_cache=1

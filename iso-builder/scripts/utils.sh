@@ -209,6 +209,7 @@ safe_remove_work_dirs() {
     "${WORK_DIR:?}/live_work" \
     "${WORK_DIR:?}/live_merged" \
     "${WORK_DIR:?}/empty_standard" \
+    "${WORK_DIR:?}/stashed-cdrom-sources" \
     "$WORK_DIR/orig_live.squashfs" 2>/dev/null || true
 }
 
