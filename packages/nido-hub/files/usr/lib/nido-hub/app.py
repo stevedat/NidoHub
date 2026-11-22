@@ -67,6 +67,7 @@ from markdown_render import (  # noqa: E402
     render_markdown_to_gtk_buffer,
     render_markdown_to_plain,
 )
+from nido_account import NidoAccountManager  # noqa: E402
 from printer_probe import (  # noqa: E402
     UNIVERSAL_ADAPTER_MODELS,
     build_network_printer_spec,
@@ -74,6 +75,7 @@ from printer_probe import (  # noqa: E402
 )
 
 PROVIDERS = [
+    ("nido", "Tài khoản Nido (Nido AI)"),
     ("gemini", "Google Gemini (Miễn phí / Khóa API)"),
     ("openai", "OpenAI (Khóa API)"),
     ("anthropic", "Anthropic Claude (Khóa API)"),
@@ -122,8 +124,9 @@ NIDO_HUB_CSS = """
 
 GEMINI_FREE_KEY_URL = "https://aistudio.google.com/apikey"
 
-REQUIRED_AGENT_PROVIDER_IDS = ("agy", "codex", "claude")
+REQUIRED_AGENT_PROVIDER_IDS = ("nido", "agy", "codex", "claude")
 REQUIRED_AGENT_LABELS = {
+    "nido": "Tài khoản Nido",
     "agy": "Google / Gemini (agy)",
     "codex": "ChatGPT / OpenAI (codex)",
     "claude": "Claude / Anthropic (claude)",
@@ -133,15 +136,18 @@ REQUIRED_AGENT_LABELS = {
 def evaluate_ai_onboarding_gate(
     ai_enabled: bool,
     agent_states: list[dict[str, Any]],
+    nido_account: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Evaluate whether mandatory first-run AI onboarding may complete.
 
     Policy:
     - AI OFF -> allowed to complete immediately without signing in.
-    - AI ON  -> requires at least 1 signed-in AI account among Google/Gemini (agy),
-      ChatGPT (codex), or Claude (claude); API keys may be added optionally.
+    - AI ON  -> requires at least 1 signed-in AI account (Tài khoản Nido,
+      Google/Gemini, ChatGPT, or Claude); API keys may be added optionally.
     """
     signed_ids: list[str] = []
+    if isinstance(nido_account, dict) and bool(nido_account.get("signedIn")):
+        signed_ids.append("nido")
     for entry in agent_states:
         pid = str(entry.get("id") or "")
         if pid in REQUIRED_AGENT_PROVIDER_IDS and bool(entry.get("signedIn")):
@@ -171,7 +177,7 @@ def evaluate_ai_onboarding_gate(
             "canComplete": True,
             "statusBadge": f"ĐẠT YÊU CẦU ({len(signed_ids)} TÀI KHOẢN)",
             "reasonVi": (
-                f"Đã đăng nhập {joined}. Bạn có thể thêm API Key bên dưới (nếu có) "
+                f"Đã đăng nhập {joined}. Bạn có thể thêm khóa API bên dưới (nếu có) "
                 "rồi bấm 'Hoàn tất & Bắt đầu dùng NidoOS'."
             ),
         }
@@ -184,7 +190,7 @@ def evaluate_ai_onboarding_gate(
         "statusBadge": "BẮT BUỘC — 0/1 TÀI KHOẢN",
         "reasonVi": (
             "Chế độ AI đang BẬT: bắt buộc đăng nhập ít nhất 1 tài khoản "
-            "(Google/Gemini, ChatGPT hoặc Claude) ở Bước 1 trước khi hoàn tất, "
+            "(Tài khoản Nido, Google/Gemini, ChatGPT hoặc Claude) trước khi hoàn tất, "
             "hoặc gạt công tắc sang TẮT AI."
         ),
     }
@@ -220,6 +226,12 @@ class NidoHubBackend:
             os.environ.get("NIDOHUB_CATALOG", "/etc/nido-hub/catalog.json")
         )
         self.app_store = NidoAppStore(catalog_path=self.catalog_path)
+        self.nido_account = NidoAccountManager(
+            home_dir=self.home_dir,
+            nidoai_dir=self.nidoai_dir,
+            config_dir=self.config_dir,
+            secret_store=self.secret_store,
+        )
 
     @property
     def env_file(self) -> Path:
@@ -292,6 +304,31 @@ class NidoHubBackend:
                 os.unlink(tmp_name)
         return payload
 
+    def _apply_gateway_service_state(self, active: bool, restart_service: bool = True) -> None:
+        if not restart_service or not shutil.which("systemctl"):
+            return
+        if active:
+            res = subprocess.run(
+                ["systemctl", "--user", "restart", "nidoai-gateway.service"],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            if res.returncode != 0:
+                subprocess.run(
+                    ["systemctl", "--user", "enable", "--now", "nidoai-gateway.service"],
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+        else:
+            subprocess.run(
+                ["systemctl", "--user", "stop", "nidoai-gateway.service"],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+
     def set_ai_enabled(
         self,
         enabled: bool,
@@ -319,28 +356,7 @@ class NidoHubBackend:
                 encoding="utf-8",
             )
 
-        if restart_service and shutil.which("systemctl"):
-            if enabled:
-                res = subprocess.run(
-                    ["systemctl", "--user", "restart", "nidoai-gateway.service"],
-                    check=False,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
-                if res.returncode != 0:
-                    subprocess.run(
-                        ["systemctl", "--user", "enable", "--now", "nidoai-gateway.service"],
-                        check=False,
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                    )
-            else:
-                subprocess.run(
-                    ["systemctl", "--user", "stop", "nidoai-gateway.service"],
-                    check=False,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
+        self._apply_gateway_service_state(enabled, restart_service=restart_service)
 
         if enabled:
             return "Đã BẬT chế độ AI trên NidoOS."
@@ -369,16 +385,20 @@ class NidoHubBackend:
             return True, msg
 
         states = agent_states if agent_states is not None else self.probe_agent_accounts(persist=True)
-        gate = evaluate_ai_onboarding_gate(True, states)
+        nido_status = self.get_nido_account_status(refresh_quota=False)
+        gate = evaluate_ai_onboarding_gate(True, states, nido_account=nido_status)
         if not gate["canComplete"]:
             return False, gate["reasonVi"]
 
         has_any_api_key = any(
             k.strip() for k in (gemini_key, openai_key, anthropic_key, local_base_url)
         )
+        chosen_backend = primary_backend
+        if "nido" in gate["signedInProviders"] and not has_any_api_key and chosen_backend not in {"local"}:
+            chosen_backend = "nido"
         should_verify = bool(verify_live and has_any_api_key)
         save_msg = self.save_ai_settings(
-            primary_backend=primary_backend,
+            primary_backend=chosen_backend,
             gemini_key=gemini_key,
             openai_key=openai_key,
             anthropic_key=anthropic_key,
@@ -395,7 +415,7 @@ class NidoHubBackend:
         joined = ", ".join(gate["signedInLabels"])
         if has_any_api_key:
             return True, f"Hoàn tất thiết lập AI ({joined}). {save_msg}"
-        return True, f"Hoàn tất thiết lập AI với tài khoản {joined}!"
+        return True, f"Hoàn tất thiết lập AI với {joined}!"
 
     def load_env_file_only(self) -> dict[str, str]:
         if not self.env_file.is_file():
@@ -477,7 +497,7 @@ class NidoHubBackend:
         local_model: str = "",
         verify_live: bool = False,
     ) -> str:
-        if primary_backend not in {"gemini", "openai", "anthropic", "local"}:
+        if primary_backend not in {"nido", "gemini", "openai", "anthropic", "local"}:
             raise ValueError(f"Invalid backend: {primary_backend}")
 
         self.config_dir.mkdir(parents=True, exist_ok=True)
@@ -517,21 +537,25 @@ class NidoHubBackend:
 
         live_note = ""
         if verify_live:
-            resolved_key = {
-                "gemini": gemini_key.strip() or self.load_env().get("GEMINI_API_KEY", ""),
-                "openai": openai_key.strip() or self.load_env().get("OPENAI_API_KEY", ""),
-                "anthropic": anthropic_key.strip() or self.load_env().get("ANTHROPIC_API_KEY", ""),
-                "local": "",
-            }.get(primary_backend, "")
-            v_res = live_verify_backend(
-                primary_backend,
-                api_key=resolved_key,
-                local_base_url=env.get("NIDOAI_LOCAL_BASE_URL", ""),
-                local_model=env.get("NIDOAI_LOCAL_MODEL", ""),
-            )
-            if primary_backend == "local" and v_res.get("selectedModel") and not local_model.strip():
-                env["NIDOAI_LOCAL_MODEL"] = str(v_res["selectedModel"])
-            live_note = f" · {v_res['message']}"
+            if primary_backend == "nido":
+                _, nido_msg, _ = self.nido_account.refresh_session(force=False)
+                live_note = f" · {nido_msg}"
+            else:
+                resolved_key = {
+                    "gemini": gemini_key.strip() or self.load_env().get("GEMINI_API_KEY", ""),
+                    "openai": openai_key.strip() or self.load_env().get("OPENAI_API_KEY", ""),
+                    "anthropic": anthropic_key.strip() or self.load_env().get("ANTHROPIC_API_KEY", ""),
+                    "local": "",
+                }.get(primary_backend, "")
+                v_res = live_verify_backend(
+                    primary_backend,
+                    api_key=resolved_key,
+                    local_base_url=env.get("NIDOAI_LOCAL_BASE_URL", ""),
+                    local_model=env.get("NIDOAI_LOCAL_MODEL", ""),
+                )
+                if primary_backend == "local" and v_res.get("selectedModel") and not local_model.strip():
+                    env["NIDOAI_LOCAL_MODEL"] = str(v_res["selectedModel"])
+                live_note = f" · {v_res['message']}"
 
         self._write_env_file(env)
 
@@ -540,20 +564,7 @@ class NidoHubBackend:
             encoding="utf-8",
         )
 
-        if restart_service and shutil.which("systemctl"):
-            res = subprocess.run(
-                ["systemctl", "--user", "restart", "nidoai-gateway.service"],
-                check=False,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            if res.returncode != 0:
-                subprocess.run(
-                    ["systemctl", "--user", "enable", "--now", "nidoai-gateway.service"],
-                    check=False,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
+        self._apply_gateway_service_state(True, restart_service=restart_service)
 
         if stored_any_in_keyring:
             return f"Đã lưu cấu hình NidoAI ({self.secret_store.mode_label_vi()})!{live_note}"
@@ -573,14 +584,21 @@ class NidoHubBackend:
     def probe_gateway_health(self) -> tuple[bool, str]:
         payload = self.probe_gateway_health_detail()
         if not payload:
-            return False, "NidoAI Gateway chưa phản hồi (sẽ tự bật sau khi lưu cấu hình)"
+            return False, "Dịch vụ Trợ lý AI chưa khởi động (sẽ tự bật sau khi lưu cấu hình)"
         pb = payload.get("primaryBackend", {})
         kind = pb.get("kind", "gemini")
         configured = bool(pb.get("configured", False))
         configured_raw = bool(pb.get("configuredRaw", configured))
         reachable = bool(pb.get("reachable", configured))
         caps = payload.get("capabilities", {})
-        vision_txt = " · Vision OCR" if caps.get("vision") else ""
+        vision_txt = " · hỗ trợ ảnh" if caps.get("vision") else ""
+        if kind == "nido":
+            nido_acct = self.get_nido_account_status(refresh_quota=False)
+            if nido_acct.get("signedIn") and configured:
+                email_lbl = nido_acct.get("email") or "Tài khoản Nido"
+                plan_lbl = nido_acct.get("planName") or "Nido"
+                return True, f"Đang dùng {email_lbl} ({plan_lbl})"
+            return True, "Chưa đăng nhập Tài khoản Nido hoặc nguồn AI"
         if kind == "local" and configured_raw and not reachable:
             state_txt = "chưa bật Ollama cục bộ"
         elif kind == "local" and configured and reachable:
@@ -588,20 +606,99 @@ class NidoHubBackend:
             if not local_info.get("hasReadyLocalModel"):
                 state_txt = "Ollama đã chạy nhưng chưa tải model (0 model)"
             else:
-                v_note = " · Vision OCR" if local_info.get("hasVisionLocalModel") else " · chỉ văn bản"
+                v_note = " · hỗ trợ ảnh" if local_info.get("hasVisionLocalModel") else " · chỉ văn bản"
                 state_txt = f"sẵn sàng ({len(local_info['installedModels'])} model{v_note})"
         elif configured and reachable:
             state_txt = f"sẵn sàng{vision_txt}"
         else:
-            state_txt = "chưa cấu hình model/khóa AI"
-        return True, f"NidoAI Gateway đang chạy ({kind} — {state_txt})"
+            state_txt = "chưa cấu hình model hoặc khóa AI"
+        return True, f"Trợ lý AI đang hoạt động ({kind} — {state_txt})"
 
-    def get_ai_readiness_report(self, persist_agents: bool = False) -> dict[str, Any]:
+    def get_nido_account_status(self, refresh_quota: bool = False) -> dict[str, Any]:
+        return self.nido_account.get_status(refresh_quota=refresh_quota)
+
+    def login_nido_account(
+        self,
+        email: str,
+        password: str,
+        set_as_primary: bool = True,
+        restart_service: bool = True,
+    ) -> tuple[bool, str, dict[str, Any] | None]:
+        ok, msg, profile = self.nido_account.login(email, password, set_as_primary=set_as_primary)
+        if ok:
+            env = self.load_env_file_only()
+            if len(env.get("NIDOAI_CLIENT_TOKEN", "")) < 16:
+                env["NIDOAI_CLIENT_TOKEN"] = f"nidoai_{secrets.token_hex(24)}"
+            env.setdefault("NIDOAI_ENABLED", "1")
+            if set_as_primary:
+                env["NIDOAI_PRIMARY_BACKEND"] = "nido"
+            self._write_env_file(env)
+            cur = self.load_ai_policy()
+            providers = list(cur.get("signedInProviders") or [])
+            if "nido" not in providers:
+                providers.insert(0, "nido")
+            self._write_ai_policy(bool(cur.get("setupCompleted", False)), True, providers)
+            self._apply_gateway_service_state(True, restart_service=restart_service)
+        return ok, msg, profile
+
+    def register_nido_account(
+        self,
+        email: str,
+        password: str,
+        full_name: str = "",
+        set_as_primary: bool = True,
+        restart_service: bool = True,
+    ) -> tuple[bool, str, dict[str, Any]]:
+        ok, msg, detail = self.nido_account.register(
+            email, password, full_name=full_name, set_as_primary=set_as_primary
+        )
+        if ok and detail.get("profile"):
+            cur = self.load_ai_policy()
+            providers = list(cur.get("signedInProviders") or [])
+            if "nido" not in providers:
+                providers.insert(0, "nido")
+            self._write_ai_policy(bool(cur.get("setupCompleted", False)), True, providers)
+            self._apply_gateway_service_state(True, restart_service=restart_service)
+        return ok, msg, detail
+
+    def resend_nido_confirmation(self, email: str) -> tuple[bool, str]:
+        return self.nido_account.resend_confirmation(email)
+
+    def logout_nido_account(self, restart_service: bool = True) -> tuple[bool, str]:
+        ok, msg = self.nido_account.logout()
+        cur = self.load_ai_policy()
+        providers = [p for p in (cur.get("signedInProviders") or []) if p != "nido"]
+        self._write_ai_policy(
+            bool(cur.get("setupCompleted", False)),
+            bool(cur.get("aiEnabled", True)),
+            providers,
+        )
+        self._apply_gateway_service_state(self.is_ai_enabled(), restart_service=restart_service)
+        return ok, msg
+
+    def set_os_sync_enabled(self, enabled: bool) -> dict[str, Any] | None:
+        return self.nido_account.set_sync_enabled(enabled)
+
+    def export_os_sync_bundle(self, dest_path: Path | None = None) -> tuple[bool, str, Path]:
+        return self.nido_account.export_sync_bundle(dest_path=dest_path)
+
+    def import_os_sync_bundle(
+        self, src_path: Path | None = None, restart_service: bool = True
+    ) -> tuple[bool, str, list[str]]:
+        ok, msg, restored = self.nido_account.import_sync_bundle(src_path=src_path)
+        if ok and "ai-policy" in restored:
+            self._apply_gateway_service_state(self.is_ai_enabled(), restart_service=restart_service)
+        return ok, msg, restored
+
+    def get_ai_readiness_report(
+        self, persist_agents: bool = False, refresh_nido: bool = False
+    ) -> dict[str, Any]:
         hw = detect_hardware(self.home_dir)
         local_info = probe_local_ai_runtimes(self.home_dir)
         gw_health = self.probe_gateway_health_detail()
         agents = self.probe_agent_accounts(persist=persist_agents)
-        return build_ai_readiness_report(hw, local_info, gw_health, agents)
+        nido_acct = self.get_nido_account_status(refresh_quota=refresh_nido)
+        return build_ai_readiness_report(hw, local_info, gw_health, agents, nido_account=nido_acct)
 
     def probe_agent_accounts(self, persist: bool = True) -> list[dict[str, Any]]:
         return probe_all_agents(self.home_dir, self.nidoai_dir, persist=persist)
@@ -1185,7 +1282,7 @@ def run_self_test() -> int:
 
         # Verify NidoOS UI styling & polished copywriting registries
         assert ".nido-status-tile" in NIDO_HUB_CSS and ".nido-footer-bar" in NIDO_HUB_CSS
-        assert {"gemini", "openai", "anthropic", "local"} == {k for k, _ in PROVIDERS}
+        assert {"nido", "gemini", "openai", "anthropic", "local"} == {k for k, _ in PROVIDERS}
         assert all(SOURCE_LABELS.get(k) for k in ("nido-apt", "vendor-apt", "ubuntu-apt", "flatpak"))
         assert all(isinstance(v[0], str) and v[0] for v in UNIVERSAL_ADAPTER_MODELS.values())
         plain_md = render_markdown_to_plain(md_sample)
@@ -1194,6 +1291,131 @@ def run_self_test() -> int:
         assert "  ◦ Chuẩn: PAdES (ETSI.CAdES.detached)" in plain_md
         assert "2 * 3 * 4 = 24" in plain_md and "*.deb và *.rpm" in plain_md and "snake_case_var" in plain_md
         assert "def f(**kwargs):" in plain_md, "Fenced code block must stay verbatim"
+
+        # Verify Nido Account SSO + keyring isolation + quota capability + OS Settings Sync
+        nido_home = root / "nido_account_home"
+        nido_home.mkdir()
+        (nido_home / ".config" / "vielotus").mkdir(parents=True, exist_ok=True)
+        (nido_home / ".config" / "vielotus" / "config.env").write_text("INPUT_METHOD=telex\n", encoding="utf-8")
+        (nido_home / ".config" / "vielotus" / "macros.json").write_text('{"chxh": "Cộng hòa xã hội"}\n', encoding="utf-8")
+        (nido_home / ".config" / "nidobox").mkdir(parents=True, exist_ok=True)
+        (nido_home / ".config" / "nidobox" / "settings.json").write_text(
+            json.dumps({"lang": "vi", "background": True, "secretToken": "MUST_BE_STRIPPED"}),
+            encoding="utf-8",
+        )
+        nido_keyring_mem: dict[str, str] = {}
+
+        def nido_keyring_runner(
+            argv: list[str], stdin_text: str | None, _timeout: float
+        ) -> CommandResult:
+            if argv[:2] == ["which", "secret-tool"]:
+                return CommandResult(0, "/usr/bin/secret-tool\n", "")
+            if argv[:2] == ["secret-tool", "store"]:
+                acct = argv[argv.index("account") + 1]
+                nido_keyring_mem[acct] = (stdin_text or "").strip()
+                return CommandResult(0, "", "")
+            if argv[:2] == ["secret-tool", "lookup"]:
+                acct = argv[argv.index("account") + 1]
+                if acct in nido_keyring_mem:
+                    return CommandResult(0, nido_keyring_mem[acct] + "\n", "")
+                return CommandResult(1, "", "")
+            if argv[:2] == ["secret-tool", "clear"]:
+                acct = argv[argv.index("account") + 1]
+                nido_keyring_mem.pop(acct, None)
+                return CommandResult(0, "", "")
+            return CommandResult(1, "", "")
+
+        def _make_fake_jwt(exp_offset_sec: int) -> str:
+            hdr = base64.urlsafe_b64encode(b'{"alg":"HS256","typ":"JWT"}').decode("ascii").rstrip("=")
+            exp_ts = int(time.time()) + exp_offset_sec
+            body = base64.urlsafe_b64encode(json.dumps({"sub": "u-1", "exp": exp_ts}).encode("utf-8")).decode("ascii").rstrip("=")
+            return f"{hdr}.{body}.sig"
+
+        import base64
+        fresh_jwt = _make_fake_jwt(3600)
+        expired_jwt = _make_fake_jwt(-60)
+
+        def mock_nido_http(method: str, url: str, headers: dict[str, str] | None, payload: Any, _to: float):
+            if url.endswith("/auth/v1/token?grant_type=password"):
+                return 200, {
+                    "access_token": fresh_jwt,
+                    "refresh_token": "refresh-tok-01",
+                    "user": {"id": "u-1", "email": "user@nidoholdings.example", "user_metadata": {"full_name": "Minh Anh"}},
+                }, ""
+            if url.endswith("/auth/v1/token?grant_type=refresh_token"):
+                return 200, {
+                    "access_token": _make_fake_jwt(7200),
+                    "refresh_token": "refresh-tok-02",
+                }, ""
+            if url.endswith("/auth/v1/signup"):
+                return 200, {"user": {"id": "u-2", "email": "new@nidoholdings.example"}}, ""
+            if url.endswith("/auth/v1/logout"):
+                return 204, {}, ""
+            if url.endswith("/quota"):
+                return 200, {
+                    "ok": True,
+                    "userId": "u-1",
+                    "planCode": "companion",
+                    "isCompanionPro": True,
+                    "source": "educenter",
+                    "quotaSnapshot": {"aiCreditsQuota": 1500, "aiCreditsUsed": 120, "aiCreditsRemaining": 1380},
+                }, ""
+            return 404, {"error": "not found"}, "not found"
+
+        nido_store = NidoSecretStore(
+            platform="linux",
+            env={"DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/1000/bus"},
+            runner=nido_keyring_runner,
+        )
+        nido_backend = NidoHubBackend(home_dir=nido_home, catalog_path=cat_file, secret_store=nido_store)
+        nido_backend.nido_account.http_requester = mock_nido_http
+
+        ok_reg, _, reg_info = nido_backend.register_nido_account("new@nidoholdings.example", "secret123", "Minh", restart_service=False)
+        assert ok_reg and reg_info.get("emailConfirmationRequired") is True
+
+        ok_lgn, msg_lgn, prof_lgn = nido_backend.login_nido_account("user@nidoholdings.example", "secret123", restart_service=False)
+        assert ok_lgn and prof_lgn is not None and prof_lgn["isPro"] is True, msg_lgn
+        assert prof_lgn["quota"]["aiCreditsRemaining"] == 1380
+        # Tokens stored only in keyring, NEVER plaintext in .env.local or account.json
+        assert nido_keyring_mem.get("NIDO_ACCOUNT_ACCESS_TOKEN") == fresh_jwt
+        assert fresh_jwt not in nido_backend.env_file.read_text(encoding="utf-8")
+        acct_json_txt = nido_backend.nido_account.profile_path.read_text(encoding="utf-8")
+        assert fresh_jwt not in acct_json_txt and "refresh-tok" not in acct_json_txt
+
+        # Verify refresh rotation when JWT expires
+        nido_keyring_mem["NIDO_ACCOUNT_ACCESS_TOKEN"] = expired_jwt
+        ok_ref, _, _ = nido_backend.nido_account.refresh_session(force=False)
+        assert ok_ref and nido_keyring_mem["NIDO_ACCOUNT_ACCESS_TOKEN"] != expired_jwt
+        assert nido_keyring_mem["NIDO_ACCOUNT_REFRESH_TOKEN"] == "refresh-tok-02"
+
+        # Verify capability matrix + onboarding gate + Stage 3 OS Sync round-trip
+        st_nido = nido_backend.get_nido_account_status(refresh_quota=False)
+        caps_nido = compute_capability_matrix(
+            {"primaryBackend": {"kind": "nido", "configured": True, "reachable": True, "defaultModel": "nido-llama"}},
+            local_empty,
+            [],
+            nido_account=st_nido,
+        )
+        assert caps_nido["nidooffice_ai"]["ready"] is True and caps_nido["nidoagent"]["ready"] is True
+        assert caps_nido["nidobox_ocr"]["ready"] is False, "Text-only Nido AI proxy must not mark Vision OCR ready"
+
+        gate_nido = evaluate_ai_onboarding_gate(True, [], nido_account=st_nido)
+        assert gate_nido["canComplete"] and gate_nido["signedInProviders"] == ["nido"]
+        ok_ob_nido, _ = nido_backend.complete_ai_onboarding(ai_enabled=True, restart_service=False, agent_states=[])
+        assert ok_ob_nido and nido_backend.load_env_file_only().get("NIDOAI_PRIMARY_BACKEND") == "nido"
+
+        ok_exp, _, sync_file = nido_backend.export_os_sync_bundle()
+        assert ok_exp and sync_file.is_file()
+        sync_raw = sync_file.read_text(encoding="utf-8")
+        assert "MUST_BE_STRIPPED" not in sync_raw and "Cộng hòa xã hội" in sync_raw
+        (nido_home / ".config" / "vielotus" / "macros.json").unlink()
+        ok_imp, _, restored = nido_backend.import_os_sync_bundle(sync_file, restart_service=False)
+        assert ok_imp and "vielotus:macros.json" in restored
+        assert "Cộng hòa xã hội" in (nido_home / ".config" / "vielotus" / "macros.json").read_text(encoding="utf-8")
+
+        ok_out, _ = nido_backend.logout_nido_account(restart_service=False)
+        assert ok_out and not nido_backend.nido_account.profile_path.is_file()
+        assert "NIDO_ACCOUNT_ACCESS_TOKEN" not in nido_keyring_mem
 
         # Verify mandatory AI ON/OFF onboarding gate policy
         gate_on_empty = evaluate_ai_onboarding_gate(
@@ -1287,6 +1509,22 @@ def can_launch_gtk() -> bool:
         return True
     except Exception:
         return False
+
+
+def _format_nido_account_subtitle(acct: dict[str, Any]) -> str:
+    if acct.get("signedIn"):
+        who = str(acct.get("fullName") or acct.get("email") or "Đã đăng nhập").strip()
+        email = str(acct.get("email") or "").strip()
+        if email and who != email:
+            who = f"{who} ({email})"
+        plan = str(acct.get("planName") or "Miễn phí (Free)")
+        quota = acct.get("quota") if isinstance(acct.get("quota"), dict) else {}
+        if acct.get("isPro") and quota:
+            rem = int(quota.get("aiCreditsRemaining") or 0)
+            tot = int(quota.get("aiCreditsQuota") or 0)
+            return f"{who} · {plan} (còn {rem}/{tot} lượt AI)"
+        return f"{who} · {plan}"
+    return "Đăng nhập một lần cho NidoOffice, NidoAgent và sao lưu cài đặt NidoOS."
 
 
 def _format_agent_status_subtitle(spec: Any, state: dict[str, Any]) -> str:
@@ -1601,10 +1839,195 @@ def run_gtk_app(
             ollama_install_btn: Any = None
             ollama_model_btns: list[tuple[str, Gtk.Button]] = []
             agent_rows: dict[str, tuple[Any, Gtk.Button, Any]] = {}
+            nido_acct_row: Any = None
+            nido_auth_btn: Any = None
+            nido_refresh_btn: Any = None
+            sync_toggle_row: Any = None
+            sync_toggle_guard = [False]
 
-            def _format_banner_line(gw_line: str, agent_states_list: list[dict[str, Any]], caps: dict[str, Any]) -> str:
+            def _apply_nido_account_main_ui(acct: dict[str, Any]) -> None:
+                signed_in = bool(acct.get("signedIn"))
+                if nido_acct_row is not None:
+                    nido_acct_row.set_subtitle(_format_nido_account_subtitle(acct))
+                if nido_refresh_btn is not None:
+                    nido_refresh_btn.set_visible(signed_in)
+                    nido_refresh_btn.set_sensitive(True)
+                if nido_auth_btn is not None:
+                    nido_auth_btn.set_label("Đăng xuất" if signed_in else "Đăng nhập")
+                    if signed_in:
+                        nido_auth_btn.remove_css_class("suggested-action")
+                    else:
+                        nido_auth_btn.add_css_class("suggested-action")
+                    nido_auth_btn.set_sensitive(True)
+                if sync_toggle_row is not None:
+                    sync_obj = acct.get("sync") if isinstance(acct.get("sync"), dict) else {}
+                    sync_toggle_guard[0] = True
+                    try:
+                        sync_toggle_row.set_active(bool(sync_obj.get("enabled")))
+                        sync_toggle_row.set_sensitive(signed_in)
+                    finally:
+                        sync_toggle_guard[0] = False
+
+            def _open_nido_account_dialog(
+                on_signed_in: Any,
+                toast_target: Any,
+            ) -> None:
+                use_adw_dialog = hasattr(Adw, "Dialog")
+                if use_adw_dialog:
+                    dlg = Adw.Dialog(title="Tài khoản Nido", content_width=440, content_height=420)
+                    dlg_tb = Adw.ToolbarView()
+                    dlg_hb = Adw.HeaderBar()
+                    dlg_tb.add_top_bar(dlg_hb)
+                else:
+                    dlg = Adw.Window(title="Tài khoản Nido", modal=True)
+                    dlg.set_transient_for(win)
+                    dlg.set_default_size(440, 420)
+                    dlg_tb = Adw.ToolbarView()
+                    dlg_hb = Adw.HeaderBar()
+                    dlg_tb.add_top_bar(dlg_hb)
+
+                body_scroll, body_box = _make_scrolled_canvas(max_width=420)
+                mode_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+                mode_row.add_css_class("linked")
+                mode_row.set_halign(Gtk.Align.CENTER)
+                btn_mode_login = Gtk.ToggleButton(label="Đăng nhập", active=True)
+                btn_mode_reg = Gtk.ToggleButton(label="Tạo tài khoản")
+                btn_mode_reg.set_group(btn_mode_login)
+                mode_row.append(btn_mode_login)
+                mode_row.append(btn_mode_reg)
+                body_box.append(mode_row)
+
+                form_group = _make_group(
+                    title="Đăng nhập Tài khoản Nido",
+                    description="Dùng chung cho NidoOffice, Trợ lý NidoAgent và đồng bộ cài đặt NidoOS.",
+                )
+                name_row = _make_plain_row(Adw.EntryRow(), "Họ và tên")
+                name_row.set_visible(False)
+                email_row = _make_plain_row(Adw.EntryRow(), "Email")
+                pass_row = _make_plain_row(Adw.PasswordEntryRow(), "Mật khẩu")
+                form_group.add(name_row)
+                form_group.add(email_row)
+                form_group.add(pass_row)
+                body_box.append(form_group)
+
+                status_lbl = Gtk.Label(xalign=0.0, wrap=True)
+                status_lbl.add_css_class("dim-label")
+                status_lbl.set_visible(False)
+                body_box.append(status_lbl)
+
+                btn_bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+                btn_bar.set_halign(Gtk.Align.END)
+                resend_btn = Gtk.Button(label="Gửi lại xác nhận")
+                resend_btn.set_visible(False)
+                cancel_btn = Gtk.Button(label="Đóng")
+                submit_btn = Gtk.Button(label="Đăng nhập")
+                submit_btn.add_css_class("suggested-action")
+                submit_btn.add_css_class("pill")
+                btn_bar.append(resend_btn)
+                btn_bar.append(cancel_btn)
+                btn_bar.append(submit_btn)
+                body_box.append(btn_bar)
+
+                def _close_dlg() -> None:
+                    dlg.close()
+
+                def _sync_mode(*_a: Any) -> None:
+                    is_reg = bool(btn_mode_reg.get_active())
+                    name_row.set_visible(is_reg)
+                    submit_btn.set_label("Tạo tài khoản" if is_reg else "Đăng nhập")
+                    resend_btn.set_visible(False)
+                    status_lbl.set_visible(False)
+
+                btn_mode_login.connect("toggled", _sync_mode)
+                btn_mode_reg.connect("toggled", _sync_mode)
+                cancel_btn.connect("clicked", lambda _b: _close_dlg())
+
+                def _on_resend(_b: Gtk.Button) -> None:
+                    em = email_row.get_text().strip()
+                    if not em:
+                        return
+                    _b.set_sensitive(False)
+
+                    def worker() -> None:
+                        _, msg_r = backend.resend_nido_confirmation(em)
+
+                        def done() -> bool:
+                            _b.set_sensitive(True)
+                            status_lbl.set_text(msg_r)
+                            status_lbl.set_visible(True)
+                            return False
+
+                        GLib.idle_add(done)
+
+                    threading.Thread(target=worker, daemon=True).start()
+
+                resend_btn.connect("clicked", _on_resend)
+
+                def _on_submit(*_a: Any) -> None:
+                    is_reg = bool(btn_mode_reg.get_active())
+                    em = email_row.get_text().strip()
+                    pw = pass_row.get_text()
+                    nm = name_row.get_text().strip()
+                    submit_btn.set_sensitive(False)
+                    submit_btn.set_label("Đang xử lý...")
+                    status_lbl.set_visible(False)
+
+                    def worker() -> None:
+                        if is_reg:
+                            ok_a, msg_a, detail = backend.register_nido_account(
+                                em, pw, full_name=nm, set_as_primary=True, restart_service=True
+                            )
+                            needs_confirm = bool(ok_a and detail.get("emailConfirmationRequired"))
+                            acct_now = backend.get_nido_account_status(refresh_quota=False) if (ok_a and not needs_confirm) else None
+                        else:
+                            ok_a, msg_a, acct_now = backend.login_nido_account(
+                                em, pw, set_as_primary=True, restart_service=True
+                            )
+                            needs_confirm = False
+
+                        def done() -> bool:
+                            submit_btn.set_sensitive(True)
+                            submit_btn.set_label("Tạo tài khoản" if is_reg else "Đăng nhập")
+                            if needs_confirm:
+                                status_lbl.set_text(msg_a)
+                                status_lbl.set_visible(True)
+                                resend_btn.set_visible(True)
+                                btn_mode_login.set_active(True)
+                                return False
+                            if not ok_a:
+                                status_lbl.set_text(msg_a)
+                                status_lbl.set_visible(True)
+                                return False
+                            _add_toast(toast_target, msg_a[:150])
+                            _close_dlg()
+                            on_signed_in(acct_now or backend.get_nido_account_status(refresh_quota=False))
+                            return False
+
+                        GLib.idle_add(done)
+
+                    threading.Thread(target=worker, daemon=True).start()
+
+                submit_btn.connect("clicked", _on_submit)
+                pass_row.connect("entry-activated", _on_submit)
+
+                dlg_tb.set_content(body_scroll)
+                if use_adw_dialog:
+                    dlg.set_child(dlg_tb)
+                    dlg.present(win)
+                else:
+                    dlg.set_content(dlg_tb)
+                    dlg.present()
+
+            def _format_banner_line(
+                gw_line: str,
+                agent_states_list: list[dict[str, Any]],
+                caps: dict[str, Any],
+                nido_acct: dict[str, Any] | None = None,
+            ) -> str:
                 if not backend.is_ai_enabled():
                     return "Trợ lý AI đang tắt trên NidoOS — bật công tắc bên dưới khi bạn muốn sử dụng."
+                if nido_acct and nido_acct.get("signedIn") and caps.get("nidooffice_ai", {}).get("ready"):
+                    return f"Đã kết nối {nido_acct.get('email') or 'Tài khoản Nido'} ({nido_acct.get('planName', 'Nido')})."
                 signed = [str(a.get("id", "")).upper() for a in agent_states_list if a.get("signedIn")]
                 if signed and "chưa cấu hình" in gw_line:
                     names = ", ".join(signed)
@@ -1632,15 +2055,24 @@ def run_gtk_app(
                         btn_w.add_css_class("suggested-action")
                     btn_w.set_sensitive(True)
 
-            def refresh_readiness_ui(persist_agents: bool = False, show_toast: bool = False) -> None:
+            def refresh_readiness_ui(
+                persist_agents: bool = False,
+                show_toast: bool = False,
+                refresh_nido: bool = False,
+            ) -> None:
                 def worker() -> None:
                     agents_list = backend.probe_agent_accounts(persist=persist_agents)
                     hw = detect_hardware(backend.home_dir)
                     local_info = probe_local_ai_runtimes(backend.home_dir)
                     gw_detail = backend.probe_gateway_health_detail()
-                    rep = build_ai_readiness_report(hw, local_info, gw_detail, agents_list)
+                    nido_acct = backend.get_nido_account_status(refresh_quota=refresh_nido)
+                    rep = build_ai_readiness_report(
+                        hw, local_info, gw_detail, agents_list, nido_account=nido_acct
+                    )
                     _, gw_line = backend.probe_gateway_health()
-                    banner_line = _format_banner_line(gw_line, agents_list, rep["capabilities"])
+                    banner_line = _format_banner_line(
+                        gw_line, agents_list, rep["capabilities"], nido_acct=nido_acct
+                    )
                     states_map = {e["id"]: e for e in agents_list}
 
                     def apply_ui() -> bool:
@@ -1656,7 +2088,12 @@ def run_gtk_app(
                             _, b_lbl, d_lbl = cap_tiles[ck]
                             _set_badge_state(b_lbl, c_info["badge"], bool(c_info.get("ready")))
                             d_lbl.set_text(c_info["detail"])
+                        _apply_nido_account_main_ui(nido_acct)
                         _apply_agent_rows_ui(states_map)
+                        cur_env = backend.load_env_file_only()
+                        p_kind = cur_env.get("NIDOAI_PRIMARY_BACKEND", "gemini")
+                        p_idx = next((i for i, (k, _) in enumerate(PROVIDERS) if k == p_kind), 0)
+                        prov_row.set_selected(p_idx)
                         ol_info = rep["local"]["ollama"]
                         if ollama_status_row is not None:
                             ollama_status_row.set_subtitle(rep["ollamaStatusVi"])
@@ -1723,6 +2160,182 @@ def run_gtk_app(
             save_btn.connect("clicked", on_save_clicked)
             check_btn.connect("clicked", on_check_clicked)
 
+            # Group 1b: Unified Nido Account (SSO for NidoOffice, NidoAgent & OS Sync)
+            initial_nido_acct = initial_report.get("nidoAccount") or backend.get_nido_account_status(refresh_quota=False)
+            nido_group = _make_group(
+                title="Tài khoản Nido",
+                description="Một tài khoản dùng chung cho NidoOffice, NidoAgent và sao lưu cài đặt hệ thống.",
+            )
+            nido_acct_row = _make_plain_row(
+                Adw.ActionRow(),
+                "Tài khoản Nido",
+                _format_nido_account_subtitle(initial_nido_acct),
+            )
+            nido_btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            nido_btn_box.set_valign(Gtk.Align.CENTER)
+            nido_refresh_btn = Gtk.Button(label="Làm mới", valign=Gtk.Align.CENTER)
+            nido_auth_btn = Gtk.Button(
+                label="Đăng xuất" if initial_nido_acct.get("signedIn") else "Đăng nhập",
+                valign=Gtk.Align.CENTER,
+            )
+            if not initial_nido_acct.get("signedIn"):
+                nido_auth_btn.add_css_class("suggested-action")
+            nido_refresh_btn.set_visible(bool(initial_nido_acct.get("signedIn")))
+
+            def _on_nido_auth_clicked(_b: Gtk.Button) -> None:
+                if _b.get_label() == "Đăng xuất":
+                    _b.set_sensitive(False)
+                    _b.set_label("Đang đăng xuất...")
+
+                    def worker() -> None:
+                        _, msg_out = backend.logout_nido_account(restart_service=True)
+
+                        def done() -> bool:
+                            _add_toast(toast_overlay, msg_out[:140])
+                            refresh_readiness_ui(persist_agents=False)
+                            return False
+
+                        GLib.idle_add(done)
+
+                    threading.Thread(target=worker, daemon=True).start()
+                    return
+
+                _open_nido_account_dialog(
+                    lambda _acct: refresh_readiness_ui(persist_agents=False),
+                    toast_overlay,
+                )
+
+            nido_refresh_btn.connect(
+                "clicked",
+                lambda _b: refresh_readiness_ui(persist_agents=False, show_toast=True, refresh_nido=True),
+            )
+            nido_auth_btn.connect("clicked", _on_nido_auth_clicked)
+            nido_btn_box.append(nido_refresh_btn)
+            nido_btn_box.append(nido_auth_btn)
+            nido_acct_row.add_suffix(nido_btn_box)
+            nido_group.add(nido_acct_row)
+
+            sync_expander = _make_plain_row(
+                Adw.ExpanderRow(),
+                "Đồng bộ cài đặt NidoOS",
+                "Lưu hoặc khôi phục bảng gõ tắt Sen Việt, tùy chọn NidoBox và cấu hình Trợ lý AI.",
+            )
+            if hasattr(sync_expander, "set_expanded"):
+                sync_expander.set_expanded(False)
+
+            sync_toggle_row = _make_plain_row(
+                Adw.SwitchRow(),
+                "Ghi nhận trạng thái đồng bộ",
+                "Cần đăng nhập Tài khoản Nido để gắn hồ sơ sao lưu vào tài khoản.",
+            )
+            sync_toggle_guard[0] = True
+            try:
+                sync_toggle_row.set_active(bool((initial_nido_acct.get("sync") or {}).get("enabled")))
+                sync_toggle_row.set_sensitive(bool(initial_nido_acct.get("signedIn")))
+            finally:
+                sync_toggle_guard[0] = False
+
+            def _on_sync_toggled(sw: Any, _pspec: Any) -> None:
+                if sync_toggle_guard[0]:
+                    return
+                backend.set_os_sync_enabled(bool(sw.get_active()))
+                _add_toast(
+                    toast_overlay,
+                    "Đã bật ghi nhận đồng bộ cài đặt." if sw.get_active() else "Đã tắt ghi nhận đồng bộ cài đặt.",
+                )
+
+            sync_toggle_row.connect("notify::active", _on_sync_toggled)
+            sync_expander.add_row(sync_toggle_row)
+
+            sync_export_row = _make_plain_row(
+                Adw.ActionRow(),
+                "Sao lưu cài đặt ra tệp",
+                "Xuất bảng gõ tắt Sen Việt, tùy chọn NidoBox và cài đặt AI (không bao gồm mật khẩu hay khóa).",
+            )
+            sync_export_btn = Gtk.Button(label="Sao lưu...", valign=Gtk.Align.CENTER)
+
+            def _run_export_sync(dest: Path | None) -> None:
+                sync_export_btn.set_sensitive(False)
+
+                def worker() -> None:
+                    _, msg_e, _ = backend.export_os_sync_bundle(dest_path=dest)
+
+                    def done() -> bool:
+                        sync_export_btn.set_sensitive(True)
+                        _add_toast(toast_overlay, msg_e[:150])
+                        return False
+
+                    GLib.idle_add(done)
+
+                threading.Thread(target=worker, daemon=True).start()
+
+            def _on_export_clicked(_b: Gtk.Button) -> None:
+                if hasattr(Gtk.FileDialog, "save"):
+                    fdlg = Gtk.FileDialog(title="Lưu bản sao lưu cài đặt NidoOS")
+                    if hasattr(fdlg, "set_initial_name"):
+                        fdlg.set_initial_name("nidoos-settings-backup.json")
+
+                    def _on_saved(d: Any, res: Any) -> None:
+                        try:
+                            gf = d.save_finish(res)
+                            if gf and gf.get_path():
+                                _run_export_sync(Path(gf.get_path()))
+                        except Exception:
+                            pass
+
+                    fdlg.save(win, None, _on_saved)
+                else:
+                    _run_export_sync(None)
+
+            sync_export_btn.connect("clicked", _on_export_clicked)
+            sync_export_row.add_suffix(sync_export_btn)
+            sync_expander.add_row(sync_export_row)
+
+            sync_import_row = _make_plain_row(
+                Adw.ActionRow(),
+                "Khôi phục cài đặt từ tệp",
+                "Nạp lại hồ sơ cài đặt NidoOS đã sao lưu trước đó.",
+            )
+            sync_import_btn = Gtk.Button(label="Khôi phục...", valign=Gtk.Align.CENTER)
+
+            def _run_import_sync(src: Path | None) -> None:
+                sync_import_btn.set_sensitive(False)
+
+                def worker() -> None:
+                    ok_i, msg_i, _ = backend.import_os_sync_bundle(src_path=src, restart_service=True)
+
+                    def done() -> bool:
+                        sync_import_btn.set_sensitive(True)
+                        _add_toast(toast_overlay, msg_i[:150])
+                        if ok_i:
+                            refresh_readiness_ui(persist_agents=False)
+                        return False
+
+                    GLib.idle_add(done)
+
+                threading.Thread(target=worker, daemon=True).start()
+
+            def _on_import_clicked(_b: Gtk.Button) -> None:
+                if hasattr(Gtk.FileDialog, "open"):
+                    fdlg = Gtk.FileDialog(title="Chọn tệp sao lưu cài đặt NidoOS")
+
+                    def _on_opened(d: Any, res: Any) -> None:
+                        try:
+                            gf = d.open_finish(res)
+                            if gf and gf.get_path():
+                                _run_import_sync(Path(gf.get_path()))
+                        except Exception:
+                            pass
+
+                    fdlg.open(win, None, _on_opened)
+                else:
+                    _run_import_sync(None)
+
+            sync_import_btn.connect("clicked", _on_import_clicked)
+            sync_import_row.add_suffix(sync_import_btn)
+            sync_expander.add_row(sync_import_row)
+            nido_group.add(sync_expander)
+
             # Group 2: Connected AI Accounts
             agents_group = _make_group(
                 title="Tài khoản AI",
@@ -1731,7 +2344,9 @@ def run_gtk_app(
 
             initial_states_list = backend.probe_agent_accounts(persist=False)
             initial_states = {entry["id"]: entry for entry in initial_states_list}
-            init_banner = _format_banner_line(gw_msg, initial_states_list, initial_report["capabilities"])
+            init_banner = _format_banner_line(
+                gw_msg, initial_states_list, initial_report["capabilities"], nido_acct=initial_nido_acct
+            )
             banner.set_title(
                 init_banner if hasattr(banner, "set_use_markup") else escape_markup(init_banner)
             )
@@ -1955,6 +2570,7 @@ def run_gtk_app(
             agents_refresh_group.add(refresh_agents_btn)
 
             ai_page.append(diag_group)
+            ai_page.append(nido_group)
             ai_page.append(agents_group)
             ai_page.append(adv_group)
             ai_page.append(cloud_accounts_group)
@@ -2603,10 +3219,22 @@ def run_gtk_app(
             # Onboarding Group 1: Mandatory Sign-In (visible when AI ON)
             ob_accounts_group = _make_group(
                 title="Kết nối tài khoản AI",
-                description="Chọn ít nhất 1 tài khoản để bắt đầu (đăng nhập trực tiếp qua trình duyệt)",
+                description=(
+                    "Đăng nhập Tài khoản Nido (dùng chung NidoOffice & NidoAgent) "
+                    "hoặc ít nhất 1 tài khoản trợ lý bên dưới"
+                ),
             )
             ob_agent_rows: dict[str, tuple[Any, Gtk.Button, Any]] = {}
             ob_latest_states: list[dict[str, Any]] = list(initial_states_list)
+            ob_latest_nido: list[dict[str, Any]] = [dict(initial_nido_acct)]
+
+            ob_nido_row = _make_plain_row(
+                Adw.ActionRow(),
+                "Tài khoản Nido (Khuyên dùng)",
+                _format_nido_account_subtitle(ob_latest_nido[0]),
+            )
+            ob_nido_btn = Gtk.Button(label="Đăng nhập / Đăng ký", valign=Gtk.Align.CENTER)
+            ob_nido_row.add_suffix(ob_nido_btn)
 
             ob_check_row = _make_plain_row(
                 Adw.ActionRow(),
@@ -2707,7 +3335,8 @@ def run_gtk_app(
 
             def _update_onboarding_ui() -> None:
                 ai_on = bool(ob_ai_switch.get_active())
-                gate = evaluate_ai_onboarding_gate(ai_on, ob_latest_states)
+                nido_now = ob_latest_nido[0]
+                gate = evaluate_ai_onboarding_gate(ai_on, ob_latest_states, nido_account=nido_now)
                 states_map = {e["id"]: e for e in ob_latest_states}
 
                 ob_accounts_group.set_visible(ai_on)
@@ -2728,6 +3357,16 @@ def run_gtk_app(
                         else "Chưa có tài khoản nào được kết nối."
                     )
                 )
+
+                ob_nido_row.set_subtitle(_format_nido_account_subtitle(nido_now))
+                if nido_now.get("signedIn"):
+                    ob_nido_btn.set_label("Đã kết nối ✓")
+                    ob_nido_btn.remove_css_class("suggested-action")
+                    ob_nido_btn.set_sensitive(True)
+                else:
+                    ob_nido_btn.set_label("Đăng nhập / Đăng ký")
+                    ob_nido_btn.add_css_class("suggested-action")
+                    ob_nido_btn.set_sensitive(True)
 
                 for spec in MANAGED_AGENT_SPECS:
                     if spec.id not in ob_agent_rows:
@@ -2762,12 +3401,19 @@ def run_gtk_app(
             def _refresh_onboarding_accounts(show_toast: bool = False) -> None:
                 def worker() -> None:
                     fresh_states = backend.probe_agent_accounts(persist=True)
+                    fresh_nido = backend.get_nido_account_status(refresh_quota=show_toast)
 
                     def apply() -> bool:
                         ob_latest_states[:] = fresh_states
+                        ob_latest_nido[0] = fresh_nido
+                        _apply_nido_account_main_ui(fresh_nido)
                         _update_onboarding_ui()
                         if show_toast:
-                            g = evaluate_ai_onboarding_gate(bool(ob_ai_switch.get_active()), ob_latest_states)
+                            g = evaluate_ai_onboarding_gate(
+                                bool(ob_ai_switch.get_active()),
+                                ob_latest_states,
+                                nido_account=ob_latest_nido[0],
+                            )
                             _add_toast(ob_toast_overlay, f"{g['statusBadge']}: {g['reasonVi']}"[:150])
                         return False
 
@@ -2792,6 +3438,25 @@ def run_gtk_app(
 
                 ob_poll_source_id[0] = int(GLib.timeout_add_seconds(4, _tick))
 
+            def _on_ob_nido_signed_in(acct_now: dict[str, Any]) -> None:
+                ob_latest_nido[0] = acct_now
+                _apply_nido_account_main_ui(acct_now)
+                if acct_now.get("signedIn"):
+                    nido_idx = next((idx for idx, (k, _) in enumerate(PROVIDERS) if k == "nido"), -1)
+                    if nido_idx >= 0:
+                        ob_prov_row.set_selected(nido_idx)
+                _update_onboarding_ui()
+
+            def _on_ob_nido_clicked(_b: Gtk.Button) -> None:
+                if ob_latest_nido[0].get("signedIn"):
+                    email_txt = str(ob_latest_nido[0].get("email") or "Nido").strip()
+                    _add_toast(ob_toast_overlay, f"Tài khoản Nido ({email_txt}) đã đăng nhập sẵn sàng!")
+                    return
+                _open_nido_account_dialog(_on_ob_nido_signed_in, ob_toast_overlay)
+
+            ob_nido_btn.connect("clicked", _on_ob_nido_clicked)
+            ob_accounts_group.add(ob_nido_row)
+
             for spec in MANAGED_AGENT_SPECS:
                 st = initial_states.get(spec.id, {"installed": False, "signedIn": False})
                 ob_row = _make_plain_row(
@@ -2815,12 +3480,19 @@ def run_gtk_app(
                     def worker() -> None:
                         ok_c, msg_c = backend.connect_agent(pid)
                         fresh = backend.probe_agent_accounts(persist=True)
+                        fresh_nido = backend.get_nido_account_status(refresh_quota=False)
 
                         def done() -> bool:
                             ob_latest_states[:] = fresh
+                            ob_latest_nido[0] = fresh_nido
+                            _apply_nido_account_main_ui(fresh_nido)
                             _add_toast(ob_toast_overlay, msg_c[:150])
                             _update_onboarding_ui()
-                            if ok_c and not evaluate_ai_onboarding_gate(True, ob_latest_states)["canComplete"]:
+                            if ok_c and not evaluate_ai_onboarding_gate(
+                                True,
+                                ob_latest_states,
+                                nido_account=ob_latest_nido[0],
+                            )["canComplete"]:
                                 _start_ob_poll()
                             return False
 
@@ -2940,14 +3612,20 @@ def run_gtk_app(
                         return
 
                     fresh_agents = backend.probe_agent_accounts(persist=True)
-                    gate_now = evaluate_ai_onboarding_gate(True, fresh_agents)
+                    fresh_nido = backend.get_nido_account_status(refresh_quota=False)
+                    gate_now = evaluate_ai_onboarding_gate(True, fresh_agents, nido_account=fresh_nido)
                     if not gate_now["canComplete"]:
                         def open_gate() -> bool:
                             ob_latest_states[:] = fresh_agents
+                            ob_latest_nido[0] = fresh_nido
+                            _apply_nido_account_main_ui(fresh_nido)
                             _enter_onboarding_view()
                             _add_toast(
                                 ob_toast_overlay,
-                                "Vui lòng đăng nhập ít nhất 1 tài khoản (Google/Gemini, ChatGPT hoặc Claude).",
+                                (
+                                    "Vui lòng đăng nhập Tài khoản Nido hoặc ít nhất 1 tài khoản trợ lý "
+                                    "(Google/Gemini, ChatGPT, Claude)."
+                                ),
                             )
                             return False
 
@@ -2992,8 +3670,8 @@ def run_gtk_app(
                     dlg = Adw.AlertDialog(
                         heading="Chưa hoàn tất thiết lập AI",
                         body=(
-                            "Chế độ AI yêu cầu đăng nhập ít nhất 1 tài khoản (Google/Gemini, ChatGPT hoặc Claude) "
-                            "hoặc chọn Tắt AI trước khi vào màn hình chính."
+                            "Chế độ AI yêu cầu đăng nhập Tài khoản Nido hoặc ít nhất 1 tài khoản trợ lý "
+                            "(Google/Gemini, ChatGPT, Claude) hoặc chọn Tắt AI trước khi vào màn hình chính."
                         ),
                     )
                     dlg.add_response("stay", "Quay lại thiết lập")

@@ -7,6 +7,8 @@ export const MANAGED_SECRET_KEYS = [
     'OPENAI_API_KEY',
     'ANTHROPIC_API_KEY',
     'NIDOAI_CLIENT_TOKEN',
+    'NIDO_ACCOUNT_ACCESS_TOKEN',
+    'NIDO_ACCOUNT_REFRESH_TOKEN',
 ];
 const KEYRING_SERVICE = 'nidoai';
 function defaultRunner(command, args, options) {

@@ -392,11 +392,75 @@ def live_verify_backend(
     api_key: str = "",
     local_base_url: str = "",
     local_model: str = "",
+    nido_ai_proxy_url: str = "",
+    nido_anon_key: str = "",
     http_getter: Callable[[str, dict[str, str] | None, float], tuple[int, Any, str]] | None = None,
 ) -> dict[str, Any]:
     """Perform a lightweight, zero-token live check before declaring a backend ready."""
     getter = http_getter or _http_json
     k = kind.strip().lower()
+
+    if k == "nido":
+        token = api_key.strip()
+        if not token:
+            return {
+                "ok": False,
+                "kind": "nido",
+                "models": [],
+                "selectedModel": "",
+                "visionReady": False,
+                "message": "Chưa đăng nhập Tài khoản Nido.",
+            }
+        proxy_url = (
+            nido_ai_proxy_url.strip()
+            or "https://educenter-ai-proxy.ttd1232004.workers.dev/functions/v1/ai-proxy"
+        ).rstrip("/")
+        hdrs: dict[str, str] = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+        }
+        if nido_anon_key.strip():
+            hdrs["apikey"] = nido_anon_key.strip()
+        st_n, data_n, err_n = getter(f"{proxy_url}/quota", hdrs, 5.0)
+        if st_n == 200 and isinstance(data_n, dict):
+            snap = data_n.get("quotaSnapshot") if isinstance(data_n.get("quotaSnapshot"), dict) else {}
+            is_pro = bool(data_n.get("isCompanionPro") if "isCompanionPro" in data_n else data_n.get("isPro", False))
+            rem = int(snap.get("aiCreditsRemaining") or 0)
+            tot = int(snap.get("aiCreditsQuota") or 0)
+            if is_pro and rem > 0:
+                return {
+                    "ok": True,
+                    "kind": "nido",
+                    "models": ["nido-llama", "gemini-2.5-flash"],
+                    "selectedModel": "nido-llama",
+                    "visionReady": False,
+                    "message": f"Tài khoản Nido sẵn sàng (còn {rem}/{tot} lượt AI · hỗ trợ NidoOffice & NidoAgent).",
+                }
+            return {
+                "ok": True,
+                "kind": "nido",
+                "models": ["nido-llama"],
+                "selectedModel": "nido-llama",
+                "visionReady": False,
+                "message": "Đã kết nối Tài khoản Nido (gói Miễn phí — nâng cấp Gói Đồng Hành để bật AI Credits).",
+            }
+        if st_n in (401, 403):
+            return {
+                "ok": False,
+                "kind": "nido",
+                "models": [],
+                "selectedModel": "",
+                "visionReady": False,
+                "message": f"Phiên Tài khoản Nido đã hết hạn hoặc không hợp lệ (HTTP {st_n}).",
+            }
+        return {
+            "ok": False,
+            "kind": "nido",
+            "models": [],
+            "selectedModel": "",
+            "visionReady": False,
+            "message": f"Chưa kiểm tra được Tài khoản Nido (HTTP {st_n}): {err_n[:100]}",
+        }
 
     if k == "local":
         base = (local_base_url.strip() or OLLAMA_DEFAULT_BASE_URL).rstrip("/")
@@ -539,6 +603,7 @@ def compute_capability_matrix(
     gateway_health: dict[str, Any] | None,
     local_info: dict[str, Any],
     agent_states: list[dict[str, Any]],
+    nido_account: dict[str, Any] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Compute exact 3-pillar readiness (NidoBox OCR, NidoOffice AI, NidoAgent)."""
     pb = (gateway_health or {}).get("primaryBackend", {}) if isinstance(gateway_health, dict) else {}
@@ -547,12 +612,24 @@ def compute_capability_matrix(
     gw_reachable = bool(pb.get("reachable", False))
     gw_model = str(pb.get("defaultModel") or "")
 
+    nido_acct = nido_account if isinstance(nido_account, dict) else {}
+    nido_signed_in = bool(nido_acct.get("signedIn"))
+    nido_pro = bool(nido_acct.get("isPro"))
+    nido_quota = nido_acct.get("quota") if isinstance(nido_acct.get("quota"), dict) else {}
+    nido_remaining = int(nido_quota.get("aiCreditsRemaining") or 0) if nido_quota else 0
+    nido_total = int(nido_quota.get("aiCreditsQuota") or 0) if nido_quota else 0
+    nido_ai_ready = bool(nido_signed_in and nido_pro and (nido_remaining > 0 or not nido_quota))
+
     if gw_kind == "local":
         has_local_models = bool(local_info.get("hasReadyLocalModel"))
         gw_ready = gw_configured and gw_reachable and has_local_models
         vision_ready = gw_ready and (
             is_vision_model(gw_model) or bool(local_info.get("hasVisionLocalModel"))
         )
+    elif gw_kind == "nido":
+        # Respect server-confirmed Nido Pro quota when nido_account metadata is available
+        gw_ready = gw_configured and gw_reachable and (nido_ai_ready if nido_signed_in else True)
+        vision_ready = False
     else:
         gw_ready = gw_configured and gw_reachable
         vision_ready = gw_ready and gw_kind in ("gemini", "openai", "anthropic")
@@ -569,40 +646,65 @@ def compute_capability_matrix(
         ocr_detail = (
             "Đang tắt — Ollama hiện chỉ có model văn bản. Tải thêm gemma3:4b hoặc qwen2.5vl:7b để bật Vision OCR."
         )
+    elif gw_kind == "nido" and (nido_ai_ready or gw_ready):
+        ocr_detail = (
+            "Cần thêm khóa Gemini miễn phí hoặc mô hình Ollama hỗ trợ ảnh để dùng Scan OCR."
+        )
     elif gw_kind == "local" and local_info.get("ollama", {}).get("running") and not local_info.get("hasReadyLocalModel"):
         ocr_detail = "Đang tắt — Ollama đang chạy nhưng có 0 model. Hãy tải gemma3:4b để bật Vision OCR."
     else:
-        ocr_detail = "Đang tắt (mặc định an toàn) — NidoBox OCR cần khóa API ở mục 1 (Gemini miễn phí $0) hoặc model Vision Ollama cục bộ."
+        ocr_detail = "Đang tắt (mặc định an toàn) — NidoBox OCR cần khóa API ở Cài đặt nâng cao hoặc model Vision Ollama."
 
-    # 2. NidoOffice AI (supports both NidoAI Gateway 127.0.0.1:18090 AND native local Agent CLIs: agy/codex/claude)
+    # 2. NidoOffice AI (supports Nido Account, NidoAI Gateway, and native Agent CLIs)
     office_agent_names = ", ".join(str(a.get("id", "")).upper() for a in signed_agents)
-    office_ready = gw_ready or bool(signed_agents)
-    if gw_ready:
-        office_detail = f"Sẵn sàng qua NidoAI Gateway (127.0.0.1:18090 · {gw_kind} / {gw_model or 'auto'})" + (
-            f" + Agent ({office_agent_names})." if signed_agents else "."
-        )
-    elif signed_agents:
+    office_ready = gw_ready or nido_ai_ready or bool(signed_agents)
+    if gw_ready and gw_kind == "nido":
+        acct_email = str(nido_acct.get("email") or "").strip()
+        credits_part = f" · còn {nido_remaining}/{nido_total} lượt" if nido_total > 0 else ""
         office_detail = (
-            f"Sẵn sàng qua tài khoản chính chủ ({office_agent_names}) — chọn Antigravity / Codex / Claude ngay trong NidoOffice."
-        )
-    elif gw_kind == "local" and local_info.get("ollama", {}).get("running") and not local_info.get("hasReadyLocalModel"):
-        office_detail = "Chưa sẵn sàng — Ollama có 0 model. Bấm tải model cục bộ ở mục 3."
-    else:
-        office_detail = "Chưa bật — NidoOffice soạn thảo & ký số vẫn dùng bình thường; đăng nhập Google Antigravity / Codex hoặc nhập khóa API khi cần trợ lý AI."
-
-    # 3. NidoAgent & Coding Agents
-    if signed_agents:
-        names = ", ".join(str(a.get("id", "")).upper() for a in signed_agents)
-        agent_detail = f"Sẵn sàng với tài khoản chính chủ: {names}" + (
-            f" + Gateway ({gw_kind})" if gw_ready else ""
+            f"Sẵn sàng qua Tài khoản Nido ({acct_email or 'Pro'}{credits_part})"
+            + (f" + {office_agent_names}." if signed_agents else ".")
         )
     elif gw_ready:
-        agent_detail = f"Sẵn sàng qua NidoAI Gateway ({gw_kind}). Có thể đăng nhập thêm Google Antigravity / OpenAI Codex / Claude Code nếu có gói sẵn."
+        office_detail = f"Sẵn sàng qua nguồn AI ({gw_kind} / {gw_model or 'auto'})" + (
+            f" + {office_agent_names}." if signed_agents else "."
+        )
+    elif nido_ai_ready:
+        credits_part = f" (còn {nido_remaining}/{nido_total} lượt)" if nido_total > 0 else ""
+        office_detail = f"Sẵn sàng qua Tài khoản Nido {nido_acct.get('planName', 'Pro')}{credits_part}."
+    elif signed_agents:
+        office_detail = (
+            f"Sẵn sàng qua tài khoản ({office_agent_names}) — chọn trực tiếp trong NidoOffice."
+        )
+    elif nido_signed_in and not nido_pro:
+        office_detail = (
+            "Đã đăng nhập Tài khoản Nido (Miễn phí) — nâng cấp Gói Đồng Hành hoặc thêm tài khoản/khóa AI."
+        )
+    elif gw_kind == "local" and local_info.get("ollama", {}).get("running") and not local_info.get("hasReadyLocalModel"):
+        office_detail = "Chưa sẵn sàng — Ollama có 0 model. Bấm tải model cục bộ ở Cài đặt nâng cao."
+    else:
+        office_detail = "Chưa bật — NidoOffice soạn thảo & ký số vẫn dùng bình thường; đăng nhập Tài khoản Nido hoặc Google/Codex khi cần trợ lý AI."
+
+    # 3. NidoAgent & Coding Agents
+    agent_ready = bool(signed_agents) or gw_ready or nido_ai_ready
+    if nido_ai_ready or (gw_ready and gw_kind == "nido"):
+        extra = f" + {', '.join(str(a.get('id', '')).upper() for a in signed_agents)}" if signed_agents else ""
+        credits_part = f" · còn {nido_remaining} lượt" if nido_total > 0 else ""
+        agent_detail = f"Sẵn sàng với Tài khoản Nido ({nido_acct.get('email') or 'Pro'}{credits_part}){extra}."
+    elif signed_agents:
+        names = ", ".join(str(a.get("id", "")).upper() for a in signed_agents)
+        agent_detail = f"Sẵn sàng với tài khoản: {names}" + (
+            f" + {gw_kind}" if gw_ready else ""
+        )
+    elif gw_ready:
+        agent_detail = f"Sẵn sàng qua nguồn AI ({gw_kind}). Có thể đăng nhập thêm Tài khoản Nido hoặc Google/ChatGPT/Claude."
+    elif nido_signed_in and not nido_pro:
+        agent_detail = "Đã đăng nhập Tài khoản Nido (Miễn phí) — nâng cấp Gói Đồng Hành hoặc đăng nhập thêm Google/ChatGPT/Claude."
     elif installed_agents:
         names = ", ".join(str(a.get("id", "")) for a in installed_agents)
-        agent_detail = f"Đã cài CLI ({names}) nhưng chưa đăng nhập trình duyệt OAuth."
+        agent_detail = f"Đã cài công cụ ({names}) nhưng chưa đăng nhập trình duyệt."
     else:
-        agent_detail = "Chưa thiết lập — Bấm Cài & Đăng nhập Google Antigravity (Ultra/Pro/Free) hoặc nhập Gemini Key miễn phí ($0)."
+        agent_detail = "Chưa thiết lập — Đăng nhập Tài khoản Nido, Google Antigravity, hoặc nhập khóa Gemini miễn phí."
 
     return {
         "nidobox_ocr": {
@@ -619,8 +721,8 @@ def compute_capability_matrix(
         },
         "nidoagent": {
             "title": "NidoAgent & Trợ lý tác vụ",
-            "ready": bool(signed_agents) or gw_ready,
-            "badge": "Sẵn sàng" if (bool(signed_agents) or gw_ready) else "Chưa bật",
+            "ready": agent_ready,
+            "badge": "Sẵn sàng" if agent_ready else "Chưa bật",
             "detail": agent_detail,
         },
     }
@@ -631,8 +733,9 @@ def build_ai_readiness_report(
     local_info: dict[str, Any],
     gateway_health: dict[str, Any] | None,
     agent_states: list[dict[str, Any]],
+    nido_account: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    caps = compute_capability_matrix(gateway_health, local_info, agent_states)
+    caps = compute_capability_matrix(gateway_health, local_info, agent_states, nido_account=nido_account)
     rec_models = recommend_local_models(hw)
 
     gpu_part = (
@@ -642,17 +745,16 @@ def build_ai_readiness_report(
     )
     if hw.tier == "cloud-first":
         rec_vi = (
-            "Khuyến nghị #1: Đăng nhập Google Antigravity CLI (dùng gói Google AI Ultra/Pro/Free có sẵn cho NidoOffice & NidoAgent) "
-            "hoặc dán Google AI Studio GEMINI_API_KEY miễn phí ($0 — bật thêm NidoBox OCR). "
-            "Không khuyến nghị chạy model 7B+ cục bộ trên máy dưới 8 GB RAM."
+            "Khuyến nghị #1: Đăng nhập Tài khoản Nido (dùng chung cho NidoOffice, NidoAgent và đồng bộ cài đặt) "
+            "hoặc Google Antigravity / ChatGPT / Claude."
         )
     elif hw.tier == "hybrid":
         rec_vi = (
-            "Máy chạy tốt cả Cloud miễn phí ($0) lẫn AI cục bộ Ollama gọn (khuyên dùng gemma3:4b cho cả Vision OCR + Tiếng Việt)."
+            "Máy chạy tốt cả AI đám mây (Tài khoản Nido / Google Gemini) lẫn AI cục bộ Ollama (gemma3:4b hỗ trợ cả Vision OCR)."
         )
     else:
         rec_vi = (
-            "Phần cứng mạnh — chạy mượt AI cục bộ 100% offline qua Ollama (gemma3:12b, qwen2.5vl:7b) hoặc kết hợp Cloud."
+            "Phần cứng mạnh — chạy mượt AI cục bộ ngoại tuyến qua Ollama (gemma3:12b, qwen2.5vl:7b) hoặc kết hợp Tài khoản Nido."
         )
 
     ol = local_info.get("ollama", {})
@@ -675,6 +777,7 @@ def build_ai_readiness_report(
         "local": local_info,
         "capabilities": caps,
         "recommendedModels": [asdict(m) for m in rec_models],
+        "nidoAccount": nido_account or {"signedIn": False},
         "anyAiReady": any(c["ready"] for c in caps.values()),
     }
 

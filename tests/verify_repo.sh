@@ -155,6 +155,7 @@ for fname in expected:
         if fname == "nidoai-gateway_0.2.0_all.deb":
             assert "./usr/lib/nidoai/src/cli.mjs" in names, f"{fname}: missing pure JS cli.mjs entry"
             assert "./usr/lib/nidoai/src/gateway/anthropic-adapter.js" in names, f"{fname}: missing unified anthropic-adapter.js"
+            assert "./usr/lib/nidoai/src/gateway/nido-account-adapter.js" in names, f"{fname}: missing nido-account-adapter.js"
             assert "./usr/lib/nidoai/src/security/secret-store.js" in names, f"{fname}: missing unified secret-store.js"
             assert "./usr/lib/nidoai/src/cli.ts" not in names, f"{fname}: stale cli.ts found (breaks stock Ubuntu nodejs)"
         elif fname == "nido-desktop-settings_0.2.0_all.deb":
@@ -200,6 +201,7 @@ for fname in expected:
             for req_hub in (
                 "./usr/lib/nido-hub/agent_accounts.py",
                 "./usr/lib/nido-hub/ai_discovery.py",
+                "./usr/lib/nido-hub/nido_account.py",
                 "./usr/lib/nido-hub/app_store.py",
                 "./usr/lib/nido-hub/markdown_render.py",
                 "./usr/lib/nido-hub/printer_probe.py",
@@ -363,8 +365,8 @@ for deb_name in (
                 tf.extractall(extract_root, filter="tar")
 PY
 
-mkdir -p "${SANDBOX}/home/.nidoai"
-chmod 700 "${SANDBOX}/home/.nidoai"
+mkdir -p "${SANDBOX}/home/.nidoai" "${SANDBOX}/home/.config"
+chmod 700 "${SANDBOX}/home/.nidoai" "${SANDBOX}/home/.config"
 TEST_PORT=18991
 TEST_TOKEN="ubuntu_nido_smoke_test_token_0123456789abcdef"
 
@@ -373,13 +375,17 @@ node --check "${ROOT_DIR}/packages/nidoagent-cli/files/usr/lib/nidoagent-cli/cli
 
 env \
   HOME="${SANDBOX}/home" \
+  XDG_CONFIG_HOME="${SANDBOX}/home/.config" \
   NIDOAI_HOME="${SANDBOX}/home/.nidoai" \
+  NIDOAI_SECRET_STORE="file" \
   NIDOAI_ENTRY="${SANDBOX}/rootfs/usr/lib/nidoai/src/cli.mjs" \
   "${SANDBOX}/rootfs/usr/bin/nidoai" doctor >/dev/null
 
 env \
   HOME="${SANDBOX}/home" \
+  XDG_CONFIG_HOME="${SANDBOX}/home/.config" \
   NIDOAI_HOME="${SANDBOX}/home/.nidoai" \
+  NIDOAI_SECRET_STORE="file" \
   NIDOAI_PORT="${TEST_PORT}" \
   NIDOAI_CLIENT_TOKEN="${TEST_TOKEN}" \
   NIDOAI_ENTRY="${SANDBOX}/rootfs/usr/lib/nidoai/src/cli.mjs" \
@@ -403,18 +409,20 @@ for _ in range(50):
                 caps = health.get("capabilities", {})
                 assert caps.get("vision") is True, f"Expected vision capability=true: {health}"
                 assert "anthropic" in caps.get("backends", []), f"Expected anthropic backend support: {health}"
-                print(f"Gateway healthy with security headers & vision/anthropic capabilities at {url}")
+                assert "nido" in caps.get("backends", []), f"Expected nido backend support: {health}"
+                print(f"Gateway healthy with security headers & vision/anthropic/nido capabilities at {url}")
                 break
     except Exception:
         time.sleep(0.1)
 else:
     raise SystemExit(f"Gateway did not respond at {url}")
 
-try:
-    urllib.request.urlopen(f"http://127.0.0.1:{port}/v1/models", timeout=1.0)
-    raise SystemExit("Expected 401 on unauthenticated /v1/models")
-except urllib.error.HTTPError as err:
-    assert err.code == 401, f"Expected 401 on /v1/models, got {err.code}"
+for protected in ("/v1/models", "/v1/account"):
+    try:
+        urllib.request.urlopen(f"http://127.0.0.1:{port}{protected}", timeout=1.0)
+        raise SystemExit(f"Expected 401 on unauthenticated {protected}")
+    except urllib.error.HTTPError as err:
+        assert err.code == 401, f"Expected 401 on {protected}, got {err.code}"
 
 # Verify SSRF image_url rejection (400) and valid multimodal base64 image_url acceptance (passes schema -> 503 unconfigured)
 bad_img_req = urllib.request.Request(
@@ -457,7 +465,9 @@ PY
 
 NIDOAI_STATUS_OUT="$(env \
   HOME="${SANDBOX}/home" \
+  XDG_CONFIG_HOME="${SANDBOX}/home/.config" \
   NIDOAI_HOME="${SANDBOX}/home/.nidoai" \
+  NIDOAI_SECRET_STORE="file" \
   NIDOAI_ENTRY="${SANDBOX}/rootfs/usr/lib/nidoai/src/cli.mjs" \
   "${SANDBOX}/rootfs/usr/bin/nidoai" status)"
 
@@ -473,7 +483,9 @@ PY
 
 STATUS_OUT="$(env \
   HOME="${SANDBOX}/home" \
+  XDG_CONFIG_HOME="${SANDBOX}/home/.config" \
   NIDOAI_HOME="${SANDBOX}/home/.nidoai" \
+  NIDOAI_SECRET_STORE="file" \
   NIDOAI_GATEWAY_PORT="${TEST_PORT}" \
   NIDOAI_CLIENT_TOKEN="${TEST_TOKEN}" \
   NIDOAGENT_CLI_ENTRY="${SANDBOX}/rootfs/usr/lib/nidoagent-cli/cli.mjs" \
@@ -490,11 +502,321 @@ assert data["gateway"]["status"] == "ok", f"Unexpected gateway payload: {data}"
 caps = data.get("capabilities") or {}
 assert caps.get("skills", {}).get("count") == 4, f"Expected 4 OS skills in capabilities: {caps}"
 assert set(caps.get("agents", {}).keys()) == {"agy", "codex", "claude"}, f"Unexpected agents cap: {caps}"
+assert isinstance(caps.get("nidoAccount"), dict), f"Missing capabilities.nidoAccount: {caps}"
 print("Verified nidoagent status output + capabilities against live nidoai-gateway.")
 PY
 
 NIDOHUB_APP_ENTRY="${SANDBOX}/rootfs/usr/lib/nido-hub/app.py" \
   "${SANDBOX}/rootfs/usr/bin/nido-hub" --self-test
+
+# Isolated Nido Account SSO + Unified AI Proxy E2E verification (zero keychain writes)
+python3 - "${SANDBOX}" <<'PY'
+import base64
+import json
+import os
+import subprocess
+import sys
+import threading
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
+sandbox = Path(sys.argv[1])
+e2e_root = sandbox / "nido-e2e"
+e2e_home = e2e_root / "home"
+e2e_nidoai = e2e_home / ".nidoai"
+e2e_cfg = e2e_root / "config"
+for d in (e2e_home, e2e_nidoai, e2e_cfg):
+    d.mkdir(parents=True, exist_ok=True)
+    os.chmod(d, 0o700)
+
+def make_jwt(sub: str, exp_offset: int) -> str:
+    hdr = base64.urlsafe_b64encode(b'{"alg":"HS256","typ":"JWT"}').decode().rstrip("=")
+    pay = base64.urlsafe_b64encode(
+        json.dumps({"sub": sub, "exp": int(time.time()) + exp_offset}).encode()
+    ).decode().rstrip("=")
+    sig = base64.urlsafe_b64encode(b"nido_mock_sig").decode().rstrip("=")
+    return f"{hdr}.{pay}.{sig}"
+
+TOK_1 = make_jwt("uid-nido-e2e", 3600)
+TOK_2 = make_jwt("uid-nido-e2e", 7200)
+REF_1 = "nido_mock_refresh_token_one_0001"
+REF_2 = "nido_mock_refresh_token_two_0002"
+
+state = {
+    "active_token": TOK_1,
+    "force_401_once": False,
+    "refresh_calls": 0,
+    "proxy_calls": 0,
+    "logout_calls": 0,
+    "quota_remaining": 48,
+}
+
+class MockNidoCloudHandler(BaseHTTPRequestHandler):
+    def log_message(self, fmt, *args):
+        return
+
+    def _send_json(self, code: int, obj: dict):
+        raw = json.dumps(obj).encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def _read_json(self) -> dict:
+        length = int(self.headers.get("Content-Length") or 0)
+        if length <= 0:
+            return {}
+        return json.loads(self.rfile.read(length).decode("utf-8"))
+
+    def do_GET(self):
+        parsed = urllib.parse.urlparse(self.path)
+        if parsed.path == "/functions/v1/ai-proxy/quota":
+            auth = self.headers.get("Authorization", "")
+            if auth != f"Bearer {state['active_token']}":
+                self._send_json(401, {"error": "Invalid bearer token"})
+                return
+            self._send_json(200, {
+                "userId": "uid-nido-e2e",
+                "planCode": "companion_pro",
+                "isCompanionPro": True,
+                "source": "nido",
+                "quotaSnapshot": {
+                    "remaining": state["quota_remaining"],
+                    "limit": 50,
+                },
+            })
+            return
+        self._send_json(404, {"error": "Not found"})
+
+    def do_POST(self):
+        parsed = urllib.parse.urlparse(self.path)
+        if parsed.path == "/auth/v1/token":
+            qs = urllib.parse.parse_qs(parsed.query)
+            grant = (qs.get("grant_type") or [""])[0]
+            body = self._read_json()
+            if grant == "password":
+                if body.get("email") == "e2e@nido.vn" and body.get("password") == "NidoPass123!":
+                    state["active_token"] = TOK_1
+                    self._send_json(200, {
+                        "access_token": TOK_1,
+                        "refresh_token": REF_1,
+                        "user": {
+                            "id": "uid-nido-e2e",
+                            "email": "e2e@nido.vn",
+                            "user_metadata": {"full_name": "Nido Tester"},
+                        },
+                    })
+                    return
+                self._send_json(400, {"error_description": "Invalid login credentials"})
+                return
+            if grant == "refresh_token":
+                if body.get("refresh_token") in {REF_1, REF_2}:
+                    state["refresh_calls"] += 1
+                    state["active_token"] = TOK_2
+                    self._send_json(200, {
+                        "access_token": TOK_2,
+                        "refresh_token": REF_2,
+                    })
+                    return
+                self._send_json(401, {"error": "Invalid refresh token"})
+                return
+        if parsed.path == "/auth/v1/logout":
+            state["logout_calls"] += 1
+            self.send_response(204)
+            self.end_headers()
+            return
+        if parsed.path == "/functions/v1/ai-proxy":
+            auth = self.headers.get("Authorization", "")
+            if state["force_401_once"] and auth == f"Bearer {TOK_1}":
+                state["force_401_once"] = False
+                self._send_json(401, {"error": "jwt expired"})
+                return
+            if auth != f"Bearer {state['active_token']}":
+                self._send_json(401, {"error": "unauthorized"})
+                return
+            req_body = self._read_json()
+            state["proxy_calls"] += 1
+            state["quota_remaining"] = max(0, state["quota_remaining"] - 1)
+            self._send_json(200, {
+                "ok": True,
+                "model": req_body.get("model") or "nido-llama",
+                "raw": f"NidoProxyOK:{req_body.get('prompt', '')}",
+                "quotaSnapshot": {
+                    "remaining": state["quota_remaining"],
+                    "limit": 50,
+                },
+            })
+            return
+        self._send_json(404, {"error": "Not found"})
+
+mock_srv = ThreadingHTTPServer(("127.0.0.1", 0), MockNidoCloudHandler)
+mock_port = mock_srv.server_address[1]
+threading.Thread(target=mock_srv.serve_forever, daemon=True).start()
+
+e2e_port = 18992
+e2e_token = "ubuntu_nido_e2e_client_token_0123456789"
+e2e_env = {
+    **os.environ,
+    "HOME": str(e2e_home),
+    "XDG_CONFIG_HOME": str(e2e_cfg),
+    "NIDOAI_HOME": str(e2e_nidoai),
+    "NIDOAI_SECRET_STORE": "file",
+    "NIDOAI_PORT": str(e2e_port),
+    "NIDOAI_GATEWAY_PORT": str(e2e_port),
+    "NIDOAI_CLIENT_TOKEN": e2e_token,
+    "NIDOAI_ENTRY": str(sandbox / "rootfs/usr/lib/nidoai/src/cli.mjs"),
+    "NIDOAGENT_CLI_ENTRY": str(sandbox / "rootfs/usr/lib/nidoagent-cli/cli.mjs"),
+    "NIDO_SKILLS_DIR": str(sandbox / "rootfs/usr/share/ubuntu-nido/skills"),
+    "NIDOAGENT_STANDALONE": "1",
+    "NIDO_ACCOUNT_AUTH_URL": f"http://127.0.0.1:{mock_port}",
+    "NIDO_ACCOUNT_AI_PROXY_URL": f"http://127.0.0.1:{mock_port}/functions/v1/ai-proxy",
+}
+
+gw_log = open(e2e_root / "gateway-e2e.log", "w", encoding="utf-8")
+gw_proc = subprocess.Popen(
+    [str(sandbox / "rootfs/usr/bin/nidoai"), "serve"],
+    env=e2e_env,
+    stdout=gw_log,
+    stderr=subprocess.STDOUT,
+)
+
+def gw_req(path: str, method: str = "GET", payload: dict | None = None, headers: dict | None = None):
+    data = json.dumps(payload).encode("utf-8") if payload is not None else None
+    hdrs = {"Authorization": f"Bearer {e2e_token}", **(headers or {})}
+    if data is not None:
+        hdrs["Content-Type"] = "application/json"
+    req = urllib.request.Request(f"http://127.0.0.1:{e2e_port}{path}", data=data, headers=hdrs, method=method)
+    with urllib.request.urlopen(req, timeout=8.0) as resp:
+        raw = resp.read().decode("utf-8")
+        return resp.status, dict(resp.headers), raw
+
+try:
+    for _ in range(50):
+        try:
+            st_code, _, _ = gw_req("/healthz")
+            if st_code == 200:
+                break
+        except Exception:
+            time.sleep(0.1)
+    else:
+        raise SystemExit("Isolated E2E nidoai-gateway did not start")
+
+    # 1. Login via admin API -> account.json 0600 & zero tokens in JSON/file
+    code, _, raw_login = gw_req(
+        "/api/admin/nido-account/login",
+        method="POST",
+        payload={"email": "e2e@nido.vn", "password": "NidoPass123!", "setAsPrimary": True},
+    )
+    assert code == 200
+    for tok in (TOK_1, TOK_2, REF_1, REF_2):
+        assert tok not in raw_login, "Raw auth token leaked in login response!"
+    login_data = json.loads(raw_login)
+    assert login_data["ok"] is True
+    assert login_data["account"]["signedIn"] is True
+    assert login_data["account"]["isPro"] is True
+    assert login_data["account"]["planCode"] == "companion_pro"
+
+    acct_file = e2e_cfg / "ubuntu-nido/account.json"
+    assert acct_file.is_file(), f"Missing {acct_file}"
+    assert (acct_file.stat().st_mode & 0o777) == 0o600, f"account.json mode mismatch: {oct(acct_file.stat().st_mode)}"
+    acct_raw = acct_file.read_text("utf-8")
+    for tok in (TOK_1, TOK_2, REF_1, REF_2):
+        assert tok not in acct_raw, "Raw auth token persisted in account.json!"
+
+    # 2. Loopback SSO GET /v1/account
+    _, _, raw_acct = gw_req("/v1/account")
+    for tok in (TOK_1, TOK_2, REF_1, REF_2):
+        assert tok not in raw_acct, "Raw auth token leaked in /v1/account!"
+    acct_res = json.loads(raw_acct)
+    assert acct_res["signedIn"] is True
+    assert acct_res["planCode"] == "companion_pro"
+
+    # 3. Text chat completion (stream: false)
+    _, _, raw_chat = gw_req(
+        "/v1/chat/completions",
+        method="POST",
+        payload={"model": "nido-llama", "stream": False, "messages": [{"role": "user", "content": "Xin chao"}]},
+    )
+    chat_res = json.loads(raw_chat)
+    content = chat_res["choices"][0]["message"]["content"]
+    assert "NidoProxyOK:Xin chao" in content, f"Unexpected chat reply: {chat_res}"
+
+    # 4. Streaming chat completion (stream: true)
+    _, sse_hdrs, raw_sse = gw_req(
+        "/v1/chat/completions",
+        method="POST",
+        payload={"model": "auto", "stream": True, "messages": [{"role": "user", "content": "Stream test"}]},
+    )
+    assert "text/event-stream" in sse_hdrs.get("Content-Type", "").lower(), f"Expected SSE Content-Type: {sse_hdrs}"
+    assert "data: [DONE]" in raw_sse and "NidoProxyOK:Stream test" in raw_sse, f"Invalid SSE output: {raw_sse}"
+
+    # 5. Auto-refresh on 401 -> rotates TOK_1 -> TOK_2 & succeeds 200
+    state["force_401_once"] = True
+    _, _, raw_refresh = gw_req(
+        "/v1/chat/completions",
+        method="POST",
+        payload={"model": "nido-llama", "stream": False, "messages": [{"role": "user", "content": "After refresh"}]},
+    )
+    assert state["refresh_calls"] == 1, f"Expected 1 refresh call, got {state['refresh_calls']}"
+    refresh_res = json.loads(raw_refresh)
+    assert "NidoProxyOK:After refresh" in refresh_res["choices"][0]["message"]["content"]
+
+    # 6. Vision rejection (422) when only text Nido Account proxy is configured
+    vis_req = urllib.request.Request(
+        f"http://127.0.0.1:{e2e_port}/v1/chat/completions",
+        data=json.dumps({
+            "model": "auto",
+            "messages": [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,/9j/4AAQSkZJRg=="}}]}],
+        }).encode("utf-8"),
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {e2e_token}"},
+        method="POST",
+    )
+    try:
+        urllib.request.urlopen(vis_req, timeout=4.0)
+        raise SystemExit("Expected 422 on image_url when only nido backend is configured")
+    except urllib.error.HTTPError as err:
+        assert err.code == 422, f"Expected 422 for image_url on text-only Nido backend, got {err.code}"
+
+    # 7. nidoagent CLI SSO integration
+    nidoagent_bin = str(sandbox / "rootfs/usr/bin/nidoagent")
+    for sub_args in (["account", "status", "--json"], ["account", "sync", "--json"], ["status"]):
+        out = subprocess.run([nidoagent_bin, *sub_args], env=e2e_env, check=True, text=True, capture_output=True).stdout
+        for tok in (TOK_1, TOK_2, REF_1, REF_2):
+            assert tok not in out, f"Token leaked in nidoagent {' '.join(sub_args)}"
+        parsed_cli = json.loads(out)
+        assert parsed_cli["ok"] is True
+        if sub_args[0] == "status":
+            assert parsed_cli["aiReady"] is True
+            assert parsed_cli["nidoAccount"]["signedIn"] is True
+        else:
+            assert parsed_cli["signedIn"] is True
+
+    # 8. Logout clears session, profile & tokens in .env.local
+    code_out, _, _ = gw_req("/api/admin/nido-account/logout", method="POST", payload={})
+    assert code_out == 200
+    assert state["logout_calls"] >= 1
+    _, _, raw_after = gw_req("/v1/account")
+    assert json.loads(raw_after)["signedIn"] is False
+    env_local = (e2e_nidoai / ".env.local").read_text("utf-8") if (e2e_nidoai / ".env.local").is_file() else ""
+    assert "NIDO_ACCOUNT_ACCESS_TOKEN=" not in env_local, "Access token still present in .env.local after logout!"
+    assert "NIDO_ACCOUNT_REFRESH_TOKEN=" not in env_local, "Refresh token still present in .env.local after logout!"
+    print("Verified Nido Account SSO, OpenAI JSON/SSE Proxy, auto-refresh, 422 vision guard, and nidoagent account E2E.")
+finally:
+    gw_proc.terminate()
+    try:
+        gw_proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        gw_proc.kill()
+        gw_proc.wait(timeout=3)
+    gw_log.close()
+    mock_srv.shutdown()
+    mock_srv.server_close()
+PY
 
 # Verify boot_config.sh generates canonical ProductInfo-compatible .disk/info and repack.sh skips boot/boot.cat
 BOOT_TMP="$(mktemp -d "${TMPDIR:-/tmp}/nido-bootcfg.XXXXXX")"

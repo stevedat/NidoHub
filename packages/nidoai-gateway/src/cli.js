@@ -24,10 +24,15 @@ async function main() {
         return;
     }
     if (cmd === 'serve') {
-        const { config, bootstrapped } = ensureClientTokenBootstrapped(resolveConfigCwd(), {
+        const stateDir = resolveConfigCwd();
+        const { config, bootstrapped } = ensureClientTokenBootstrapped(stateDir, {
             useSecretStore: process.env.NIDOAI_SECRET_STORE !== 'file',
         });
-        const handle = await startGatewayServer(config, { writeRuntimeDiscovery: true });
+        const handle = await startGatewayServer(config, {
+            writeRuntimeDiscovery: true,
+            stateDir,
+            configDir: config.configDir,
+        });
         const shutdown = () => {
             handle.close().finally(() => process.exit(0));
         };

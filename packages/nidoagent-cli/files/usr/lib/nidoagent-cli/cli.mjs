@@ -92,6 +92,7 @@ function printHelp() {
 
 Usage:
   nidoagent status | doctor                                            Kiểm tra kết nối NidoAI Gateway, Agent CLI & năng lực hệ thống
+  nidoagent account [status|login|logout|sync] [--json]                Quản lý Tài khoản Nido (SSO, trạng thái gói & đồng bộ quota)
   nidoagent capabilities [--json]                                      Liệt kê công cụ bản địa & OS Skills sẵn sàng cho AI Agent
   nidoagent skills [list|sync] [--all] [--json]                        Liệt kê hoặc đồng bộ OS Skills cho agy / codex / claude
   nidoagent ask [--model <id>] [--effort <lvl>] [--json|--plain|--raw] [--file <p>] [--out <p>] <prompt>
@@ -300,6 +301,59 @@ function syncOsSkills(options = {}) {
   };
 }
 
+function sanitizeNidoAccountObject(raw) {
+  if (!raw || typeof raw !== 'object' || raw.signedIn !== true) {
+    return {
+      signedIn: false,
+      planCode: 'free',
+      planName: 'Miễn phí (Free)',
+      isPro: false,
+      source: 'nido',
+    };
+  }
+  const out = {
+    signedIn: true,
+    userId: typeof raw.userId === 'string' ? raw.userId : '',
+    email: typeof raw.email === 'string' ? raw.email : '',
+    fullName: typeof raw.fullName === 'string' ? raw.fullName : '',
+    planCode: typeof raw.planCode === 'string' && raw.planCode ? raw.planCode : 'free',
+    planName:
+      typeof raw.planName === 'string' && raw.planName
+        ? raw.planName
+        : raw.isPro
+          ? 'Gói Đồng Hành (Pro)'
+          : 'Miễn phí (Free)',
+    isPro: Boolean(raw.isPro),
+    source: typeof raw.source === 'string' && raw.source ? raw.source : 'nido',
+    updatedAt: typeof raw.updatedAt === 'string' ? raw.updatedAt : '',
+  };
+  if (raw.quota && typeof raw.quota === 'object') {
+    out.quota = { ...raw.quota };
+  }
+  if (raw.sync && typeof raw.sync === 'object') {
+    out.sync = {
+      enabled: Boolean(raw.sync.enabled),
+      lastSyncAt: typeof raw.sync.lastSyncAt === 'string' ? raw.sync.lastSyncAt : '',
+      items: Array.isArray(raw.sync.items) ? raw.sync.items.map((x) => String(x)) : [],
+    };
+  }
+  return out;
+}
+
+function readSanitizedNidoAccount() {
+  const xdgConfig = (process.env.XDG_CONFIG_HOME || '').trim() || path.join(os.homedir(), '.config');
+  const accountPath = path.join(xdgConfig, 'ubuntu-nido', 'account.json');
+  if (!fs.existsSync(accountPath)) {
+    return sanitizeNidoAccountObject(null);
+  }
+  try {
+    const parsed = JSON.parse(fs.readFileSync(accountPath, 'utf8'));
+    return sanitizeNidoAccountObject(parsed);
+  } catch {
+    return sanitizeNidoAccountObject(null);
+  }
+}
+
 function collectCapabilities() {
   const officeCliPath = whichBinary(process.env.NIDOOFFICE_BIN || 'nidooffice');
   const nidoboxPath = whichBinary('nidobox');
@@ -315,6 +369,7 @@ function collectCapabilities() {
       ...(binPath ? { binaryPath: binPath } : {}),
     };
   }
+  const nidoAccount = readSanitizedNidoAccount();
   const { dir: skillsDir, skills } = listOsSkills();
   return {
     office: {
@@ -342,6 +397,13 @@ function collectCapabilities() {
     email: {
       geary: Boolean(whichBinary('geary')),
       himalaya: Boolean(whichBinary('himalaya')),
+    },
+    nidoAccount: {
+      signedIn: nidoAccount.signedIn,
+      ...(nidoAccount.email ? { email: nidoAccount.email } : {}),
+      planCode: nidoAccount.planCode,
+      planName: nidoAccount.planName,
+      isPro: nidoAccount.isPro,
     },
     agents,
     multimedia: {
@@ -887,11 +949,12 @@ function isAiEnabledByPolicy() {
 }
 
 const AI_DISABLED_MESSAGE =
-  'Chế độ AI trên NidoOS hiện đang TẮT. Mở NidoHub (`nido-hub --onboarding` hoặc `nido-welcome --force`) để bật lại AI và đăng nhập ít nhất 1 tài khoản (Google/Gemini, ChatGPT hoặc Claude).';
+  'Chế độ AI trên NidoOS hiện đang TẮT. Mở NidoHub (`nido-hub --onboarding` hoặc `nido-welcome --force`) để bật lại AI và đăng nhập Tài khoản Nido hoặc ít nhất 1 tài khoản (Google/Gemini, ChatGPT hoặc Claude).';
 
 async function cmdStatus() {
   const aiEnabled = isAiEnabledByPolicy();
   const capabilities = collectCapabilities();
+  const localAccount = readSanitizedNidoAccount();
   if (!aiEnabled) {
     console.log(
       JSON.stringify(
@@ -900,6 +963,7 @@ async function cmdStatus() {
           version: VERSION,
           aiEnabled: false,
           aiReady: false,
+          nidoAccount: localAccount,
           capabilities,
           setupHint: AI_DISABLED_MESSAGE,
         },
@@ -927,7 +991,11 @@ async function cmdStatus() {
     }
     const pb = payload && typeof payload === 'object' ? payload.primaryBackend : null;
     const gatewayReady = Boolean(pb && pb.configured && pb.reachable);
-    const aiReady = gatewayReady || signedInAgents.length > 0;
+    const nidoAccount =
+      payload && typeof payload === 'object' && payload.nidoAccount && typeof payload.nidoAccount === 'object'
+        ? sanitizeNidoAccountObject(payload.nidoAccount)
+        : localAccount;
+    const aiReady = gatewayReady || signedInAgents.length > 0 || nidoAccount.signedIn;
     console.log(
       JSON.stringify(
         {
@@ -938,6 +1006,7 @@ async function cmdStatus() {
           runtimeFound: conn.runtimeFound,
           tokenConfigured: conn.clientToken.length >= 16,
           gatewayReady,
+          nidoAccount,
           signedInAgents: signedInAgents.map((a) => a.id),
           aiReady,
           capabilities,
@@ -945,7 +1014,7 @@ async function cmdStatus() {
             ? {}
             : {
                 setupHint:
-                  'Chưa cấu hình model AI trên máy. Mở NidoHub (`nido-hub --page welcome`) để đăng nhập Google Antigravity (Google AI Ultra/Pro/Free), OpenAI Codex / Claude Code, dán Google AI Studio GEMINI_API_KEY miễn phí ($0), hoặc cài Ollama theo cấu hình máy.',
+                  'Chưa cấu hình model AI trên máy. Mở NidoHub (`nido-hub --page welcome`) để đăng nhập Tài khoản Nido, Google Antigravity (Google AI Ultra/Pro/Free), OpenAI Codex / Claude Code, dán Google AI Studio GEMINI_API_KEY miễn phí ($0), hoặc cài Ollama theo cấu hình máy.',
               }),
           gateway: payload,
         },
@@ -961,6 +1030,278 @@ async function cmdStatus() {
     );
     console.error('Gợi ý: chạy `systemctl --user start nidoai-gateway` hoặc `nidoai serve`.');
     process.exit(1);
+  }
+}
+
+function formatQuotaText(acct) {
+  if (!acct || !acct.signedIn) {
+    return 'Chưa đăng nhập Tài khoản Nido (dùng `nidoagent account login` hoặc mở NidoHub).';
+  }
+  const lines = [
+    `Tài khoản Nido: ${acct.email || acct.userId || '(đã đăng nhập)'}`,
+    `Gói dịch vụ   : ${acct.planName || acct.planCode || 'free'} (${acct.isPro ? 'Pro' : 'Free'})`,
+  ];
+  if (acct.quota && typeof acct.quota === 'object') {
+    const q = acct.quota;
+    if (typeof q.remaining === 'number' && typeof q.limit === 'number') {
+      lines.push(`Quota         : còn ${q.remaining}/${q.limit} lượt`);
+    } else if (typeof q.summary === 'string' && q.summary) {
+      lines.push(`Quota         : ${q.summary}`);
+    }
+  }
+  return lines.join('\n');
+}
+
+function promptTextLine(label) {
+  return new Promise((resolve) => {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    rl.question(label, (answer) => {
+      rl.close();
+      resolve(String(answer || '').trim());
+    });
+  });
+}
+
+function promptPasswordHidden(label) {
+  return new Promise((resolve) => {
+    if (!process.stdin.isTTY) {
+      resolve('');
+      return;
+    }
+    let muted = false;
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: new Proxy(process.stdout, {
+        get(target, prop) {
+          if (prop === 'write') {
+            return (chunk, ...rest) => {
+              if (!muted || chunk === '\n' || chunk === '\r\n') {
+                return target.write(chunk, ...rest);
+              }
+              return true;
+            };
+          }
+          const v = target[prop];
+          return typeof v === 'function' ? v.bind(target) : v;
+        },
+      }),
+      terminal: true,
+    });
+    process.stdout.write(label);
+    muted = true;
+    rl.question('', (answer) => {
+      muted = false;
+      process.stdout.write('\n');
+      rl.close();
+      resolve(String(answer || ''));
+    });
+  });
+}
+
+async function cmdAccount(args = []) {
+  let sub = 'status';
+  let flagJson = false;
+  let flagPasswordStdin = false;
+  let flagNoPrimary = false;
+  let email = '';
+
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (arg === 'status' || arg === 'login' || arg === 'logout' || arg === 'sync') {
+      sub = arg;
+    } else if (arg === '--json') {
+      flagJson = true;
+    } else if (arg === '--password-stdin') {
+      flagPasswordStdin = true;
+    } else if (arg === '--no-primary') {
+      flagNoPrimary = true;
+    } else if (arg === '--email' || arg === '-e') {
+      i += 1;
+      if (args[i]) email = args[i].trim();
+    } else if (arg === '--password' || arg.startsWith('--password=')) {
+      const msg =
+        'Không truyền --password trực tiếp qua tham số dòng lệnh; hãy dùng --password-stdin hoặc nhập tương tác.';
+      if (flagJson) {
+        console.error(JSON.stringify({ ok: false, error: msg }, null, 2));
+      } else {
+        console.error(msg);
+      }
+      process.exit(2);
+    }
+  }
+
+  const conn = resolveGatewayConnection();
+  const authHeaders = conn.clientToken
+    ? { Authorization: `Bearer ${conn.clientToken}` }
+    : {};
+
+  if (sub === 'status') {
+    let payload = null;
+    let gatewayReachable = true;
+    try {
+      const res = await fetch(`${conn.baseUrl}/v1/account`, {
+        method: 'GET',
+        headers: authHeaders,
+        signal: AbortSignal.timeout(4000),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const msg = data?.error?.message || data?.error || `HTTP ${res.status}`;
+        if (flagJson) {
+          console.error(JSON.stringify({ ok: false, status: res.status, error: msg }, null, 2));
+        } else {
+          console.error(`Không lấy được trạng thái Tài khoản Nido (${msg}).`);
+        }
+        process.exit(1);
+      }
+      payload = sanitizeNidoAccountObject(data);
+    } catch {
+      gatewayReachable = false;
+      payload = readSanitizedNidoAccount();
+    }
+    if (flagJson) {
+      console.log(
+        JSON.stringify(
+          {
+            ok: true,
+            gatewayReachable,
+            ...payload,
+          },
+          null,
+          2
+        )
+      );
+      return;
+    }
+    console.log(formatQuotaText(payload));
+    return;
+  }
+
+  if (sub === 'sync') {
+    try {
+      const res = await fetch(`${conn.baseUrl}/v1/account/sync`, {
+        method: 'POST',
+        headers: authHeaders,
+        signal: AbortSignal.timeout(10_000),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data?.ok === false) {
+        const msg = data?.error?.message || data?.error || `HTTP ${res.status}`;
+        if (flagJson) {
+          console.error(JSON.stringify({ ok: false, status: res.status, error: msg }, null, 2));
+        } else {
+          console.error(`Đồng bộ Tài khoản Nido thất bại: ${msg}`);
+        }
+        process.exit(1);
+      }
+      const acct = sanitizeNidoAccountObject(data);
+      if (flagJson) {
+        console.log(JSON.stringify({ ok: true, ...acct }, null, 2));
+        return;
+      }
+      console.log(formatQuotaText(acct));
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (flagJson) {
+        console.error(JSON.stringify({ ok: false, error: msg }, null, 2));
+      } else {
+        console.error(`Không kết nối được NidoAI Gateway (${conn.baseUrl}): ${msg}`);
+      }
+      process.exit(1);
+    }
+    return;
+  }
+
+  if (sub === 'login') {
+    if (!email && process.stdin.isTTY && !flagPasswordStdin) {
+      email = await promptTextLine('Email Tài khoản Nido: ');
+    }
+    let password = '';
+    if (flagPasswordStdin) {
+      password = fs.readFileSync(0, 'utf8').replace(/\r?\n$/, '');
+    } else if (process.stdin.isTTY) {
+      password = await promptPasswordHidden('Mật khẩu: ');
+    }
+    if (!email || !password) {
+      const msg =
+        'Thiếu email hoặc mật khẩu. Dùng `nidoagent account login --email <email> --password-stdin` hoặc nhập tương tác trên TTY.';
+      if (flagJson) {
+        console.error(JSON.stringify({ ok: false, error: msg }, null, 2));
+      } else {
+        console.error(msg);
+      }
+      process.exit(2);
+    }
+    try {
+      const res = await fetch(`${conn.baseUrl}/api/admin/nido-account/login`, {
+        method: 'POST',
+        headers: { ...authHeaders, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email,
+          password,
+          setAsPrimary: !flagNoPrimary,
+        }),
+        signal: AbortSignal.timeout(15_000),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data?.ok === false) {
+        const msg = data?.error?.message || data?.error || `HTTP ${res.status}`;
+        if (flagJson) {
+          console.error(JSON.stringify({ ok: false, status: res.status, error: msg }, null, 2));
+        } else {
+          console.error(`Đăng nhập thất bại: ${msg}`);
+        }
+        process.exit(1);
+      }
+      const acct = sanitizeNidoAccountObject(data.account || data);
+      if (flagJson) {
+        console.log(JSON.stringify({ ok: true, ...acct }, null, 2));
+        return;
+      }
+      console.log(`Đã đăng nhập Tài khoản Nido thành công.\n${formatQuotaText(acct)}`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (flagJson) {
+        console.error(JSON.stringify({ ok: false, error: msg }, null, 2));
+      } else {
+        console.error(`Không kết nối được NidoAI Gateway (${conn.baseUrl}): ${msg}`);
+      }
+      process.exit(1);
+    }
+    return;
+  }
+
+  if (sub === 'logout') {
+    try {
+      const res = await fetch(`${conn.baseUrl}/api/admin/nido-account/logout`, {
+        method: 'POST',
+        headers: { ...authHeaders, 'Content-Type': 'application/json' },
+        signal: AbortSignal.timeout(10_000),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data?.ok === false) {
+        const msg = data?.error?.message || data?.error || `HTTP ${res.status}`;
+        if (flagJson) {
+          console.error(JSON.stringify({ ok: false, status: res.status, error: msg }, null, 2));
+        } else {
+          console.error(`Đăng xuất thất bại: ${msg}`);
+        }
+        process.exit(1);
+      }
+      if (flagJson) {
+        console.log(JSON.stringify({ ok: true, signedIn: false }, null, 2));
+        return;
+      }
+      console.log('Đã đăng xuất Tài khoản Nido khỏi máy này.');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (flagJson) {
+        console.error(JSON.stringify({ ok: false, error: msg }, null, 2));
+      } else {
+        console.error(`Không kết nối được NidoAI Gateway (${conn.baseUrl}): ${msg}`);
+      }
+      process.exit(1);
+    }
   }
 }
 
@@ -1442,6 +1783,10 @@ async function main() {
   }
   if (cmd === 'status' || cmd === 'doctor') {
     await cmdStatus();
+    return;
+  }
+  if (cmd === 'account') {
+    await cmdAccount(rest);
     return;
   }
   if (cmd === 'capabilities' || cmd === 'caps') {

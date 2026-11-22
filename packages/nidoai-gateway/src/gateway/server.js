@@ -4,11 +4,12 @@ import fs from 'node:fs';
 import { CHAT_BACKEND_KINDS, MIN_CLIENT_TOKEN_LENGTH, PKG_VERSION, isChatBackendKind, loadConfig, maskSecret, saveConfigUpdatesToEnvLocal, } from '../config.js';
 import { SUPPORTED_CHAT_COMPLETION_FIELDS, hasMultimodalContent, validateChatCompletionRequest, } from './schema.js';
 import { ANTHROPIC_API_VERSION, executeAnthropicUpstreamCall, } from './anthropic-adapter.js';
+import { NIDO_CURATED_MODELS, executeNidoAccountUpstreamCall, fetchNidoAccountQuota, formatNidoPlanName, isJwtFresh, loginNidoAccount, logoutNidoAccount, readNidoAccountProfile, refreshNidoAccountTokens, resolveNidoAccountProviderConfig, resolveNidoConfigDir, writeNidoAccountProfile, } from './nido-account-adapter.js';
 import { probeLocalBackendReachability } from './live-probe.js';
 import { renderControlPanelHtml } from './ui-html.js';
 import { runDoctor } from '../doctor/doctor.js';
 import { CodexAppServerWorker } from '../agent/codex-worker.js';
-import { getRuntimeDiscoveryPath, readAgentsStatus, writeRuntimeDiscovery, } from '../runtime-discovery.js';
+import { getRuntimeDiscoveryPath, readAgentsStatus, resolveNidoAiStateDir, writeRuntimeDiscovery, } from '../runtime-discovery.js';
 import { formatSecretStoreLabel } from '../security/secret-store.js';
 const MAX_TEXT_BODY_BYTES = 1_048_576; // 1 MiB for plain text/JSON requests
 const MAX_MULTIMODAL_BODY_BYTES = 4_194_304; // 4 MiB for vision image_url requests
@@ -148,8 +149,21 @@ function timingSafeBearerMatch(authHeader, expectedToken) {
  * 2. Verify terminal stream completion (both a terminal finish_reason AND data: [DONE])
  *    before marking a response successful or emitting [DONE] to the client.
  */
-async function executeUpstreamCall(backend, reqData, wantClientStream, res, requestId, requestStartMs) {
+async function executeUpstreamCall(backend, reqData, wantClientStream, res, requestId, requestStartMs, nidoExecOpts = {}) {
     const model = resolveModelForBackend(reqData.model, backend);
+    if (backend.kind === 'nido') {
+        return executeNidoAccountUpstreamCall({
+            backend,
+            model,
+            reqData,
+            wantClientStream,
+            res,
+            requestId,
+            requestStartMs,
+            securityHeaders: SECURITY_HEADERS,
+            ...nidoExecOpts,
+        });
+    }
     if (backend.kind === 'anthropic') {
         return executeAnthropicUpstreamCall({
             backend,
@@ -491,6 +505,140 @@ export async function startGatewayServer(initialConfig, options = {}) {
     }
     let currentConfig = initialConfig;
     let actualPort = initialConfig.port;
+    const stateDir = options.stateDir || initialConfig.stateDir || resolveNidoAiStateDir();
+    const configDir = options.configDir || initialConfig.configDir || resolveNidoConfigDir();
+    const useSecretStore = process.env.NIDOAI_SECRET_STORE !== 'file';
+    const secretStoreOptions = { env: process.env };
+    const reloadCurrentConfig = () => {
+        currentConfig = loadConfig({ cwd: stateDir, useSecretStore });
+    };
+    const buildSanitizedAccountPayload = () => {
+        const profile = readNidoAccountProfile(configDir);
+        const nidoBackend = currentConfig.backends?.nido;
+        return {
+            signedIn: Boolean(profile?.signedIn || nidoBackend?.configured),
+            backendConfigured: Boolean(nidoBackend?.configured),
+            tokenFresh: isJwtFresh(nidoBackend?.apiKey || ''),
+            account: profile,
+            userId: profile?.userId || '',
+            email: profile?.email || '',
+            fullName: profile?.fullName || '',
+            planCode: profile?.planCode || 'free',
+            planName: profile?.planName || formatNidoPlanName(profile?.planCode || 'free', Boolean(profile?.isPro)),
+            isPro: Boolean(profile?.isPro),
+            source: profile?.source || 'nido',
+            quota: profile?.quota || null,
+            sync: profile?.sync || { enabled: false, lastSyncAt: '', items: ['vielotus', 'nidobox', 'ai-policy'] },
+            updatedAt: profile?.updatedAt || '',
+        };
+    };
+    const buildHealthNidoSummary = () => {
+        const acct = buildSanitizedAccountPayload();
+        return {
+            signedIn: acct.signedIn,
+            email: acct.email,
+            planName: acct.planName,
+            isPro: acct.isPro,
+            aiCreditsRemaining: acct.quota?.aiCreditsRemaining ?? null,
+            aiCreditsQuota: acct.quota?.aiCreditsQuota ?? null,
+        };
+    };
+    const publishRuntimeDiscoveryNow = async () => {
+        if (!options.writeRuntimeDiscovery)
+            return;
+        const p = currentConfig.backends[currentConfig.primaryBackend];
+        const lp = p.kind === 'local' && p.configured
+            ? await probeLocalBackendReachability(p.baseUrl, { apiKey: p.apiKey, force: true })
+            : null;
+        writeRuntimeDiscovery({
+            baseUrl: `http://127.0.0.1:${actualPort}`,
+            clientToken: currentConfig.clientToken,
+            capabilities: {
+                vision: p.kind !== 'nido',
+                streaming: true,
+                jsonObject: true,
+                primaryBackend: p.kind,
+                primaryConfigured: p.configured,
+                primaryReachable: lp ? lp.reachable : p.configured,
+                secretStoreMode: currentConfig.secretStoreMode,
+            },
+        });
+    };
+    const syncNidoAccountNow = async () => {
+        const nidoBackend = currentConfig.backends?.nido;
+        if (!nidoBackend?.configured) {
+            return { ok: false, status: 401, error: 'Chưa đăng nhập Tài khoản Nido.', payload: buildSanitizedAccountPayload() };
+        }
+        const providerCfg = resolveNidoAccountProviderConfig(process.env, configDir);
+        let accessToken = nidoBackend.apiKey || '';
+        const refreshToken = nidoBackend.refreshToken || '';
+        if ((!accessToken || !isJwtFresh(accessToken)) && refreshToken) {
+            const rot = await refreshNidoAccountTokens({
+                refreshToken,
+                providerConfig: providerCfg,
+                stateDir,
+                useSecretStore,
+                secretStoreOptions,
+            });
+            if (rot.ok && rot.accessToken) {
+                accessToken = rot.accessToken;
+                reloadCurrentConfig();
+            }
+            else if (rot.revoked) {
+                await logoutNidoAccount({
+                    accessToken: '',
+                    providerConfig: providerCfg,
+                    stateDir,
+                    configDir,
+                    secretStoreOptions,
+                });
+                reloadCurrentConfig();
+                return { ok: false, status: 401, error: rot.error || 'Phiên đăng nhập Tài khoản Nido đã hết hạn.', payload: buildSanitizedAccountPayload() };
+            }
+        }
+        if (!accessToken) {
+            return { ok: false, status: 401, error: 'Thiếu access token Tài khoản Nido.', payload: buildSanitizedAccountPayload() };
+        }
+        let quotaRes = await fetchNidoAccountQuota({ accessToken, providerConfig: providerCfg });
+        if (!quotaRes.ok && quotaRes.status === 401 && refreshToken) {
+            const rot = await refreshNidoAccountTokens({
+                refreshToken,
+                providerConfig: providerCfg,
+                stateDir,
+                useSecretStore,
+                secretStoreOptions,
+            });
+            if (rot.ok && rot.accessToken) {
+                accessToken = rot.accessToken;
+                reloadCurrentConfig();
+                quotaRes = await fetchNidoAccountQuota({ accessToken, providerConfig: providerCfg });
+            }
+        }
+        if (quotaRes.ok) {
+            const prev = readNidoAccountProfile(configDir);
+            writeNidoAccountProfile({
+                ...(prev || {}),
+                schemaVersion: 1,
+                signedIn: true,
+                userId: quotaRes.userId || prev?.userId || '',
+                email: prev?.email || '',
+                fullName: prev?.fullName || '',
+                planCode: quotaRes.planCode || prev?.planCode || 'free',
+                planName: formatNidoPlanName(quotaRes.planCode || prev?.planCode || 'free', quotaRes.isPro),
+                isPro: quotaRes.isPro,
+                source: quotaRes.source || prev?.source || 'nido',
+                ...(quotaRes.quota ? { quota: quotaRes.quota } : {}),
+                sync: prev?.sync || { enabled: false, lastSyncAt: '', items: ['vielotus', 'nidobox', 'ai-policy'] },
+                updatedAt: new Date().toISOString(),
+            }, configDir);
+        }
+        return {
+            ok: quotaRes.ok,
+            status: quotaRes.ok ? 200 : (quotaRes.status || 502),
+            ...(quotaRes.ok ? {} : { error: quotaRes.error || 'Không thể đồng bộ Tài khoản Nido.' }),
+            payload: buildSanitizedAccountPayload(),
+        };
+    };
     const csrfToken = crypto.randomUUID();
     const recentLogs = [];
     let codexWorker = null;
@@ -608,6 +756,13 @@ export async function startGatewayServer(initialConfig, options = {}) {
                         : null,
                     allowCrossProviderFailover: currentConfig.allowCrossProviderFailover,
                     backends: {
+                        nido: {
+                            configured: currentConfig.backends.nido.configured,
+                            reachable: currentConfig.backends.nido.configured,
+                            defaultModel: currentConfig.backends.nido.defaultModel,
+                            baseUrl: currentConfig.backends.nido.baseUrl,
+                            maskedKey: maskSecret(currentConfig.backends.nido.apiKey),
+                        },
                         gemini: {
                             configured: currentConfig.backends.gemini.configured,
                             reachable: currentConfig.backends.gemini.configured,
@@ -637,6 +792,7 @@ export async function startGatewayServer(initialConfig, options = {}) {
                             maskedKey: '',
                         },
                     },
+                    nidoAccount: buildSanitizedAccountPayload(),
                     agentsStatus: readAgentsStatus(),
                     codex: {
                         running: codexWorker ? codexWorker.isRunning() : false,
@@ -652,32 +808,73 @@ export async function startGatewayServer(initialConfig, options = {}) {
                 sendJson(res, 200, { checks });
                 return;
             }
+            if (method === 'POST' && pathname === '/api/admin/nido-account/login') {
+                try {
+                    const { text: raw } = await readRequestBody(req);
+                    const body = JSON.parse(raw || '{}');
+                    const providerCfg = resolveNidoAccountProviderConfig(process.env, configDir);
+                    const loginRes = await loginNidoAccount({
+                        email: body.email,
+                        password: body.password,
+                        providerConfig: providerCfg,
+                        stateDir,
+                        configDir,
+                        useSecretStore,
+                        secretStoreOptions,
+                        setAsPrimary: body.setAsPrimary !== false,
+                    });
+                    if (!loginRes.ok) {
+                        sendJson(res, loginRes.status || 401, {
+                            ok: false,
+                            error: { message: loginRes.error || 'Đăng nhập thất bại.' },
+                        });
+                        return;
+                    }
+                    reloadCurrentConfig();
+                    await publishRuntimeDiscoveryNow();
+                    sendJson(res, 200, { ok: true, account: loginRes.profile });
+                }
+                catch (err) {
+                    sendJson(res, 400, {
+                        ok: false,
+                        error: { message: err instanceof Error ? err.message : 'Invalid Nido Account login request' },
+                    });
+                }
+                return;
+            }
+            if (method === 'POST' && pathname === '/api/admin/nido-account/logout') {
+                try {
+                    const providerCfg = resolveNidoAccountProviderConfig(process.env, configDir);
+                    const nidoBackend = currentConfig.backends?.nido;
+                    await logoutNidoAccount({
+                        accessToken: nidoBackend?.apiKey || '',
+                        providerConfig: providerCfg,
+                        stateDir,
+                        configDir,
+                        secretStoreOptions,
+                    });
+                    if (currentConfig.primaryBackend === 'nido') {
+                        saveConfigUpdatesToEnvLocal({ primaryBackend: 'gemini', clearNidoAccountTokens: true }, stateDir, { useSecretStore, secretStoreOptions });
+                    }
+                    reloadCurrentConfig();
+                    await publishRuntimeDiscoveryNow();
+                    sendJson(res, 200, { ok: true });
+                }
+                catch (err) {
+                    sendJson(res, 500, {
+                        ok: false,
+                        error: { message: err instanceof Error ? err.message : 'Logout failed' },
+                    });
+                }
+                return;
+            }
             if (method === 'POST' && pathname === '/api/admin/config') {
                 try {
                     const { text: raw } = await readRequestBody(req);
                     const body = JSON.parse(raw || '{}');
-                    const useSecretStore = process.env.NIDOAI_SECRET_STORE !== 'file';
-                    saveConfigUpdatesToEnvLocal(body, process.cwd(), { useSecretStore });
-                    currentConfig = loadConfig();
-                    if (options.writeRuntimeDiscovery) {
-                        const p = currentConfig.backends[currentConfig.primaryBackend];
-                        const lp = p.kind === 'local' && p.configured
-                            ? await probeLocalBackendReachability(p.baseUrl, { apiKey: p.apiKey, force: true })
-                            : null;
-                        writeRuntimeDiscovery({
-                            baseUrl: `http://127.0.0.1:${actualPort}`,
-                            clientToken: currentConfig.clientToken,
-                            capabilities: {
-                                vision: true,
-                                streaming: true,
-                                jsonObject: true,
-                                primaryBackend: p.kind,
-                                primaryConfigured: p.configured,
-                                primaryReachable: lp ? lp.reachable : p.configured,
-                                secretStoreMode: currentConfig.secretStoreMode,
-                            },
-                        });
-                    }
+                    saveConfigUpdatesToEnvLocal(body, stateDir, { useSecretStore, secretStoreOptions });
+                    reloadCurrentConfig();
+                    await publishRuntimeDiscoveryNow();
                     sendJson(res, 200, { ok: true, secretStoreMode: currentConfig.secretStoreMode });
                 }
                 catch (err) {
@@ -689,8 +886,8 @@ export async function startGatewayServer(initialConfig, options = {}) {
             }
             if (method === 'POST' && pathname === '/api/admin/rotate-token') {
                 const newToken = `nidoai_${crypto.randomBytes(24).toString('hex')}`;
-                saveConfigUpdatesToEnvLocal({ clientToken: newToken });
-                currentConfig = loadConfig();
+                saveConfigUpdatesToEnvLocal({ clientToken: newToken }, stateDir, { useSecretStore, secretStoreOptions });
+                reloadCurrentConfig();
                 if (options.writeRuntimeDiscovery) {
                     writeRuntimeDiscovery({
                         baseUrl: `http://127.0.0.1:${actualPort}`,
@@ -885,11 +1082,18 @@ export async function startGatewayServer(initialConfig, options = {}) {
                     jsonObject: true,
                     backends: CHAT_BACKEND_KINDS,
                 },
+                nidoAccount: buildHealthNidoSummary(),
                 secretStore: {
                     mode: secretStoreMode,
                     label: formatSecretStoreLabel(secretStoreMode),
                 },
-                supportedEndpoints: ['GET /healthz', 'GET /v1/models', 'POST /v1/chat/completions'],
+                supportedEndpoints: [
+                    'GET /healthz',
+                    'GET /v1/models',
+                    'GET /v1/account',
+                    'POST /v1/account/sync',
+                    'POST /v1/chat/completions',
+                ],
                 supportedChatFields: SUPPORTED_CHAT_COMPLETION_FIELDS,
             });
             recordLog({
@@ -898,6 +1102,58 @@ export async function startGatewayServer(initialConfig, options = {}) {
                 method,
                 path: pathname,
                 status: 200,
+                totalMs,
+            });
+            return;
+        }
+        // 1a. GET /v1/account & POST /v1/account/sync (Loopback SSO for NidoOffice / NidoAgent / NidoBox)
+        if ((method === 'GET' && pathname === '/v1/account') ||
+            (method === 'POST' && pathname === '/v1/account/sync')) {
+            if (!timingSafeBearerMatch(req.headers.authorization, currentConfig.clientToken)) {
+                const totalMs = Math.round(performance.now() - requestStartMs);
+                sendJson(res, 401, {
+                    error: {
+                        type: 'authentication_error',
+                        code: 'invalid_client_token',
+                        message: 'Missing or invalid NidoAI client bearer token.',
+                    },
+                });
+                recordLog({
+                    timestamp: new Date().toISOString(),
+                    requestId,
+                    method,
+                    path: pathname,
+                    status: 401,
+                    totalMs,
+                });
+                return;
+            }
+            const wantSync = pathname === '/v1/account/sync' || url.searchParams.get('refresh') === '1';
+            let statusCode = 200;
+            let bodyPayload;
+            if (wantSync) {
+                const syncRes = await syncNidoAccountNow();
+                statusCode = syncRes.ok ? 200 : syncRes.status;
+                bodyPayload = {
+                    ok: syncRes.ok,
+                    ...(syncRes.error ? { error: syncRes.error } : {}),
+                    ...syncRes.payload,
+                };
+            }
+            else {
+                bodyPayload = {
+                    ok: true,
+                    ...buildSanitizedAccountPayload(),
+                };
+            }
+            const totalMs = Math.round(performance.now() - requestStartMs);
+            sendJson(res, statusCode, bodyPayload);
+            recordLog({
+                timestamp: new Date().toISOString(),
+                requestId,
+                method,
+                path: pathname,
+                status: statusCode,
                 totalMs,
             });
             return;
@@ -978,42 +1234,59 @@ export async function startGatewayServer(initialConfig, options = {}) {
                 }
             }
             if (method === 'GET' && isBackendReady(currentConfig.primaryBackend)) {
-                try {
-                    const modelHeaders = primary.kind === 'anthropic'
-                        ? {
-                            'x-api-key': primary.apiKey,
-                            'anthropic-version': ANTHROPIC_API_VERSION,
+                if (primary.kind === 'nido') {
+                    for (const id of NIDO_CURATED_MODELS) {
+                        if (!seenIds.has(id)) {
+                            seenIds.add(id);
+                            modelsList.push({
+                                id,
+                                object: 'model',
+                                created: nowSec,
+                                owned_by: 'nido',
+                                configured: true,
+                                reachable: true,
+                            });
                         }
-                        : { Authorization: `Bearer ${primary.apiKey}` };
-                    const upRes = await fetch(`${primary.baseUrl}/models`, {
-                        method: 'GET',
-                        headers: modelHeaders,
-                        signal: AbortSignal.timeout(3000),
-                    });
-                    if (upRes.ok) {
-                        const upJson = (await upRes.json());
-                        if (Array.isArray(upJson.data)) {
-                            for (const item of upJson.data) {
-                                if (typeof item?.id === 'string' && item.id.trim() && !seenIds.has(item.id.trim())) {
-                                    const id = item.id.trim();
-                                    seenIds.add(id);
-                                    modelsList.push({
-                                        id,
-                                        object: 'model',
-                                        created: typeof item.created === 'number' ? item.created : nowSec,
-                                        owned_by: typeof item.owned_by === 'string'
-                                            ? item.owned_by
-                                            : currentConfig.primaryBackend,
-                                        configured: true,
-                                        reachable: true,
-                                    });
+                    }
+                }
+                else {
+                    try {
+                        const modelHeaders = primary.kind === 'anthropic'
+                            ? {
+                                'x-api-key': primary.apiKey,
+                                'anthropic-version': ANTHROPIC_API_VERSION,
+                            }
+                            : { Authorization: `Bearer ${primary.apiKey}` };
+                        const upRes = await fetch(`${primary.baseUrl}/models`, {
+                            method: 'GET',
+                            headers: modelHeaders,
+                            signal: AbortSignal.timeout(3000),
+                        });
+                        if (upRes.ok) {
+                            const upJson = (await upRes.json());
+                            if (Array.isArray(upJson.data)) {
+                                for (const item of upJson.data) {
+                                    if (typeof item?.id === 'string' && item.id.trim() && !seenIds.has(item.id.trim())) {
+                                        const id = item.id.trim();
+                                        seenIds.add(id);
+                                        modelsList.push({
+                                            id,
+                                            object: 'model',
+                                            created: typeof item.created === 'number' ? item.created : nowSec,
+                                            owned_by: typeof item.owned_by === 'string'
+                                                ? item.owned_by
+                                                : currentConfig.primaryBackend,
+                                            configured: true,
+                                            reachable: true,
+                                        });
+                                    }
                                 }
                             }
                         }
                     }
-                }
-                catch {
-                    // Fallback gracefully to static model list if upstream /models fails or times out
+                    catch {
+                        // Fallback gracefully to static model list if upstream /models fails or times out
+                    }
                 }
             }
             const totalMs = Math.round(performance.now() - requestStartMs);
@@ -1123,7 +1396,13 @@ export async function startGatewayServer(initialConfig, options = {}) {
                 const candidate = candidates[i];
                 if (i > 0)
                     failoverUsed = true;
-                const result = await executeUpstreamCall(candidate, reqData, wantStream, res, requestId, requestStartMs);
+                const result = await executeUpstreamCall(candidate, reqData, wantStream, res, requestId, requestStartMs, {
+                    stateDir,
+                    configDir,
+                    useSecretStore,
+                    secretStoreOptions,
+                    onConfigReloadNeeded: reloadCurrentConfig,
+                });
                 lastResult = result;
                 if (result.ok) {
                     recordLog({
@@ -1189,7 +1468,7 @@ export async function startGatewayServer(initialConfig, options = {}) {
         sendJson(res, 404, {
             error: {
                 type: 'not_found',
-                message: `Unsupported endpoint '${method} ${pathname}'. Supported: GET /healthz, GET /v1/models, POST /v1/chat/completions`,
+                message: `Unsupported endpoint '${method} ${pathname}'. Supported: GET /healthz, GET /v1/models, GET /v1/account, POST /v1/account/sync, POST /v1/chat/completions`,
             },
         });
         recordLog({
@@ -1217,7 +1496,7 @@ export async function startGatewayServer(initialConfig, options = {}) {
                     baseUrl: `http://127.0.0.1:${actualPort}`,
                     clientToken: currentConfig.clientToken,
                     capabilities: {
-                        vision: true,
+                        vision: primary.kind !== 'nido',
                         streaming: true,
                         jsonObject: true,
                         primaryBackend: primary.kind,

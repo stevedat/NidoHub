@@ -21,10 +21,12 @@ Check local tools, installed agent CLIs (`agy`, `codex`, `claude`), and OS skill
 nidoagent capabilities --json
 ```
 
-Check full AI gateway + signed-in agent readiness:
+Check full AI gateway, Nido Account SSO & signed-in agent readiness:
 
 ```bash
 nidoagent status
+nidoagent account status --json
+nidoagent account sync --json
 nidoai doctor
 ```
 

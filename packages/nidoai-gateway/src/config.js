@@ -2,8 +2,9 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { detectSecretStoreMode, readSecretFromStore, writeSecretToStore, } from './security/secret-store.js';
+import { deleteSecretFromStore, detectSecretStoreMode, readSecretFromStore, writeSecretToStore, } from './security/secret-store.js';
 import { resolveNidoAiStateDir } from './runtime-discovery.js';
+import { DEFAULT_NIDO_MODEL, resolveNidoAccountProviderConfig, resolveNidoConfigDir, } from './gateway/nido-account-adapter.js';
 export const PKG_VERSION = (() => {
     try {
         const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
@@ -52,13 +53,15 @@ export function resolveDefaultCodexBin() {
     return path.join(home, '.local', 'bin', 'codex');
 }
 export const CHAT_BACKEND_KINDS = [
+    'nido',
     'gemini',
     'openai',
     'anthropic',
     'local',
 ];
 export function isChatBackendKind(value) {
-    return (value === 'gemini' ||
+    return (value === 'nido' ||
+        value === 'gemini' ||
         value === 'openai' ||
         value === 'anthropic' ||
         value === 'local');
@@ -100,6 +103,19 @@ export function saveConfigUpdatesToEnvLocal(updates, cwd = process.cwd(), option
     }
     if (updates.allowCrossProviderFailover !== undefined) {
         existing.NIDOAI_ALLOW_CROSS_PROVIDER_FAILOVER = updates.allowCrossProviderFailover ? '1' : '0';
+    }
+    if (updates.clearNidoAccountTokens === true) {
+        deleteSecretFromStore('NIDO_ACCOUNT_ACCESS_TOKEN', options.secretStoreOptions);
+        deleteSecretFromStore('NIDO_ACCOUNT_REFRESH_TOKEN', options.secretStoreOptions);
+        delete existing.NIDO_ACCOUNT_ACCESS_TOKEN;
+        delete existing.NIDO_ACCOUNT_REFRESH_TOKEN;
+    }
+    else {
+        persistProviderSecret('NIDO_ACCOUNT_ACCESS_TOKEN', updates.nidoAccessToken);
+        persistProviderSecret('NIDO_ACCOUNT_REFRESH_TOKEN', updates.nidoRefreshToken);
+    }
+    if (updates.nidoModel !== undefined && updates.nidoModel.trim() !== '') {
+        existing.NIDOAI_NIDO_MODEL = updates.nidoModel.trim();
     }
     persistProviderSecret('GEMINI_API_KEY', updates.geminiApiKey);
     if (updates.geminiModel !== undefined && updates.geminiModel.trim() !== '') {
@@ -206,6 +222,8 @@ export function loadConfig(options = {}) {
             return localEnv[key].trim();
         return '';
     };
+    const nidoAccessToken = getSecret('NIDO_ACCOUNT_ACCESS_TOKEN');
+    const nidoRefreshToken = getSecret('NIDO_ACCOUNT_REFRESH_TOKEN');
     const geminiApiKey = getSecret('GEMINI_API_KEY');
     const openaiApiKey = getSecret('OPENAI_API_KEY');
     const anthropicApiKey = getSecret('ANTHROPIC_API_KEY');
@@ -222,11 +240,23 @@ export function loadConfig(options = {}) {
         ? rawFailover
         : null;
     const allowCrossProviderFailover = ['1', 'true', 'yes'].includes(get('NIDOAI_ALLOW_CROSS_PROVIDER_FAILOVER', '0').toLowerCase());
+    const configDir = resolveNidoConfigDir(procEnv);
+    const nidoProviderCfg = resolveNidoAccountProviderConfig(procEnv, configDir);
     const geminiBaseUrl = get('NIDOAI_GEMINI_BASE_URL', 'https://generativelanguage.googleapis.com/v1beta/openai').replace(/\/+$/, '');
     const openaiBaseUrl = get('NIDOAI_OPENAI_BASE_URL', 'https://api.openai.com/v1').replace(/\/+$/, '');
     const anthropicBaseUrl = get('NIDOAI_ANTHROPIC_BASE_URL', 'https://api.anthropic.com/v1').replace(/\/+$/, '');
     const normalizedLocalBaseUrl = (localBaseUrl || 'http://127.0.0.1:11434/v1').replace(/\/+$/, '');
     const backends = {
+        nido: {
+            kind: 'nido',
+            baseUrl: nidoProviderCfg.aiProxyUrl,
+            authUrl: nidoProviderCfg.authUrl,
+            anonKey: nidoProviderCfg.anonKey,
+            apiKey: nidoAccessToken,
+            refreshToken: nidoRefreshToken,
+            defaultModel: get('NIDOAI_NIDO_MODEL', DEFAULT_NIDO_MODEL),
+            configured: Boolean(nidoAccessToken || nidoRefreshToken) && isAllowedUpstreamUrl(nidoProviderCfg.aiProxyUrl),
+        },
         gemini: {
             kind: 'gemini',
             baseUrl: geminiBaseUrl,
@@ -267,6 +297,8 @@ export function loadConfig(options = {}) {
         backends,
         codexBin: get('NIDOAI_CODEX_BIN', resolveDefaultCodexBin()),
         secretStoreMode,
+        stateDir: explicitIsolatedCall ? path.resolve(cwd) : stateDir,
+        configDir,
     };
 }
 /**

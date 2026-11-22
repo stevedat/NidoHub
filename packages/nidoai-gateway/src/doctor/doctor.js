@@ -6,6 +6,7 @@ import { promisify } from 'node:util';
 import { CodexAppServerWorker } from '../agent/codex-worker.js';
 import { ANTHROPIC_API_VERSION } from '../gateway/anthropic-adapter.js';
 import { probeLocalBackendReachability } from '../gateway/live-probe.js';
+import { fetchNidoAccountQuota, formatNidoPlanName, isJwtFresh, readNidoAccountProfile, refreshNidoAccountTokens, } from '../gateway/nido-account-adapter.js';
 import { readAgentsStatus } from '../runtime-discovery.js';
 import { detectSecretStoreMode, formatSecretStoreLabel } from '../security/secret-store.js';
 const execFileAsync = promisify(execFile);
@@ -245,6 +246,64 @@ async function probeOtherLocalClis() {
     }
     return results;
 }
+async function probeNidoAccountBackend(config) {
+    const nido = config.backends?.nido;
+    const profile = readNidoAccountProfile(config.configDir);
+    if (!nido?.configured) {
+        return {
+            name: 'backend:nido',
+            track: 'track1-chat-backend',
+            status: 'UNCONFIGURED',
+            detail: 'Chưa đăng nhập Tài khoản Nido.',
+        };
+    }
+    let token = nido.apiKey || '';
+    if ((!token || !isJwtFresh(token)) && nido.refreshToken) {
+        const rot = await refreshNidoAccountTokens({
+            refreshToken: nido.refreshToken,
+            providerConfig: {
+                authUrl: nido.authUrl,
+                anonKey: nido.anonKey,
+                aiProxyUrl: nido.baseUrl,
+            },
+            stateDir: config.stateDir,
+            useSecretStore: process.env.NIDOAI_SECRET_STORE !== 'file',
+            secretStoreOptions: { env: process.env },
+        });
+        if (rot.ok && rot.accessToken) {
+            token = rot.accessToken;
+        }
+    }
+    const t0 = performance.now();
+    const res = await fetchNidoAccountQuota({
+        accessToken: token,
+        providerConfig: {
+            authUrl: nido.authUrl,
+            anonKey: nido.anonKey,
+            aiProxyUrl: nido.baseUrl,
+        },
+    });
+    const latencyMs = Math.round(performance.now() - t0);
+    if (!res.ok) {
+        return {
+            name: 'backend:nido',
+            track: 'track1-chat-backend',
+            status: res.status === 401 || res.status === 403 ? 'FAIL' : 'PARTIAL',
+            latencyMs,
+            detail: `Nido Account ${profile?.email || ''}: ${res.error || `HTTP ${res.status}`}`.trim(),
+        };
+    }
+    const planLabel = formatNidoPlanName(res.planCode, res.isPro);
+    const rem = res.quota?.aiCreditsRemaining ?? 0;
+    const tot = res.quota?.aiCreditsQuota ?? 0;
+    return {
+        name: 'backend:nido',
+        track: 'track1-chat-backend',
+        status: 'PASS',
+        latencyMs,
+        detail: `${profile?.email || res.userId || 'Nido Account'} · ${planLabel} · còn ${rem}/${tot} lượt AI`,
+    };
+}
 export async function runDoctor(config) {
     const checks = [];
     const secretMode = config.secretStoreMode ?? detectSecretStoreMode();
@@ -264,6 +323,7 @@ export async function runDoctor(config) {
             ? `${formatSecretStoreLabel(secretMode)} (headless or OS keyring unavailable)`
             : `${formatSecretStoreLabel(secretMode)} active`,
     });
+    checks.push(await probeNidoAccountBackend(config));
     checks.push(await probeChatBackend('gemini', config.backends.gemini.baseUrl, config.backends.gemini.apiKey, config.backends.gemini.configured));
     checks.push(await probeChatBackend('openai', config.backends.openai.baseUrl, config.backends.openai.apiKey, config.backends.openai.configured));
     checks.push(await probeChatBackend('anthropic', config.backends.anthropic.baseUrl, config.backends.anthropic.apiKey, config.backends.anthropic.configured));
