@@ -77,21 +77,32 @@ fix_live_installer_shortcuts() {
   fi
 }
 
-fix_live_installer_shortcuts
-
-if command -v nidoagent >/dev/null 2>&1; then
-  nidoagent skills sync >/dev/null 2>&1 &
-fi
+POLICY_FILE="${CONFIG_DIR}/ai-policy.json"
 
 # Never auto-open the NidoHub control center / onboarding wizard during a Live
 # ISO session (while the OS installer is active). Users can still open NidoHub
 # manually or via `nido-welcome --force`; on an installed system it opens
 # automatically on first login.
-if [[ "$FORCE" -eq 0 ]] && is_live_session; then
-  exit 0
+if is_live_session; then
+  fix_live_installer_shortcuts
+  if [[ "$FORCE" -eq 0 ]]; then
+    exit 0
+  fi
+else
+  SKILLS_SRC="${NIDO_SKILLS_SRC:-/usr/share/ubuntu-nido/skills}"
+  SKILLS_STAMP="${CONFIG_DIR}/skills-synced.stamp"
+  if command -v nidoagent >/dev/null 2>&1 \
+    && ! grep -q '"aiEnabled"[[:space:]]*:[[:space:]]*false' "$POLICY_FILE" 2>/dev/null; then
+    if [[ ! -f "$SKILLS_STAMP" ]] || { [[ -d "$SKILLS_SRC" ]] && [[ "$SKILLS_SRC" -nt "$SKILLS_STAMP" ]]; }; then
+      (
+        nidoagent skills sync >/dev/null 2>&1 \
+          && mkdir -p "$CONFIG_DIR" \
+          && touch "$SKILLS_STAMP"
+      ) &
+    fi
+  fi
 fi
 
-POLICY_FILE="${CONFIG_DIR}/ai-policy.json"
 SETUP_DONE=0
 if [[ -f "$POLICY_FILE" ]]; then
   if grep -q '"setupCompleted"[[:space:]]*:[[:space:]]*true' "$POLICY_FILE" 2>/dev/null; then

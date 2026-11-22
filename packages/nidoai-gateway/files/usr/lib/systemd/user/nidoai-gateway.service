@@ -1,6 +1,7 @@
 [Unit]
 Description=NidoAI Local AI Gateway
 ConditionPathExists=!/snap/ubuntu-desktop-bootstrap
+ConditionPathExists=%h/.config/ubuntu-nido/ai-policy.json
 
 [Service]
 Type=simple

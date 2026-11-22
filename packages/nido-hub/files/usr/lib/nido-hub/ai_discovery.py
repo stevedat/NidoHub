@@ -189,6 +189,28 @@ def detect_hardware(home_dir: Path | None = None) -> HardwareProfile:
     )
 
 
+def detect_hardware_fast(home_dir: Path | None = None) -> HardwareProfile:
+    """Return instant CPU/RAM/disk hardware profile without spawning GPU probes."""
+    target_dir = home_dir or Path.home()
+    ram_gb = _read_ram_gb()
+    cores = os.cpu_count() or 2
+    try:
+        usage = shutil.disk_usage(str(target_dir if target_dir.exists() else Path("/")))
+        free_gb = round(usage.free / (1024**3), 1)
+    except OSError:
+        free_gb = 10.0
+    tier = classify_hardware_tier(ram_gb, 0.0, free_gb)
+    return HardwareProfile(
+        arch=normalize_linux_arch(),
+        cpu_cores=cores,
+        ram_gb=ram_gb,
+        free_disk_gb=free_gb,
+        gpu_name="",
+        gpu_vram_gb=0.0,
+        tier=tier,
+    )
+
+
 def resolve_ollama_binary(home_dir: Path | None = None) -> str | None:
     home = home_dir or Path.home()
     candidates = [

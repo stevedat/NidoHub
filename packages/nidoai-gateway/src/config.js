@@ -87,7 +87,7 @@ export function saveConfigUpdatesToEnvLocal(updates, cwd = process.cwd(), option
             return;
         const trimmed = rawVal.trim();
         if (useKeyring && storeMode !== 'file-0600-fallback') {
-            if (writeSecretToStore(envKey, trimmed, options.secretStoreOptions)) {
+            if (writeSecretToStore(envKey, trimmed, { ...options.secretStoreOptions, mode: storeMode })) {
                 delete existing[envKey];
                 storedInKeyring.push(envKey);
                 return;
@@ -105,8 +105,9 @@ export function saveConfigUpdatesToEnvLocal(updates, cwd = process.cwd(), option
         existing.NIDOAI_ALLOW_CROSS_PROVIDER_FAILOVER = updates.allowCrossProviderFailover ? '1' : '0';
     }
     if (updates.clearNidoAccountTokens === true) {
-        deleteSecretFromStore('NIDO_ACCOUNT_ACCESS_TOKEN', options.secretStoreOptions);
-        deleteSecretFromStore('NIDO_ACCOUNT_REFRESH_TOKEN', options.secretStoreOptions);
+        const delOpts = { ...options.secretStoreOptions, mode: storeMode };
+        deleteSecretFromStore('NIDO_ACCOUNT_ACCESS_TOKEN', delOpts);
+        deleteSecretFromStore('NIDO_ACCOUNT_REFRESH_TOKEN', delOpts);
         delete existing.NIDO_ACCOUNT_ACCESS_TOKEN;
         delete existing.NIDO_ACCOUNT_REFRESH_TOKEN;
     }
@@ -209,12 +210,13 @@ export function loadConfig(options = {}) {
             return localEnv[key].trim();
         return fallback;
     };
+    const readStoreOpts = { ...storeOpts, mode: secretStoreMode };
     const getSecret = (key) => {
         const fromProc = procEnv[key];
         if (fromProc !== undefined && fromProc.trim() !== '')
             return fromProc.trim();
         if (secretStoreMode !== 'file-0600-fallback') {
-            const fromStore = readSecretFromStore(key, storeOpts);
+            const fromStore = readSecretFromStore(key, readStoreOpts);
             if (fromStore)
                 return fromStore.trim();
         }

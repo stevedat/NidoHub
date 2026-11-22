@@ -30,7 +30,9 @@ from agent_accounts import (  # noqa: E402
     PROVIDER_API_SECRET_KEYS,
     CommandResult,
     NidoSecretStore,
+    cleanup_active_login_processes,
     connect_agent_provider,
+    default_command_runner,
     disconnect_agent_provider,
     plan_managed_install_command,
     plan_sign_in_command,
@@ -47,6 +49,7 @@ from ai_discovery import (  # noqa: E402
     build_ai_readiness_report,
     compute_capability_matrix,
     detect_hardware,
+    detect_hardware_fast,
     install_ollama_user,
     is_vision_model,
     live_verify_backend,
@@ -703,6 +706,46 @@ class NidoHubBackend:
             self._apply_gateway_service_state(self.is_ai_enabled(), restart_service=restart_service)
         return ok, msg, restored
 
+    def get_cached_ai_readiness_report(self) -> dict[str, Any]:
+        """Instantaneous cached snapshot using zero subprocesses or HTTP probes for UI startup."""
+        hw = detect_hardware_fast(self.home_dir)
+        empty_local: dict[str, Any] = {
+            "ollama": {
+                "installed": False,
+                "running": False,
+                "state": "checking",
+                "models": [],
+                "visionModels": [],
+            },
+            "runtimes": [],
+            "activeRuntime": None,
+            "installedModels": [],
+            "visionModels": [],
+            "hasReadyLocalModel": False,
+            "hasVisionLocalModel": False,
+        }
+        cached_map = read_agents_status(self.nidoai_dir)
+        cached_states: list[dict[str, Any]] = []
+        for spec in MANAGED_AGENT_SPECS:
+            entry = dict(
+                cached_map.get(spec.id)
+                or {
+                    "id": spec.id,
+                    "installed": False,
+                    "signedIn": False,
+                    "authMethod": spec.auth_method,
+                    "source": "nidohub",
+                }
+            )
+            cached_states.append(entry)
+        nido_acct = self.get_nido_account_status(refresh_quota=False)
+        rep = build_ai_readiness_report(
+            hw, empty_local, None, cached_states, nido_account=nido_acct
+        )
+        rep["ollamaStatusVi"] = "Đang kiểm tra Ollama cục bộ..."
+        rep["agents"] = cached_states
+        return rep
+
     def get_ai_readiness_report(
         self, persist_agents: bool = False, refresh_nido: bool = False
     ) -> dict[str, Any]:
@@ -711,7 +754,9 @@ class NidoHubBackend:
         gw_health = self.probe_gateway_health_detail()
         agents = self.probe_agent_accounts(persist=persist_agents)
         nido_acct = self.get_nido_account_status(refresh_quota=refresh_nido)
-        return build_ai_readiness_report(hw, local_info, gw_health, agents, nido_account=nido_acct)
+        rep = build_ai_readiness_report(hw, local_info, gw_health, agents, nido_account=nido_acct)
+        rep["agents"] = agents
+        return rep
 
     def probe_agent_accounts(self, persist: bool = True) -> list[dict[str, Any]]:
         return probe_all_agents(self.home_dir, self.nidoai_dir, persist=persist)
@@ -1565,6 +1610,17 @@ def run_self_test() -> int:
         assert ob_backend.is_ai_enabled()
         assert ob_backend.load_env_file_only().get("NIDOAI_ENABLED") == "1"
         assert ob_backend.load_ai_policy()["signedInProviders"] == ["agy"]
+
+        cached_rep = ob_backend.get_cached_ai_readiness_report()
+        assert {"capabilities", "hardwareLineVi", "agents", "nidoAccount"} <= set(cached_rep.keys())
+
+        t_kill_start = time.monotonic()
+        res_to = default_command_runner(
+            [sys.executable, "-c", "import time; time.sleep(10)"],
+            timeout=0.3,
+        )
+        t_kill_elapsed = time.monotonic() - t_kill_start
+        assert res_to.returncode == 127 and t_kill_elapsed < 3.0, (res_to, t_kill_elapsed)
     print("nido-hub self-test passed.")
     return 0
 
@@ -1745,22 +1801,29 @@ def run_gtk_app(
             toast_overlay.set_child(stack)
             toolbar.set_content(toast_overlay)
 
-            # --- Page 1: AI Assistant & Accounts (Spacious Clamped Canvas + Horizontal Status Strip) ---
+            # --- Page 1: AI Assistant & Accounts (Instant Cached Canvas -> Async Background Probe) ---
             ai_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
-            backend.ensure_gateway_ready(start_service=True)
             banner = Adw.Banner()
             if hasattr(banner, "set_use_markup"):
                 banner.set_use_markup(False)
-            _, gw_msg = backend.probe_gateway_health()
-            if not backend.is_ai_enabled():
-                gw_msg = "Trợ lý AI đang tắt trên NidoOS — bật công tắc bên dưới khi bạn muốn sử dụng."
+            ai_enabled_init = backend.is_ai_enabled()
+            gw_msg = (
+                "Trợ lý AI đang tắt trên NidoOS — bật công tắc bên dưới khi bạn muốn sử dụng."
+                if not ai_enabled_init
+                else "Đang kiểm tra trạng thái Trợ lý AI..."
+            )
             banner.set_title(gw_msg if hasattr(banner, "set_use_markup") else escape_markup(gw_msg))
-            banner.set_revealed(not backend.is_ai_enabled())
+            banner.set_revealed(not ai_enabled_init)
             ai_box.append(banner)
 
             ai_scroll, ai_page = _make_scrolled_canvas(max_width=860)
-            env = backend.load_env()
-            initial_report = backend.get_ai_readiness_report(persist_agents=False)
+            env = backend.load_env_file_only()
+            initial_report = backend.get_cached_ai_readiness_report()
+            initial_states_list = list(initial_report.get("agents") or [])
+            initial_states = {entry["id"]: entry for entry in initial_states_list}
+            initial_nido_acct = initial_report.get("nidoAccount") or backend.get_nido_account_status(
+                refresh_quota=False
+            )
 
             # Horizontal 3-Tile Capability Strip (pinned compactly at top)
             cap_strip = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
@@ -2128,76 +2191,108 @@ def run_gtk_app(
                         btn_w.add_css_class("suggested-action")
                     btn_w.set_sensitive(True)
 
+            readiness_in_flight = [False]
+
             def refresh_readiness_ui(
                 persist_agents: bool = False,
                 show_toast: bool = False,
                 refresh_nido: bool = False,
+                ensure_gateway: bool = False,
             ) -> None:
+                if readiness_in_flight[0] and not show_toast:
+                    return
+                readiness_in_flight[0] = True
+
                 def worker() -> None:
-                    agents_list = backend.probe_agent_accounts(persist=persist_agents)
-                    hw = detect_hardware(backend.home_dir)
-                    local_info = probe_local_ai_runtimes(backend.home_dir)
-                    gw_detail = backend.probe_gateway_health_detail()
-                    nido_acct = backend.get_nido_account_status(refresh_quota=refresh_nido)
-                    rep = build_ai_readiness_report(
-                        hw, local_info, gw_detail, agents_list, nido_account=nido_acct
-                    )
-                    _, gw_line = backend.probe_gateway_health()
-                    banner_line = _format_banner_line(
-                        gw_line, agents_list, rep["capabilities"], nido_acct=nido_acct
-                    )
-                    states_map = {e["id"]: e for e in agents_list}
+                    try:
+                        if (
+                            ensure_gateway
+                            and backend.is_ai_enabled()
+                            and not backend.is_onboarding_required()
+                        ):
+                            backend.ensure_gateway_ready(start_service=True)
+                        agents_list = backend.probe_agent_accounts(persist=persist_agents)
+                        hw = detect_hardware(backend.home_dir)
+                        local_info = probe_local_ai_runtimes(backend.home_dir)
+                        gw_detail = backend.probe_gateway_health_detail()
+                        nido_acct = backend.get_nido_account_status(refresh_quota=refresh_nido)
+                        full_env = backend.load_env()
+                        rep = build_ai_readiness_report(
+                            hw, local_info, gw_detail, agents_list, nido_account=nido_acct
+                        )
+                        _, gw_line = backend.probe_gateway_health()
+                        banner_line = _format_banner_line(
+                            gw_line, agents_list, rep["capabilities"], nido_acct=nido_acct
+                        )
+                        states_map = {e["id"]: e for e in agents_list}
 
-                    def apply_ui() -> bool:
-                        ai_on_now = backend.is_ai_enabled()
-                        banner.set_title(
-                            banner_line if hasattr(banner, "set_use_markup") else escape_markup(banner_line)
-                        )
-                        banner.set_revealed(not ai_on_now)
-                        hw_row.set_subtitle(
-                            f"{rep['hardwareLineVi']} · {rep['ollamaStatusVi']}"
-                        )
-                        for ck in ("nidobox_ocr", "nidooffice_ai", "nidoagent"):
-                            c_info = rep["capabilities"][ck]
-                            _, b_lbl, d_lbl = cap_tiles[ck]
-                            if not ai_on_now:
-                                _set_badge_state(b_lbl, "Đang tắt", False)
-                                d_lbl.set_text("Đã tắt trên NidoOS — bật lại Trợ lý AI khi cần.")
-                            else:
-                                _set_badge_state(b_lbl, c_info["badge"], bool(c_info.get("ready")))
-                                d_lbl.set_text(c_info["detail"])
-                        _apply_agent_tab_availability(
-                            ai_on_now,
-                            bool(rep["capabilities"]["nidoagent"].get("ready")),
-                        )
-                        _apply_nido_account_main_ui(nido_acct)
-                        _apply_agent_rows_ui(states_map)
-                        cur_env = backend.load_env_file_only()
-                        p_kind = cur_env.get("NIDOAI_PRIMARY_BACKEND", "gemini")
-                        p_idx = next((i for i, (k, _) in enumerate(PROVIDERS) if k == p_kind), 0)
-                        prov_row.set_selected(p_idx)
-                        ol_info = rep["local"]["ollama"]
-                        if ollama_status_row is not None:
-                            ollama_status_row.set_subtitle(rep["ollamaStatusVi"])
-                        if ollama_install_btn is not None:
-                            if ol_info.get("installed"):
-                                ollama_install_btn.set_label("Đã cài")
-                                ollama_install_btn.set_sensitive(False)
-                                ollama_install_btn.remove_css_class("suggested-action")
-                            else:
-                                ollama_install_btn.set_label("Cài Ollama")
-                                ollama_install_btn.set_sensitive(True)
-                                ollama_install_btn.add_css_class("suggested-action")
-                        installed_set = set(rep["local"].get("installedModels", []))
-                        for mid, mbtn in ollama_model_btns:
-                            is_pulled = any(m == mid or m.startswith(f"{mid}:") for m in installed_set)
-                            mbtn.set_label("Kích hoạt" if is_pulled else "Tải & bật")
-                            mbtn.set_sensitive(True)
-                        if show_toast:
-                            _add_toast(toast_overlay, banner_line[:160])
-                        return False
+                        def apply_ui() -> bool:
+                            ai_on_now = backend.is_ai_enabled()
+                            banner.set_title(
+                                banner_line
+                                if hasattr(banner, "set_use_markup")
+                                else escape_markup(banner_line)
+                            )
+                            banner.set_revealed(not ai_on_now)
+                            hw_row.set_subtitle(
+                                f"{rep['hardwareLineVi']} · {rep['ollamaStatusVi']}"
+                            )
+                            for ck in ("nidobox_ocr", "nidooffice_ai", "nidoagent"):
+                                c_info = rep["capabilities"][ck]
+                                _, b_lbl, d_lbl = cap_tiles[ck]
+                                if not ai_on_now:
+                                    _set_badge_state(b_lbl, "Đang tắt", False)
+                                    d_lbl.set_text("Đã tắt trên NidoOS — bật lại Trợ lý AI khi cần.")
+                                else:
+                                    _set_badge_state(
+                                        b_lbl, c_info["badge"], bool(c_info.get("ready"))
+                                    )
+                                    d_lbl.set_text(c_info["detail"])
+                            _apply_agent_tab_availability(
+                                ai_on_now,
+                                bool(rep["capabilities"]["nidoagent"].get("ready")),
+                            )
+                            _apply_nido_account_main_ui(nido_acct)
+                            _apply_agent_rows_ui(states_map)
+                            if not gemini_row.get_text() and full_env.get("GEMINI_API_KEY"):
+                                gemini_row.set_text(full_env["GEMINI_API_KEY"])
+                            if not openai_row.get_text() and full_env.get("OPENAI_API_KEY"):
+                                openai_row.set_text(full_env["OPENAI_API_KEY"])
+                            if not anthropic_row.get_text() and full_env.get("ANTHROPIC_API_KEY"):
+                                anthropic_row.set_text(full_env["ANTHROPIC_API_KEY"])
+                            p_kind = full_env.get("NIDOAI_PRIMARY_BACKEND", "gemini")
+                            p_idx = next((i for i, (k, _) in enumerate(PROVIDERS) if k == p_kind), 0)
+                            prov_row.set_selected(p_idx)
+                            ol_info = rep["local"]["ollama"]
+                            if ollama_status_row is not None:
+                                ollama_status_row.set_subtitle(rep["ollamaStatusVi"])
+                            if ollama_install_btn is not None:
+                                if ol_info.get("installed"):
+                                    ollama_install_btn.set_label("Đã cài")
+                                    ollama_install_btn.set_sensitive(False)
+                                    ollama_install_btn.remove_css_class("suggested-action")
+                                else:
+                                    ollama_install_btn.set_label("Cài Ollama")
+                                    ollama_install_btn.set_sensitive(True)
+                                    ollama_install_btn.add_css_class("suggested-action")
+                            installed_set = set(rep["local"].get("installedModels", []))
+                            for mid, mbtn in ollama_model_btns:
+                                is_pulled = any(
+                                    m == mid or m.startswith(f"{mid}:") for m in installed_set
+                                )
+                                mbtn.set_label("Kích hoạt" if is_pulled else "Tải & bật")
+                                mbtn.set_sensitive(True)
+                            if onboarding_active[0]:
+                                ob_latest_states[:] = agents_list
+                                ob_latest_nido[0] = nido_acct
+                                _update_onboarding_ui()
+                            if show_toast:
+                                _add_toast(toast_overlay, banner_line[:160])
+                            return False
 
-                    GLib.idle_add(apply_ui)
+                        GLib.idle_add(apply_ui)
+                    finally:
+                        readiness_in_flight[0] = False
 
                 threading.Thread(target=worker, daemon=True).start()
 
@@ -2243,7 +2338,6 @@ def run_gtk_app(
             check_btn.connect("clicked", on_check_clicked)
 
             # Group 1b: Unified Nido Account (SSO for NidoOffice, NidoAgent & OS Sync)
-            initial_nido_acct = initial_report.get("nidoAccount") or backend.get_nido_account_status(refresh_quota=False)
             nido_group = _make_group(
                 title="Tài khoản Nido",
                 description="Một tài khoản dùng chung cho NidoOffice, NidoAgent và sao lưu cài đặt hệ thống.",
@@ -2424,10 +2518,12 @@ def run_gtk_app(
                 description="Đăng nhập một chạm qua trình duyệt bằng tài khoản Google, ChatGPT hoặc Claude của bạn.",
             )
 
-            initial_states_list = backend.probe_agent_accounts(persist=False)
-            initial_states = {entry["id"]: entry for entry in initial_states_list}
-            init_banner = _format_banner_line(
-                gw_msg, initial_states_list, initial_report["capabilities"], nido_acct=initial_nido_acct
+            init_banner = (
+                gw_msg
+                if not ai_enabled_init
+                else _format_banner_line(
+                    gw_msg, initial_states_list, initial_report["capabilities"], nido_acct=initial_nido_acct
+                )
             )
             banner.set_title(
                 init_banner if hasattr(banner, "set_use_markup") else escape_markup(init_banner)
@@ -3530,26 +3626,37 @@ def run_gtk_app(
                     ob_finish_btn.set_label("Hoàn tất (Cần ≥ 1 tài khoản AI)")
                     ob_finish_btn.set_sensitive(False)
 
+            ob_poll_in_flight = [False]
+
             def _refresh_onboarding_accounts(show_toast: bool = False) -> None:
+                if ob_poll_in_flight[0] and not show_toast:
+                    return
+                ob_poll_in_flight[0] = True
+
                 def worker() -> None:
-                    fresh_states = backend.probe_agent_accounts(persist=True)
-                    fresh_nido = backend.get_nido_account_status(refresh_quota=show_toast)
+                    try:
+                        fresh_states = backend.probe_agent_accounts(persist=True)
+                        fresh_nido = backend.get_nido_account_status(refresh_quota=show_toast)
 
-                    def apply() -> bool:
-                        ob_latest_states[:] = fresh_states
-                        ob_latest_nido[0] = fresh_nido
-                        _apply_nido_account_main_ui(fresh_nido)
-                        _update_onboarding_ui()
-                        if show_toast:
-                            g = evaluate_ai_onboarding_gate(
-                                bool(ob_ai_switch.get_active()),
-                                ob_latest_states,
-                                nido_account=ob_latest_nido[0],
-                            )
-                            _add_toast(ob_toast_overlay, f"{g['statusBadge']}: {g['reasonVi']}"[:150])
-                        return False
+                        def apply() -> bool:
+                            ob_latest_states[:] = fresh_states
+                            ob_latest_nido[0] = fresh_nido
+                            _apply_nido_account_main_ui(fresh_nido)
+                            _update_onboarding_ui()
+                            if show_toast:
+                                g = evaluate_ai_onboarding_gate(
+                                    bool(ob_ai_switch.get_active()),
+                                    ob_latest_states,
+                                    nido_account=ob_latest_nido[0],
+                                )
+                                _add_toast(
+                                    ob_toast_overlay, f"{g['statusBadge']}: {g['reasonVi']}"[:150]
+                                )
+                            return False
 
-                    GLib.idle_add(apply)
+                        GLib.idle_add(apply)
+                    finally:
+                        ob_poll_in_flight[0] = False
 
                 threading.Thread(target=worker, daemon=True).start()
 
@@ -3562,13 +3669,13 @@ def run_gtk_app(
                         ob_poll_source_id[0] = 0
                         return False
                     ob_poll_ticks[0] += 1
-                    if ob_poll_ticks[0] > 45:  # Stop after ~3 minutes
+                    if ob_poll_ticks[0] > 18:  # Stop after ~3 minutes
                         ob_poll_source_id[0] = 0
                         return False
                     _refresh_onboarding_accounts(show_toast=False)
                     return True
 
-                ob_poll_source_id[0] = int(GLib.timeout_add_seconds(4, _tick))
+                ob_poll_source_id[0] = int(GLib.timeout_add_seconds(10, _tick))
 
             def _on_ob_nido_signed_in(acct_now: dict[str, Any]) -> None:
                 ob_latest_nido[0] = acct_now
@@ -3790,10 +3897,12 @@ def run_gtk_app(
             def on_window_close_request(_w: Any) -> bool:
                 if allow_close[0] or not onboarding_active[0]:
                     _stop_ob_poll()
+                    cleanup_active_login_processes()
                     return False
 
                 def _confirm_disable_and_exit() -> None:
                     _stop_ob_poll()
+                    cleanup_active_login_processes()
                     backend.set_ai_enabled(
                         False,
                         restart_service=True,
@@ -3840,6 +3949,15 @@ def run_gtk_app(
 
             win.set_content(root_stack)
             win.present()
+            GLib.idle_add(
+                lambda: (
+                    refresh_readiness_ui(
+                        persist_agents=False,
+                        ensure_gateway=(not onboarding_mode),
+                    ),
+                    False,
+                )[1]
+            )
 
     app = NidoHubApp()
     return int(app.run([]))

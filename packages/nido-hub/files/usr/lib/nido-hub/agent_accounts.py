@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import atexit
 import base64
 import datetime
 import hashlib
@@ -10,10 +11,12 @@ import json
 import os
 import platform as py_platform
 import shutil
+import signal
 import subprocess
 import sys
 import tarfile
 import tempfile
+import threading
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -75,6 +78,90 @@ class CommandResult:
 
 CommandRunner = Callable[[list[str], str | None, float], CommandResult]
 
+_ACTIVE_LOGIN_PGIDS: set[int] = set()
+_ACTIVE_LOGIN_LOCK = threading.Lock()
+
+
+def cleanup_active_login_processes() -> None:
+    """Terminate any hanging interactive CLI login process groups spawned by NidoHub."""
+    with _ACTIVE_LOGIN_LOCK:
+        pgids = list(_ACTIVE_LOGIN_PGIDS)
+        _ACTIVE_LOGIN_PGIDS.clear()
+    for pgid in pgids:
+        try:
+            os.killpg(pgid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+
+
+atexit.register(cleanup_active_login_processes)
+
+
+def _terminate_process_group(proc: subprocess.Popen[str]) -> None:
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError, OSError):
+        try:
+            proc.terminate()
+        except OSError:
+            pass
+    try:
+        proc.communicate(timeout=0.8)
+        return
+    except Exception:
+        pass
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        try:
+            proc.kill()
+        except OSError:
+            pass
+    try:
+        proc.communicate(timeout=0.8)
+    except Exception:
+        try:
+            proc.wait(timeout=0.5)
+        except Exception:
+            pass
+
+
+def _run_process_group(
+    argv: list[str],
+    stdin_text: str | None = None,
+    timeout: float = 5.0,
+    env: dict[str, str] | None = None,
+    cwd: str | None = None,
+    track_login: bool = False,
+) -> CommandResult:
+    proc: subprocess.Popen[str] | None = None
+    try:
+        proc = subprocess.Popen(
+            argv,
+            stdin=(subprocess.PIPE if stdin_text is not None else subprocess.DEVNULL),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+            cwd=cwd,
+            start_new_session=True,
+        )
+        if track_login:
+            with _ACTIVE_LOGIN_LOCK:
+                _ACTIVE_LOGIN_PGIDS.add(proc.pid)
+        stdout, stderr = proc.communicate(input=stdin_text, timeout=timeout)
+        return CommandResult(int(proc.returncode or 0), stdout or "", stderr or "")
+    except subprocess.TimeoutExpired as exc:
+        if proc is not None:
+            _terminate_process_group(proc)
+        return CommandResult(127, "", str(exc))
+    except OSError as exc:
+        return CommandResult(127, "", str(exc))
+    finally:
+        if track_login and proc is not None:
+            with _ACTIVE_LOGIN_LOCK:
+                _ACTIVE_LOGIN_PGIDS.discard(proc.pid)
+
 
 def _build_agy_probe_env() -> dict[str, str]:
     """Ensure local desktop GNOME Keyring is reachable by `agy` even from SSH/subshells."""
@@ -100,20 +187,14 @@ def default_command_runner(
     env: dict[str, str] | None = None,
     cwd: str | None = None,
 ) -> CommandResult:
-    try:
-        proc = subprocess.run(
-            argv,
-            input=stdin_text,
-            text=True,
-            capture_output=True,
-            timeout=timeout,
-            env=env,
-            cwd=cwd,
-            check=False,
-        )
-        return CommandResult(proc.returncode, proc.stdout or "", proc.stderr or "")
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return CommandResult(127, "", str(exc))
+    return _run_process_group(
+        argv,
+        stdin_text=stdin_text,
+        timeout=timeout,
+        env=env,
+        cwd=cwd,
+        track_login=False,
+    )
 
 
 class NidoSecretStore:
@@ -943,8 +1024,10 @@ def connect_agent_provider(
             f"Đã cài {spec.binary_name}. Hãy mở Terminal và chạy `{binary_path}` để hoàn tất đăng nhập.",
         )
 
-    run = runner or default_command_runner
-    res = run(login_argv, None, 180.0)
+    if runner is None:
+        res = _run_process_group(login_argv, None, 180.0, track_login=True)
+    else:
+        res = runner(login_argv, None, 180.0)
     probe_all_agents(home_dir, nidoai_dir, persist=True, runner=runner)
     if res.returncode == 0:
         return True, f"Đã kết nối {spec.display_name} thành công!"

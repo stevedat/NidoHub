@@ -1276,6 +1276,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -1343,22 +1344,55 @@ subprocess.run(["bash", str(bind_fonts_script), "--self-test"], check=True)
 tray_script = root / "packages/nido-desktop-settings/files/usr/libexec/ubuntu-nido/nidobox-tray"
 subprocess.run([sys.executable, str(tray_script), "--self-test"], check=True)
 
-# Verify nido-welcome suppresses auto-opening NidoHub during Live ISO session
+# Verify nido-welcome suppresses NidoHub & nidoagent cold-start during Live ISO and stamps installed skills sync
+gw_unit_txt = (root / "packages/nidoai-gateway/files/usr/lib/systemd/user/nidoai-gateway.service").read_text(encoding="utf-8")
+assert "ConditionPathExists=%h/.config/ubuntu-nido/ai-policy.json" in gw_unit_txt, "nidoai-gateway.service must wait for ai-policy.json"
+cleanup_txt = (root / "packages/nido-desktop/files/usr/libexec/ubuntu-nido/native-first-cleanup").read_text(encoding="utf-8")
+assert "disabled-extensions=['ding@rastersoft.com']" in cleanup_txt, "native-first-cleanup must disable ding@rastersoft.com on installed systems"
+
 welcome_script = root / "packages/nido-desktop-settings/files/usr/local/bin/nido-welcome"
 with tempfile.TemporaryDirectory() as wtmp:
-    fake_bin = Path(wtmp) / "bin"
+    wtmp_path = Path(wtmp)
+    fake_bin = wtmp_path / "bin"
     fake_bin.mkdir()
-    sentinel = Path(wtmp) / "hub-launched"
+    sentinel = wtmp_path / "hub-launched"
+    skills_log = wtmp_path / "skills-sync.log"
+    fake_skills_src = wtmp_path / "skills-src"
+    fake_skills_src.mkdir()
     fake_hub = fake_bin / "nido-hub"
     fake_hub.write_text(f"#!/bin/sh\ntouch {sentinel}\n", encoding="utf-8")
     fake_hub.chmod(0o755)
+    fake_agent = fake_bin / "nidoagent"
+    fake_agent.write_text(f"#!/bin/sh\necho \"$@\" >> {skills_log}\n", encoding="utf-8")
+    fake_agent.chmod(0o755)
     wenv = dict(os.environ)
     wenv["DISPLAY"] = ":99"
     wenv["HOME"] = wtmp
+    wenv["XDG_CONFIG_HOME"] = str(wtmp_path / ".config")
+    wenv["NIDO_SKILLS_SRC"] = str(fake_skills_src)
     wenv["PATH"] = f"{fake_bin}:{wenv.get('PATH', '')}"
     wenv["NIDO_TEST_LIVE_SESSION"] = "1"
     subprocess.run(["bash", str(welcome_script)], env=wenv, check=True)
     assert not sentinel.exists(), "nido-welcome must NOT auto-launch nido-hub during a Live ISO session!"
+    assert not skills_log.exists(), "nido-welcome must NOT spawn nidoagent during a Live ISO session!"
+
+    cfg_dir = wtmp_path / ".config" / "ubuntu-nido"
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    (cfg_dir / "ai-policy.json").write_text('{"setupCompleted": true, "aiEnabled": true}\n', encoding="utf-8")
+    os.utime(fake_skills_src, (time.time() - 60, time.time() - 60))
+    wenv["NIDO_TEST_LIVE_SESSION"] = "0"
+    subprocess.run(["bash", str(welcome_script)], env=wenv, check=True)
+    stamp_file = cfg_dir / "skills-synced.stamp"
+    for _ in range(30):
+        if stamp_file.is_file():
+            break
+        time.sleep(0.05)
+    assert stamp_file.is_file(), "nido-welcome should stamp skills-synced.stamp on first installed run"
+    assert skills_log.read_text(encoding="utf-8").splitlines() == ["skills sync"]
+    # Second login with unchanged skills dir must skip spawning Node/nidoagent completely
+    subprocess.run(["bash", str(welcome_script)], env=wenv, check=True)
+    time.sleep(0.15)
+    assert skills_log.read_text(encoding="utf-8").splitlines() == ["skills sync"]
 
 # 3. Verify nidoagent respects NIDOAI_ENABLED=0 (AI OFF policy) and unsigned-in preflight guard (zero fetch failed)
 cli_mjs = root / "packages/nidoagent-cli/files/usr/lib/nidoagent-cli/cli.mjs"

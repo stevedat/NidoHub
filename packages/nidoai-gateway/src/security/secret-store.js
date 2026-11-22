@@ -25,10 +25,19 @@ function defaultRunner(command, args, options) {
         error: res.error,
     };
 }
-function commandAvailable(cmd, platform, runner) {
+const _cmdCache = new Map();
+function commandAvailable(cmd, platform, runner, env = process.env) {
+    const cacheKey = `${platform}:${cmd}:${env?.PATH ?? ''}`;
+    if (runner === defaultRunner && _cmdCache.has(cacheKey)) {
+        return _cmdCache.get(cacheKey);
+    }
     const lookup = platform === 'win32' ? 'where' : 'which';
     const res = runner(lookup, [cmd], { timeoutMs: 2000 });
-    return !res.error && res.status === 0 && res.stdout.trim().length > 0;
+    const found = !res.error && res.status === 0 && res.stdout.trim().length > 0;
+    if (runner === defaultRunner) {
+        _cmdCache.set(cacheKey, found);
+    }
+    return found;
 }
 function resolveDpapiFilePath(homeDir, env) {
     const stateDir = env.NIDOAI_HOME?.trim() || path.join(homeDir, '.nidoai');
@@ -47,7 +56,7 @@ export function detectSecretStoreMode(options = {}) {
         if (env.SSH_CONNECTION && override !== 'keyring') {
             return 'file-0600-fallback';
         }
-        return commandAvailable('security', platform, runner)
+        return commandAvailable('security', platform, runner, env)
             ? 'macos-keychain'
             : 'file-0600-fallback';
     }
@@ -56,12 +65,12 @@ export function detectSecretStoreMode(options = {}) {
         if (!hasDbus && override !== 'keyring') {
             return 'file-0600-fallback';
         }
-        return commandAvailable('secret-tool', platform, runner)
+        return commandAvailable('secret-tool', platform, runner, env)
             ? 'linux-libsecret'
             : 'file-0600-fallback';
     }
     if (platform === 'win32') {
-        return commandAvailable('powershell.exe', platform, runner)
+        return commandAvailable('powershell.exe', platform, runner, env)
             ? 'windows-dpapi'
             : 'file-0600-fallback';
     }
@@ -71,7 +80,7 @@ function escapeSecurityArg(value) {
     return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
 }
 export function readSecretFromStore(key, options = {}) {
-    const mode = detectSecretStoreMode(options);
+    const mode = options.mode ?? detectSecretStoreMode(options);
     if (mode === 'file-0600-fallback')
         return null;
     const runner = options.runner ?? defaultRunner;
@@ -126,7 +135,7 @@ export function writeSecretToStore(key, value, options = {}) {
     const trimmed = value.trim();
     if (!trimmed)
         return false;
-    const mode = detectSecretStoreMode(options);
+    const mode = options.mode ?? detectSecretStoreMode(options);
     if (mode === 'file-0600-fallback')
         return false;
     const runner = options.runner ?? defaultRunner;
@@ -179,7 +188,7 @@ export function writeSecretToStore(key, value, options = {}) {
     return false;
 }
 export function deleteSecretFromStore(key, options = {}) {
-    const mode = detectSecretStoreMode(options);
+    const mode = options.mode ?? detectSecretStoreMode(options);
     if (mode === 'file-0600-fallback')
         return false;
     const runner = options.runner ?? defaultRunner;
