@@ -205,6 +205,7 @@ for fname in expected:
                 "./usr/lib/nido-hub/app_store.py",
                 "./usr/lib/nido-hub/markdown_render.py",
                 "./usr/lib/nido-hub/printer_probe.py",
+                "./usr/lib/nido-hub/self_test.py",
                 "./usr/libexec/nido-hub/nido-pkg-helper",
                 "./usr/share/nido-hub/vendors.json",
                 "./usr/share/polkit-1/actions/com.nidoholdings.nidohub.pkg.policy",
@@ -1707,7 +1708,12 @@ vcs_spec.loader.exec_module(vcs)
 customize_txt = Path(sys.argv[4]).read_text(encoding="utf-8")
 assert "stashed-cdrom-sources" in customize_txt, "customize.sh must stash cdrom.sources instead of deleting it"
 assert "restore_and_verify_cdrom_sources" in customize_txt, "customize.sh must restore and verify cdrom.sources"
+assert "APT::Update::Error-Mode=any" in customize_txt, "customize.sh must run offline chroot apt-get update gate on /cdrom"
+assert "UnitMasked" in customize_txt, "customize.sh offline apt-get update gate must fail on UnitMasked DBus errors"
+assert "test -f /usr/lib/nido-hub/self_test.py" in customize_txt, "customize.sh must verify nido-hub self_test.py"
 assert 'Path(p).unlink' not in customize_txt, "customize.sh must never unlink /etc/apt/sources.list.d/*cdrom*"
+utils_txt = (Path(sys.argv[4]).parent / "utils.sh").read_text(encoding="utf-8")
+assert "squashfs/cdrom" in utils_txt, "utils.sh umount_chroot must safely unmount squashfs/cdrom"
 
 import os, shutil
 if shutil.which("gpg"):
@@ -1804,6 +1810,8 @@ from pathlib import Path
 
 root = Path(sys.argv[1])
 assert (root / "LICENSE").is_file(), "Missing LICENSE file for public repo"
+assert (root / "THIRD_PARTY_PROVENANCE.md").is_file(), "Missing THIRD_PARTY_PROVENANCE.md"
+assert (root / "docs/INCIDENTS.md").is_file(), "Missing docs/INCIDENTS.md"
 readme_text = (root / "README.md").read_text(encoding="utf-8")
 assert '<a href="docs/README.vi.md">' in readme_text, "README.md must use pure HTML <a> language switcher"
 

@@ -100,6 +100,66 @@ restore_and_verify_cdrom_sources() {
       --iso-tree "$WORK_DIR/custom" \
       --rootfs "$WORK_DIR/squashfs"
   fi
+
+  local has_cdrom_sources=0
+  local src_candidate
+  shopt -s nullglob
+  for src_candidate in "$WORK_DIR/squashfs/etc/apt/sources.list.d"/*cdrom*; do
+    if [ -f "$src_candidate" ]; then
+      has_cdrom_sources=1
+      break
+    fi
+  done
+  shopt -u nullglob
+
+  if [ -d "$WORK_DIR/custom/dists" ] && [ "$has_cdrom_sources" -eq 1 ]; then
+    info "  → Verifying offline chroot apt-get update against file:/cdrom..."
+    local cdrom_mount="$WORK_DIR/squashfs/cdrom"
+    local cdrom_existed=0
+    [ -d "$cdrom_mount" ] && cdrom_existed=1
+    mkdir -p "$cdrom_mount"
+    mount --bind "$WORK_DIR/custom" "$cdrom_mount"
+    mount -o remount,ro,bind "$cdrom_mount" 2>/dev/null || true
+
+    local apt_rc=0
+    local apt_out=""
+    set +e
+    apt_out="$(HOME=/root chroot "$WORK_DIR/squashfs" /bin/bash -c '
+      set -euo pipefail
+      export DEBIAN_FRONTEND=noninteractive
+      TMP_APT="$(mktemp -d /tmp/nido-cdrom-apt.XXXXXX)"
+      trap '\''rm -rf "${TMP_APT:-}"'\'' EXIT
+      mkdir -p "$TMP_APT/sources.list.d" "$TMP_APT/lists/partial"
+      cp -a /etc/apt/sources.list.d/*cdrom* "$TMP_APT/sources.list.d/"
+      chmod 0755 "$TMP_APT" "$TMP_APT/sources.list.d" "$TMP_APT/lists" "$TMP_APT/lists/partial"
+      chown _apt:root "$TMP_APT/lists/partial" 2>/dev/null || true
+      apt-get \
+        -o APT::Update::Error-Mode=any \
+        -o Dir::Etc::sourcelist=/dev/null \
+        -o Dir::Etc::sourceparts="$TMP_APT/sources.list.d" \
+        -o Dir::State::Lists="$TMP_APT/lists" \
+        -o Dir::Cache::pkgcache="$TMP_APT/pkgcache.bin" \
+        -o Dir::Cache::srcpkgcache="$TMP_APT/srcpkgcache.bin" \
+        update 2>&1
+    ')"
+    apt_rc=$?
+    set -e
+
+    umount "$cdrom_mount" 2>/dev/null || umount -lf "$cdrom_mount" 2>/dev/null || true
+    if [ "$cdrom_existed" -eq 0 ]; then
+      rmdir "$cdrom_mount" 2>/dev/null || true
+    fi
+
+    if [ "$apt_rc" -ne 0 ]; then
+      printf '%s\n' "$apt_out" >&2
+      error "Offline chroot apt-get update against file:/cdrom failed (exit ${apt_rc})."
+    fi
+    if printf '%s\n' "$apt_out" | grep -qiE "NO_PUBKEY|is not signed|OpenPGP signature verification failed|UnitMasked"; then
+      printf '%s\n' "$apt_out" >&2
+      error "Offline chroot apt-get update against file:/cdrom emitted signature/DBus errors."
+    fi
+    ok "Offline chroot apt-get update verified against file:/cdrom (0 signature/UnitMasked errors)."
+  fi
 }
 
 ensure_chroot_nodejs_22() {
@@ -347,6 +407,7 @@ check_vi(\"/usr/share/fonts/truetype/noto/NotoMono-Regular.ttf\")"
     test -f /usr/lib/nido-hub/app_store.py
     test -f /usr/lib/nido-hub/markdown_render.py
     test -f /usr/lib/nido-hub/printer_probe.py
+    test -f /usr/lib/nido-hub/self_test.py
     test -f /usr/lib/systemd/system/nido-native-first-cleanup.service
     /usr/bin/nido-hub --self-test >/dev/null
     test -x /usr/local/bin/genoffice

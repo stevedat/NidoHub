@@ -182,6 +182,9 @@ umount_layers() {
 
 umount_chroot() {
   sync 2>/dev/null || true
+  if [ -d "$WORK_DIR/squashfs/cdrom" ] && mountpoint -q "$WORK_DIR/squashfs/cdrom" 2>/dev/null; then
+    umount "$WORK_DIR/squashfs/cdrom" 2>/dev/null || umount -lf "$WORK_DIR/squashfs/cdrom" 2>/dev/null || true
+  fi
   umount "$WORK_DIR/squashfs/proc"    2>/dev/null || umount -lf "$WORK_DIR/squashfs/proc"    2>/dev/null || true
   umount "$WORK_DIR/squashfs/sys"     2>/dev/null || umount -lf "$WORK_DIR/squashfs/sys"     2>/dev/null || true
   umount "$WORK_DIR/squashfs/dev/pts" 2>/dev/null || umount -lf "$WORK_DIR/squashfs/dev/pts" 2>/dev/null || true
