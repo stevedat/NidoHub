@@ -3,20 +3,26 @@
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 
-NEED_NODE_INSTALL=0
-if ! command -v node >/dev/null 2>&1; then
-  NEED_NODE_INSTALL=1
+# When Stage 2 SEA binary is present (nidoai-sea embeds Node 22 + V8 code cache),
+# skip the 60-100 MB NodeSource install entirely — the SEA handles serve/agent/cli.
+if [ -x /usr/libexec/nidoai/nidoai-sea ]; then
+  echo "[Ubuntu-Nido] Stage 2 SEA binary present — skipping system Node.js install."
 else
-  NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
-  if [ "$NODE_MAJOR" -lt 22 ]; then
+  NEED_NODE_INSTALL=0
+  if ! command -v node >/dev/null 2>&1; then
     NEED_NODE_INSTALL=1
+  else
+    NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
+    if [ "$NODE_MAJOR" -lt 22 ]; then
+      NEED_NODE_INSTALL=1
+    fi
   fi
-fi
 
-if [ "$NEED_NODE_INSTALL" -eq 1 ]; then
-  echo "[Ubuntu-Nido] Installing Node.js 22 LTS from NodeSource..."
-  curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
-  apt-get install -y --no-install-recommends nodejs
+  if [ "$NEED_NODE_INSTALL" -eq 1 ]; then
+    echo "[Ubuntu-Nido] Installing Node.js 22 LTS from NodeSource..."
+    curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+    apt-get install -y --no-install-recommends nodejs
+  fi
 fi
 
 if [ -f /usr/lib/systemd/user/nidoai-gateway.service ]; then

@@ -829,6 +829,15 @@ def run_self_test() -> int:
 
 
 def main() -> int:
+    # Fast path: on installed system, if marker file is current and gsettings sources
+    # already have vielotus first, exit immediately without parsing args or acquiring lock.
+    # This avoids ~200ms of Python overhead on every login after first setup.
+    if "--self-test" not in sys.argv and "--force" not in sys.argv:
+        home_dir = Path(os.environ.get("HOME", str(Path.home())))
+        marker = home_dir / ".config" / "ubuntu-nido" / "ime-telex-vni-ready"
+        if is_marker_current(marker) and not is_live_session():
+            return 0
+
     parser = argparse.ArgumentParser(description="Pre-activate Sen Viet Telex as default in GNOME")
     parser.add_argument("--force", action="store_true", help="Re-apply even if marker exists")
     parser.add_argument("--once", action="store_true", help="Sync once and exit (skip Live ISO monitor)")

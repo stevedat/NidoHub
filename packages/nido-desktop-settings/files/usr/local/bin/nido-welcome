@@ -7,9 +7,6 @@ if [[ "${1:-}" == "--force" ]]; then
 fi
 
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/ubuntu-nido"
-DONE_FILE="${CONFIG_DIR}/welcome-done"
-NIDOAI_DIR="${NIDOAI_HOME:-$HOME/.nidoai}"
-ENV_FILE="${NIDOAI_DIR}/.env.local"
 
 if [[ -z "${DISPLAY:-}" && -z "${WAYLAND_DISPLAY:-}" ]]; then
   exit 0
@@ -79,131 +76,44 @@ fix_live_installer_shortcuts() {
 
 POLICY_FILE="${CONFIG_DIR}/ai-policy.json"
 
-# Never auto-open the NidoHub control center / onboarding wizard during a Live
-# ISO session (while the OS installer is active). Users can still open NidoHub
-# manually or via `nido-welcome --force`; on an installed system it opens
-# automatically on first login.
+# Live ISO: fix installer shortcuts and exit (NidoHub onboarding is deferred to installed system)
 if is_live_session; then
   fix_live_installer_shortcuts
   if [[ "$FORCE" -eq 0 ]]; then
     exit 0
   fi
-else
-  SKILLS_SRC="${NIDO_SKILLS_SRC:-/usr/share/ubuntu-nido/skills}"
-  SKILLS_STAMP="${CONFIG_DIR}/skills-synced.stamp"
-  if command -v nidoagent >/dev/null 2>&1 \
-    && ! grep -q '"aiEnabled"[[:space:]]*:[[:space:]]*false' "$POLICY_FILE" 2>/dev/null; then
-    if [[ ! -f "$SKILLS_STAMP" ]] || { [[ -d "$SKILLS_SRC" ]] && [[ "$SKILLS_SRC" -nt "$SKILLS_STAMP" ]]; }; then
-      (
-        nidoagent skills sync >/dev/null 2>&1 \
-          && mkdir -p "$CONFIG_DIR" \
-          && touch "$SKILLS_STAMP"
-      ) &
-    fi
+fi
+
+# Sync NidoAgent skills in background (once, on first login)
+SKILLS_SRC="${NIDO_SKILLS_SRC:-/usr/share/ubuntu-nido/skills}"
+SKILLS_STAMP="${CONFIG_DIR}/skills-synced.stamp"
+if command -v nidoagent >/dev/null 2>&1 \
+  && ! grep -q '"aiEnabled"[[:space:]]*:[[:space:]]*false' "$POLICY_FILE" 2>/dev/null; then
+  if [[ ! -f "$SKILLS_STAMP" ]] || { [[ -d "$SKILLS_SRC" ]] && [[ "$SKILLS_SRC" -nt "$SKILLS_STAMP" ]]; }; then
+    (
+      nidoagent skills sync >/dev/null 2>&1 \
+        && mkdir -p "$CONFIG_DIR" \
+        && touch "$SKILLS_STAMP"
+    ) &
   fi
 fi
 
+# Check if onboarding already completed
 SETUP_DONE=0
 if [[ -f "$POLICY_FILE" ]]; then
   if grep -q '"setupCompleted"[[:space:]]*:[[:space:]]*true' "$POLICY_FILE" 2>/dev/null; then
     SETUP_DONE=1
   fi
-elif [[ -f "$DONE_FILE" ]]; then
-  SETUP_DONE=1
 fi
 
 if [[ "$FORCE" -eq 0 && "$SETUP_DONE" -eq 1 ]]; then
   exit 0
 fi
 
-if command -v nido-hub >/dev/null 2>&1 && python3 -c 'import gi; gi.require_version("Gtk", "4.0"); gi.require_version("Adw", "1")' >/dev/null 2>&1; then
+# Delegate directly to NidoHub GTK4 onboarding (no zenity fallback — NidoHub is always present)
+if command -v nido-hub >/dev/null 2>&1; then
   if [[ "$FORCE" -eq 1 ]]; then
     exec nido-hub --onboarding
   fi
   exec nido-hub --page welcome --first-login
 fi
-
-if ! command -v zenity >/dev/null 2>&1; then
-  exit 0
-fi
-
-mkdir -p "$CONFIG_DIR" "$NIDOAI_DIR"
-chmod 700 "$NIDOAI_DIR"
-
-upsert_env() {
-  local key="$1"
-  local val="$2"
-  local tmp_file
-  umask 077
-  touch "$ENV_FILE"
-  chmod 600 "$ENV_FILE"
-  tmp_file="$(mktemp)"
-  grep -v "^${key}=" "$ENV_FILE" > "$tmp_file" || true
-  printf '%s=%s\n' "$key" "$val" >> "$tmp_file"
-  mv "$tmp_file" "$ENV_FILE"
-  chmod 600 "$ENV_FILE"
-}
-
-if ! grep -q '^NIDOAI_CLIENT_TOKEN=' "$ENV_FILE" 2>/dev/null; then
-  TOKEN="nidoai_$(python3 -c 'import secrets; print(secrets.token_hex(24))')"
-  upsert_env "NIDOAI_CLIENT_TOKEN" "$TOKEN"
-fi
-
-CHOICE="$(zenity --list \
-  --title="Chào mừng tới NidoOS" \
-  --text="• Bộ gõ Sen Việt (Telex & VNI, Super+Space) đã bật sẵn.\n• Nhấn Super+Shift+A để mở nhanh NidoAgent.\n\nChọn nguồn AI cho NidoAI Gateway:" \
-  --radiolist \
-  --column="Chọn" --column="Mã" --column="Nhà cung cấp" \
-  TRUE "gemini" "Google Gemini API (BYOK — Có gói miễn phí)" \
-  FALSE "openai" "OpenAI API (BYOK)" \
-  FALSE "local" "Local Ollama (http://127.0.0.1:11434/v1 — Offline)" \
-  FALSE "skip" "Bỏ qua, thiết lập sau bằng lệnh nido-welcome" \
-  --hide-column=2 --width=560 --height=360)" || CHOICE="skip"
-
-case "$CHOICE" in
-  gemini)
-    KEY="$(zenity --entry --hide-text \
-      --title="Nhập Google Gemini API Key" \
-      --text="Dán GEMINI_API_KEY của bạn (lấy miễn phí tại aistudio.google.com).\nKhóa được lưu cục bộ tại ~/.nidoai/.env.local (quyền 0600)." \
-      --width=500)" || KEY=""
-    if [[ -n "$KEY" ]]; then
-      upsert_env "NIDOAI_PRIMARY_BACKEND" "gemini"
-      upsert_env "GEMINI_API_KEY" "$KEY"
-    fi
-    ;;
-  openai)
-    KEY="$(zenity --entry --hide-text \
-      --title="Nhập OpenAI API Key" \
-      --text="Dán OPENAI_API_KEY của bạn (lưu cục bộ tại ~/.nidoai/.env.local):" \
-      --width=500)" || KEY=""
-    if [[ -n "$KEY" ]]; then
-      upsert_env "NIDOAI_PRIMARY_BACKEND" "openai"
-      upsert_env "OPENAI_API_KEY" "$KEY"
-    fi
-    ;;
-  local)
-    LOCAL_URL="$(zenity --entry \
-      --title="Kết nối Local LLM (Ollama)" \
-      --text="Địa chỉ OpenAI-compatible endpoint cục bộ:" \
-      --entry-text="http://127.0.0.1:11434/v1" \
-      --width=480)" || LOCAL_URL=""
-    if [[ -n "$LOCAL_URL" ]]; then
-      upsert_env "NIDOAI_PRIMARY_BACKEND" "local"
-      upsert_env "NIDOAI_LOCAL_BASE_URL" "$LOCAL_URL"
-    fi
-    ;;
-  *)
-    ;;
-esac
-
-if command -v systemctl >/dev/null 2>&1; then
-  systemctl --user restart nidoai-gateway.service >/dev/null 2>&1 || \
-    systemctl --user enable --now nidoai-gateway.service >/dev/null 2>&1 || true
-fi
-
-date -u +"%Y-%m-%dT%H:%M:%SZ" > "$DONE_FILE"
-
-zenity --info \
-  --title="NidoOS đã sẵn sàng" \
-  --text="Thiết lập hoàn tất!\n\nMẹo sử dụng:\n• Nhấn Super+Shift+A để hỏi nhanh NidoAgent (Super+Space chuyển bộ gõ)\n• Chuột phải tệp trong Files → Scripts → Giao-cho-NidoAgent\n• Mở Terminal gõ: nidoagent status" \
-  --width=480 || true
