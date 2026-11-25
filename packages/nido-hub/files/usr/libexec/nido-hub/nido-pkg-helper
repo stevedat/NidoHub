@@ -20,6 +20,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -332,30 +333,48 @@ def _run_apt_streaming(argv: list[str], phase_label: str, start_pct: int, end_pc
     cur_pct = start_pct
     safe_cancel = True
 
-    for raw_line in proc.stdout:
-        line = raw_line.strip()
-        if not line:
-            continue
-        low = line.lower()
-        # Once dpkg begins unpacking/configuring/removing, disallow unsafe cancellation
-        if any(
-            marker in low
-            for marker in (
-                "unpacking ",
-                "setting up ",
-                "removing ",
-                "purging ",
-                "processing triggers",
-                "preparing to unpack",
-            )
-        ):
-            safe_cancel = False
-            cur_pct = min(end_pct - 2, max(cur_pct + 4, (start_pct + end_pct) // 2))
-        elif line.startswith(("Get:", "Hit:", "Ign:", "Fetched ")):
-            cur_pct = min((start_pct + end_pct) // 2, cur_pct + 2)
-        emit_progress(phase_label, cur_pct, safe_cancel, line[:180])
+    def _on_cancel_signal(_signum: int, _frame: Any) -> None:
+        if safe_cancel and proc.poll() is None:
+            emit_progress(phase_label, 0, False, "Đã hủy thao tác APT an toàn.")
+            try:
+                proc.terminate()
+            except OSError:
+                pass
 
-    rc = proc.wait()
+    prev_sigterm = signal.getsignal(signal.SIGTERM)
+    prev_sigint = signal.getsignal(signal.SIGINT)
+    try:
+        signal.signal(signal.SIGTERM, _on_cancel_signal)
+        signal.signal(signal.SIGINT, _on_cancel_signal)
+
+        for raw_line in proc.stdout:
+            line = raw_line.strip()
+            if not line:
+                continue
+            low = line.lower()
+            # Once dpkg begins unpacking/configuring/removing, disallow unsafe cancellation
+            if any(
+                marker in low
+                for marker in (
+                    "unpacking ",
+                    "setting up ",
+                    "removing ",
+                    "purging ",
+                    "processing triggers",
+                    "preparing to unpack",
+                )
+            ):
+                safe_cancel = False
+                cur_pct = min(end_pct - 2, max(cur_pct + 4, (start_pct + end_pct) // 2))
+            elif line.startswith(("Get:", "Hit:", "Ign:", "Fetched ")):
+                cur_pct = min((start_pct + end_pct) // 2, cur_pct + 2)
+            emit_progress(phase_label, cur_pct, safe_cancel, line[:180])
+
+        rc = proc.wait()
+    finally:
+        signal.signal(signal.SIGTERM, prev_sigterm)
+        signal.signal(signal.SIGINT, prev_sigint)
+
     if rc == 0:
         emit_progress(phase_label, end_pct, False, "Hoàn tất thao tác APT.")
     return rc

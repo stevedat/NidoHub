@@ -1038,12 +1038,57 @@ try:
                             assert err.code == 401, f"Attempt {attempt} expected 401, got {err.code}"
                         else:
                             assert err.code == 429, f"Attempt 21 expected 429 rate-limit, got {err.code}"
+                # Verify gateway closes keep-alive sockets promptly on SIGTERM and removes runtime.json
+                ka_conn = _hc.HTTPConnection("127.0.0.1", 18994, timeout=5)
+                ka_conn.request("GET", "/healthz", headers={"Connection": "keep-alive"})
+                ka_resp = ka_conn.getresponse()
+                ka_resp.read()
+                assert ka_resp.status == 200
+                t_stop = time.monotonic()
+                ep.terminate()
+                ep.wait(timeout=5)
+                stop_elapsed = time.monotonic() - t_stop
+                assert stop_elapsed < 4.5, f"Gateway shutdown hung on keep-alive connection: {stop_elapsed:.2f}s"
+                assert not rt_p.exists(), f"Gateway failed to remove runtime.json on clean SIGTERM: {rt_p}"
+                ka_conn.close()
         finally:
-            ep.terminate()
-            ep.wait(timeout=5)
+            if ep.poll() is None:
+                ep.terminate()
+                ep.wait(timeout=5)
     assert len(seen_tokens[0]) >= 24 and seen_tokens[0] != seen_tokens[1], (
         f"Expected distinct ephemeral tokens across gateway restarts: {seen_tokens}"
     )
+
+    # Verify JS refreshNidoAccountTokens coalesces concurrent refresh calls into 1 HTTP request
+    coal_res = subprocess.run(
+        [
+            "node",
+            "-e",
+            f"""
+            import {{ refreshNidoAccountTokens }} from {(sandbox / 'rootfs/usr/lib/nidoai/src/gateway/nido-account-adapter.js').as_uri()!r};
+            let fetchCount = 0;
+            globalThis.fetch = async () => {{
+              fetchCount += 1;
+              await new Promise((r) => setTimeout(r, 80));
+              return new Response(JSON.stringify({{ access_token: 'a.b.c', refresh_token: 'ref-next' }}), {{ status: 200 }});
+            }};
+            const stDir = {str(eph_home / '.nidoai')!r};
+            const cfg = {{ authUrl: 'https://ahjpwfyaadpqyldxfjvi.supabase.co', anonKey: 'k' }};
+            const [r1, r2] = await Promise.all([
+              refreshNidoAccountTokens({{ refreshToken: 'ref-1', providerConfig: cfg, stateDir: stDir, useSecretStore: false }}),
+              refreshNidoAccountTokens({{ refreshToken: 'ref-1', providerConfig: cfg, stateDir: stDir, useSecretStore: false }}),
+            ]);
+            if (fetchCount !== 1 || !r1.ok || !r2.ok) {{
+              console.error({{ fetchCount, r1, r2 }});
+              process.exit(1);
+            }}
+            """,
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert coal_res.returncode == 0
 
     # 10h. Signed package integrity manifest verification on unpacked .deb rootfs (PASS -> 1-byte tamper -> FAIL)
     sec_verify = str(sandbox / "rootfs/usr/bin/nido-security-verify")

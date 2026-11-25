@@ -709,21 +709,53 @@ def run_tray() -> int:
             pass
 
     def _spawn_gui(argv: list[str]) -> None:
-        import subprocess
-
         env = dict(os.environ)
         token = str(state.get("activation_token") or "").strip()
         if token:
             env["XDG_ACTIVATION_TOKEN"] = token
             state["activation_token"] = ""
         try:
-            subprocess.Popen(
+            envp = [f"{k}={v}" for k, v in env.items()]
+            flags = (
+                GLib.SpawnFlags.SEARCH_PATH
+                | GLib.SpawnFlags.STDOUT_TO_DEV_NULL
+                | GLib.SpawnFlags.STDERR_TO_DEV_NULL
+            )
+            GLib.spawn_async(None, argv, envp, flags, None, None)
+            return
+        except Exception:
+            pass
+        import subprocess
+        import threading
+
+        try:
+            proc = subprocess.Popen(
                 argv,
                 env=env,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 start_new_session=True,
+            )
+            threading.Thread(target=proc.wait, daemon=True).start()
+        except Exception:
+            pass
+
+    def _send_notification_blocking(summary: str, body: str) -> None:
+        import shutil
+        import subprocess
+
+        ns = shutil.which("notify-send")
+        if not ns:
+            return
+        try:
+            subprocess.run(
+                [ns, "-i", "nidobox-symbolic", summary, body],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=3.0,
+                check=False,
             )
         except Exception:
             pass
@@ -746,35 +778,23 @@ def run_tray() -> int:
         if action == "open_nidohub":
             nh = _find_binary("nido-hub", ("/usr/bin/nido-hub", "/usr/local/bin/nido-hub"))
             if nh:
-                _spawn_gui([nh, "--page", "welcome"])
+                _spawn_gui([nh, "--page", "settings"])
             return True
         if action == "copy_drop_url":
             drop_url = str(state.get("drop_url") or "").strip()
             if drop_url:
-                import shutil
-                import subprocess
                 import threading
 
                 def copy_worker() -> None:
                     copied = _copy_text_to_clipboard(drop_url)
-                    if copied and shutil.which("notify-send"):
-                        try:
-                            subprocess.Popen(
-                                ["notify-send", "-i", "nidobox-symbolic", "NidoBox", f"Đã chép liên kết LAN: {drop_url}"],
-                                stdin=subprocess.DEVNULL,
-                                stdout=subprocess.DEVNULL,
-                                stderr=subprocess.DEVNULL,
-                                start_new_session=True,
-                            )
-                        except Exception:
-                            pass
+                    if copied:
+                        _send_notification_blocking("NidoBox", f"Đã chép liên kết LAN: {drop_url}")
 
                 threading.Thread(target=copy_worker, daemon=True).start()
             return True
         if action == "stop_drop":
             nb = _find_binary("nidobox", ("/usr/bin/nidobox", "/usr/local/bin/nidobox"))
             if nb:
-                import shutil
                 import subprocess
                 import threading
 
@@ -791,21 +811,12 @@ def run_tray() -> int:
                         ok_stop = res.returncode == 0
                     except Exception:
                         ok_stop = False
+                    if ok_stop:
+                        _send_notification_blocking("NidoBox", "Đã dừng chia sẻ tệp qua mạng LAN.")
 
                     def after_stop() -> bool:
                         if _refresh_items():
                             _emit_layout_updated()
-                        if ok_stop and shutil.which("notify-send"):
-                            try:
-                                subprocess.Popen(
-                                    ["notify-send", "-i", "nidobox-symbolic", "NidoBox", "Đã dừng chia sẻ tệp qua mạng LAN."],
-                                    stdin=subprocess.DEVNULL,
-                                    stdout=subprocess.DEVNULL,
-                                    stderr=subprocess.DEVNULL,
-                                    start_new_session=True,
-                                )
-                            except Exception:
-                                pass
                         return False
 
                     GLib.idle_add(after_stop)
@@ -813,27 +824,16 @@ def run_tray() -> int:
                 threading.Thread(target=worker, daemon=True).start()
             return True
         if action == "stop_kvm":
-            import shutil
-            import subprocess
             import threading
 
             def kvm_worker() -> None:
                 ok_stop = stop_nidokvm()
+                if ok_stop:
+                    _send_notification_blocking("NidoBox", "Đã dừng chia sẻ chuột & phím NidoKVM.")
 
                 def after_kvm_stop() -> bool:
                     if _refresh_items():
                         _emit_layout_updated()
-                    if ok_stop and shutil.which("notify-send"):
-                        try:
-                            subprocess.Popen(
-                                ["notify-send", "-i", "nidobox-symbolic", "NidoBox", "Đã dừng chia sẻ chuột & phím NidoKVM."],
-                                stdin=subprocess.DEVNULL,
-                                stdout=subprocess.DEVNULL,
-                                stderr=subprocess.DEVNULL,
-                                start_new_session=True,
-                            )
-                        except Exception:
-                            pass
                     return False
 
                 GLib.idle_add(after_kvm_stop)

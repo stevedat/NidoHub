@@ -11,6 +11,7 @@ PassEnvironment=DBUS_SESSION_BUS_ADDRESS XDG_RUNTIME_DIR DISPLAY WAYLAND_DISPLAY
 ExecStart=/usr/libexec/nidoai/gateway-daemon
 Restart=on-failure
 RestartSec=3
+TimeoutStopSec=10s
 
 # Unprivileged user-service hardening (filesystem isolation is enforced via AppArmor nidoai-gateway;
 # omit root-only mount-namespace options and MemoryDenyWriteExecute which conflicts with V8 JIT)

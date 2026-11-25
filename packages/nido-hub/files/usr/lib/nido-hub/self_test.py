@@ -620,6 +620,48 @@ def run_self_test(app_mod: Any) -> int:
         lan_q, lan_uri, lan_mod = build_network_printer_spec("192.168.1.50", "pcl6")
         assert lan_q == "NidoLAN_192_168_1_50" and lan_uri == "socket://192.168.1.50:9100" and "pxlmono" in lan_mod
 
+        # Verify NidoHub 3-tab navigation structure, icons, legacy --page aliases & gate guidance
+        assert [(p, t) for p, t, _, _ in app_mod.NAV_TABS] == [
+            ("assistant", "Trợ lý"),
+            ("apps", "Ứng dụng"),
+            ("settings", "Cài đặt"),
+        ], f"Unexpected NAV_TABS: {app_mod.NAV_TABS}"
+        assert [ic for _, _, ic, _ in app_mod.NAV_TABS] == [
+            "user-available-symbolic",
+            "system-software-install-symbolic",
+            "preferences-system-symbolic",
+        ]
+        assert app_mod.resolve_page_name("assistant") == "assistant"
+        assert app_mod.resolve_page_name("apps") == "apps"
+        assert app_mod.resolve_page_name("settings") == "settings"
+        assert app_mod.resolve_page_name("agent") == "assistant"
+        assert app_mod.resolve_page_name("welcome") == "settings"
+        assert app_mod.resolve_page_name("printers") == "apps"
+        assert app_mod.resolve_page_name("") == "assistant"
+        assert app_mod.resolve_page_name(None) == "assistant"
+        assert app_mod.resolve_page_name("unknown-tab") == "assistant"
+
+        # Verify jargon-free AI account titles, subtitles & collapsed summary formatter
+        class _FakeAgentSpec:
+            def __init__(self, pid: str, display_name: str, subtitle: str, download_url: str = "") -> None:
+                self.id = pid
+                self.display_name = display_name
+                self.subtitle = subtitle
+                self.download_url = download_url
+
+        fake_agy = _FakeAgentSpec("agy", "Google Antigravity CLI", "SHA-512 (không cần root) OAuth CLI")
+        assert app_mod._format_agent_row_title(fake_agy) == "Google / Gemini"
+        assert app_mod._format_agent_row_title(_FakeAgentSpec("codex", "OpenAI Codex", "")) == "ChatGPT / OpenAI"
+        assert app_mod._format_agent_row_title(_FakeAgentSpec("claude", "Anthropic Claude", "")) == "Claude / Anthropic"
+        sub_installed = app_mod._format_agent_status_subtitle(fake_agy, {"installed": True, "signedIn": False})
+        for forbidden in ("SHA-512", "không cần root", "CLI", "OAuth"):
+            assert forbidden not in sub_installed, f"Technical jargon leaked in subtitle: {sub_installed}"
+        assert "Google" in app_mod._format_other_ai_accounts_summary({"agy": {"signedIn": True}})
+        assert "Đã kết nối 2 tài khoản" in app_mod._format_other_ai_accounts_summary(
+            {"agy": {"signedIn": True}, "claude": {"signedIn": True}}
+        )
+        assert "Tùy chọn" in app_mod._format_other_ai_accounts_summary({})
+
         # Verify NidoOS UI styling & polished copywriting registries
         assert ".nido-status-tile" in NIDO_HUB_CSS and ".nido-footer-bar" in NIDO_HUB_CSS
         assert {"nido", "gemini", "openai", "anthropic", "local"} == {k for k, _ in PROVIDERS}
@@ -848,6 +890,7 @@ def run_self_test(app_mod: Any) -> int:
         assert ob_backend.load_env_file_only().get("NIDOAI_ENABLED") == "0"
         ok_task_off, msg_task_off = ob_backend.run_agent_task("test off")
         assert not ok_task_off and "tắt" in msg_task_off.lower() and "fetch failed" not in msg_task_off.lower()
+        assert "cài đặt" in msg_task_off.lower() and "tab trợ lý ai" not in msg_task_off.lower(), msg_task_off
 
         # AI ON with 0 signed-in accounts / 0 configured backends must refuse run_agent_task cleanly before fetch
         unsigned_home = root / "unsigned_home"
@@ -871,6 +914,9 @@ def run_self_test(app_mod: Any) -> int:
         assert not ok_task_unsigned and "chưa đăng nhập" in msg_task_unsigned.lower(), (
             ok_task_unsigned,
             msg_task_unsigned,
+        )
+        assert "cài đặt" in msg_task_unsigned.lower() and "tab trợ lý ai" not in msg_task_unsigned.lower(), (
+            msg_task_unsigned
         )
         assert "fetch failed" not in msg_task_unsigned.lower()
 
@@ -899,6 +945,72 @@ def run_self_test(app_mod: Any) -> int:
         )
         t_kill_elapsed = time.monotonic() - t_kill_start
         assert res_to.returncode == 127 and t_kill_elapsed < 3.0, (res_to, t_kill_elapsed)
+
+        # Verify parse_hub_argv (single-instance / CLI parser)
+        p_def = app_mod.parse_hub_argv([])
+        assert p_def.page == "assistant" and not p_def.first_login and not p_def.onboarding
+        p_leg = app_mod.parse_hub_argv(["--page", "welcome", "--first-login"])
+        assert app_mod.resolve_page_name(p_leg.page) == "settings" and p_leg.first_login is True
+        p_deb = app_mod.parse_hub_argv(["/tmp/example.deb"])
+        assert p_deb.package_file == "/tmp/example.deb"
+
+        # Verify NidoAccountManager cross-process refresh lock: stale lock recovery & peer-rotated token coalescing
+        lock_home = root / "lock_home"
+        lock_home.mkdir()
+        lock_store = NidoSecretStore(platform="linux", env={"NIDO_SECRET_STORE": "file"})
+        lock_backend = NidoHubBackend(home_dir=lock_home, catalog_path=cat_file, secret_store=lock_store)
+        refresh_posts = [0]
+
+        def mock_lock_http(method: str, url: str, headers: dict[str, str] | None, payload: Any, _to: float):
+            if url.endswith("/auth/v1/token?grant_type=refresh_token"):
+                refresh_posts[0] += 1
+                return 200, {"access_token": fresh_jwt, "refresh_token": "refresh-rotated-new"}, ""
+            if url.endswith("/quota"):
+                return 200, {"ok": True, "userId": "u-lock", "planCode": "free", "quotaSnapshot": {"aiCreditsQuota": 50, "aiCreditsRemaining": 50}}, ""
+            return 404, {}, ""
+
+        lock_backend.nido_account.http_requester = mock_lock_http
+        lock_backend.nido_account._save_tokens(expired_jwt, "refresh-old", set_as_primary=True)
+        # Plant a dead-PID lockfile and verify automatic stale-lock recovery
+        lock_file = lock_backend.nido_account.nidoai_dir / ".nido-refresh.lock"
+        lock_file.write_text('{"pid": 9999999, "ts": 1}\n', encoding="utf-8")
+        ok_lk, _, _ = lock_backend.nido_account.refresh_session(force=False)
+        assert ok_lk and refresh_posts[0] == 1 and not lock_file.exists(), (ok_lk, refresh_posts[0])
+
+        # Verify run_agent_task timeout enforcement & OperationHandle.cancel() process-group termination
+        fake_sleep_agent = root / "fake-nidoagent-sleep.py"
+        fake_sleep_agent.write_text("#!/usr/bin/env python3\nimport time\ntime.sleep(10)\n", encoding="utf-8")
+        fake_sleep_agent.chmod(0o755)
+        import os as _os
+        prev_agent_env = _os.environ.get("NIDOAGENT_BIN")
+        prev_allow_env = _os.environ.get("NIDOAGENT_ALLOW_UNCONFIGURED_TEST")
+        _os.environ["NIDOAGENT_BIN"] = str(fake_sleep_agent)
+        _os.environ["NIDOAGENT_ALLOW_UNCONFIGURED_TEST"] = "1"
+        try:
+            t_ag = time.monotonic()
+            ok_ag_to, msg_ag_to = unsigned_backend.run_agent_task("test timeout", timeout_sec=0.35)
+            elapsed_ag = time.monotonic() - t_ag
+            assert not ok_ag_to and "quá thời gian" in msg_ag_to.lower() and elapsed_ag < 3.0, (msg_ag_to, elapsed_ag)
+
+            import threading as _thr
+            cancel_handle = OperationHandle(label="cancel-agent")
+            def _cancel_soon() -> None:
+                time.sleep(0.25)
+                cancel_handle.cancel()
+            _thr.Thread(target=_cancel_soon, daemon=True).start()
+            t_can = time.monotonic()
+            ok_ag_can, msg_ag_can = unsigned_backend.run_agent_task("test cancel", timeout_sec=10.0, handle=cancel_handle)
+            elapsed_can = time.monotonic() - t_can
+            assert not ok_ag_can and cancel_handle.cancelled and elapsed_can < 3.0, (msg_ag_can, elapsed_can)
+        finally:
+            if prev_agent_env is None:
+                _os.environ.pop("NIDOAGENT_BIN", None)
+            else:
+                _os.environ["NIDOAGENT_BIN"] = prev_agent_env
+            if prev_allow_env is None:
+                _os.environ.pop("NIDOAGENT_ALLOW_UNCONFIGURED_TEST", None)
+            else:
+                _os.environ["NIDOAGENT_ALLOW_UNCONFIGURED_TEST"] = prev_allow_env
     print("nido-hub self-test passed.")
     return 0
 

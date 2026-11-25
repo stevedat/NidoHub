@@ -14,6 +14,7 @@ import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections import deque
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -963,6 +964,8 @@ def _ensure_ollama_user_service(home_dir: Path, ollama_bin: str) -> None:
         "[Service]\n"
         "Type=simple\n"
         "Environment=OLLAMA_HOST=127.0.0.1:11434\n"
+        "Environment=OLLAMA_KEEP_ALIVE=3m\n"
+        "OOMScoreAdjust=500\n"
         f"ExecStart={ollama_bin} serve\n"
         "Restart=on-failure\n"
         "RestartSec=3\n\n"
@@ -976,12 +979,14 @@ def _ensure_ollama_user_service(home_dir: Path, ollama_bin: str) -> None:
             check=False,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            timeout=8,
         )
         subprocess.run(
             ["systemctl", "--user", "enable", "--now", "ollama.service"],
             check=False,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            timeout=8,
         )
 
 
@@ -989,6 +994,7 @@ def pull_ollama_model(
     model_name: str,
     home_dir: Path | None = None,
     on_progress: ProgressCallback | None = None,
+    handle: Any = None,
 ) -> tuple[bool, str]:
     clean_model = model_name.strip()
     if not clean_model or not re.fullmatch(r"[a-zA-Z0-9._:/-]{2,96}", clean_model):
@@ -1011,10 +1017,13 @@ def pull_ollama_model(
         text=True,
         bufsize=1,
         env=env,
+        start_new_session=True,
     )
+    if handle is not None:
+        handle.attach(proc, use_pgid=True)
     assert proc.stdout is not None
     pct_re = re.compile(r"(\d{1,3})%")
-    last_lines: list[str] = []
+    last_lines: deque[str] = deque(maxlen=50)
     for raw in proc.stdout:
         line = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", raw).strip()
         if not line:
@@ -1026,9 +1035,11 @@ def pull_ollama_model(
             on_progress(min(98, max(5, pct)), f"{clean_model}: {line[:120]}")
 
     rc = proc.wait()
+    if handle is not None and getattr(handle, "cancelled", False):
+        return False, f"Đã hủy tải mô hình {clean_model}."
     if rc == 0:
         if on_progress:
             on_progress(100, f"Đã tải xong model {clean_model}!")
         return True, f"Đã tải thành công model cục bộ {clean_model}."
-    tail = " | ".join(last_lines[-2:]) if last_lines else f"mã lỗi {rc}"
+    tail = " | ".join(list(last_lines)[-2:]) if last_lines else f"mã lỗi {rc}"
     return False, f"Tải model {clean_model} thất bại: {tail[:200]}"

@@ -91,9 +91,15 @@ if command -v nidoagent >/dev/null 2>&1 \
   && ! grep -q '"aiEnabled"[[:space:]]*:[[:space:]]*false' "$POLICY_FILE" 2>/dev/null; then
   if [[ ! -f "$SKILLS_STAMP" ]] || { [[ -d "$SKILLS_SRC" ]] && [[ "$SKILLS_SRC" -nt "$SKILLS_STAMP" ]]; }; then
     (
-      nidoagent skills sync >/dev/null 2>&1 \
-        && mkdir -p "$CONFIG_DIR" \
-        && touch "$SKILLS_STAMP"
+      if command -v timeout >/dev/null 2>&1; then
+        timeout 30s nidoagent skills sync >/dev/null 2>&1
+      else
+        nidoagent skills sync >/dev/null 2>&1
+      fi
+      rc_sync=$?
+      if [[ "$rc_sync" -eq 0 ]]; then
+        mkdir -p "$CONFIG_DIR" && touch "$SKILLS_STAMP"
+      fi
     ) &
   fi
 fi
@@ -115,5 +121,5 @@ if command -v nido-hub >/dev/null 2>&1; then
   if [[ "$FORCE" -eq 1 ]]; then
     exec nido-hub --onboarding
   fi
-  exec nido-hub --page welcome --first-login
+  exec nido-hub --page settings --first-login
 fi

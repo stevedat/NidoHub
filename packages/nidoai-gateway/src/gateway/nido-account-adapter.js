@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { deleteSecretFromStore, writeSecretToStore } from '../security/secret-store.js';
+import { deleteSecretFromStore, readSecretFromStore, writeSecretToStore } from '../security/secret-store.js';
 
 export const DEFAULT_NIDO_AUTH_URL = 'https://ahjpwfyaadpqyldxfjvi.supabase.co';
 // Public publishable Supabase anon client key (role=anon, RLS-protected, matches NidoOffice Desktop).
@@ -355,6 +355,113 @@ export async function fetchNidoAccountQuota({ accessToken, providerConfig }) {
     }
 }
 
+const REFRESH_LOCK_FILENAME = '.nido-refresh.lock';
+const REFRESH_LOCK_STALE_MS = 20_000;
+const REFRESH_LOCK_WAIT_MS = 6_000;
+const _inFlightRefreshByKey = new Map();
+
+function readCurrentStoredTokens(stateDir, useSecretStore, secretStoreOptions) {
+    let accessToken = '';
+    let refreshToken = '';
+    if (useSecretStore) {
+        accessToken = (readSecretFromStore('NIDO_ACCOUNT_ACCESS_TOKEN', secretStoreOptions) ?? '').trim();
+        refreshToken = (readSecretFromStore('NIDO_ACCOUNT_REFRESH_TOKEN', secretStoreOptions) ?? '').trim();
+    }
+    if ((!accessToken || !refreshToken) && stateDir) {
+        const envPath = path.join(stateDir, '.env.local');
+        if (fs.existsSync(envPath)) {
+            try {
+                for (const raw of fs.readFileSync(envPath, 'utf8').split(/\r?\n/)) {
+                    const line = raw.trim();
+                    if (!line || line.startsWith('#'))
+                        continue;
+                    const eq = line.indexOf('=');
+                    if (eq <= 0)
+                        continue;
+                    const k = line.slice(0, eq).trim();
+                    const v = line.slice(eq + 1).trim().replace(/^["']|["']$/g, '');
+                    if (k === 'NIDO_ACCOUNT_ACCESS_TOKEN' && !accessToken)
+                        accessToken = v;
+                    if (k === 'NIDO_ACCOUNT_REFRESH_TOKEN' && !refreshToken)
+                        refreshToken = v;
+                }
+            }
+            catch {
+                // ignore
+            }
+        }
+    }
+    return { accessToken, refreshToken };
+}
+
+function isLockStale(lockPath) {
+    try {
+        const st = fs.statSync(lockPath);
+        if (Date.now() - st.mtimeMs > REFRESH_LOCK_STALE_MS)
+            return true;
+        const raw = fs.readFileSync(lockPath, 'utf8').trim();
+        const parsed = JSON.parse(raw);
+        const ownerPid = Number(parsed?.pid);
+        if (Number.isInteger(ownerPid) && ownerPid > 1 && ownerPid !== process.pid) {
+            try {
+                process.kill(ownerPid, 0);
+                return false;
+            }
+            catch (err) {
+                if (err && err.code === 'ESRCH')
+                    return true;
+            }
+        }
+    }
+    catch {
+        return true;
+    }
+    return false;
+}
+
+async function acquireRefreshFileLock(stateDir) {
+    if (!stateDir)
+        return () => {};
+    fs.mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+    const lockPath = path.join(stateDir, REFRESH_LOCK_FILENAME);
+    const deadline = Date.now() + REFRESH_LOCK_WAIT_MS;
+    const payload = `${JSON.stringify({ pid: process.pid, ts: Date.now() })}\n`;
+    while (Date.now() < deadline) {
+        try {
+            const fd = fs.openSync(lockPath, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY, 0o600);
+            try {
+                fs.writeFileSync(fd, payload, 'utf8');
+            }
+            finally {
+                fs.closeSync(fd);
+            }
+            return () => {
+                try {
+                    fs.unlinkSync(lockPath);
+                }
+                catch {
+                    // ignore
+                }
+            };
+        }
+        catch (err) {
+            if (!err || err.code !== 'EEXIST')
+                break;
+            if (isLockStale(lockPath)) {
+                try {
+                    fs.unlinkSync(lockPath);
+                }
+                catch {
+                    // ignore race
+                }
+                continue;
+            }
+            await new Promise((r) => setTimeout(r, 60));
+        }
+    }
+    return () => {};
+}
+
 export async function refreshNidoAccountTokens({
     refreshToken,
     providerConfig,
@@ -365,58 +472,98 @@ export async function refreshNidoAccountTokens({
     if (!refreshToken || !providerConfig?.authUrl) {
         return { ok: false, status: 401, revoked: true, error: 'Missing refresh token' };
     }
-    const headers = { 'Content-Type': 'application/json' };
-    if (providerConfig.anonKey) {
-        headers.apikey = providerConfig.anonKey;
+    const coalesceKey = `${stateDir || 'mem'}:${providerConfig.authUrl}`;
+    const existing = _inFlightRefreshByKey.get(coalesceKey);
+    if (existing) {
+        return existing;
     }
-    try {
-        const res = await fetch(`${providerConfig.authUrl}/auth/v1/token?grant_type=refresh_token`, {
-            method: 'POST',
-            headers,
-            body: JSON.stringify({ refresh_token: refreshToken }),
-            signal: AbortSignal.timeout(AUTH_TIMEOUT_MS),
-        });
-        const data = await res.json().catch(() => ({}));
-        if (res.status === 400 || res.status === 401 || res.status === 403) {
+    const run = (async () => {
+        const releaseLock = await acquireRefreshFileLock(stateDir);
+        try {
+            if (stateDir) {
+                const stored = readCurrentStoredTokens(stateDir, useSecretStore, secretStoreOptions);
+                if (
+                    stored.accessToken &&
+                    isJwtFresh(stored.accessToken) &&
+                    stored.refreshToken &&
+                    stored.refreshToken !== refreshToken
+                ) {
+                    return {
+                        ok: true,
+                        status: 200,
+                        accessToken: stored.accessToken,
+                        refreshToken: stored.refreshToken,
+                        coalesced: true,
+                    };
+                }
+                if (stored.refreshToken && stored.refreshToken !== refreshToken) {
+                    refreshToken = stored.refreshToken;
+                }
+            }
+            const headers = { 'Content-Type': 'application/json' };
+            if (providerConfig.anonKey) {
+                headers.apikey = providerConfig.anonKey;
+            }
+            const res = await fetch(`${providerConfig.authUrl}/auth/v1/token?grant_type=refresh_token`, {
+                method: 'POST',
+                headers,
+                body: JSON.stringify({ refresh_token: refreshToken }),
+                signal: AbortSignal.timeout(AUTH_TIMEOUT_MS),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (res.status === 400 || res.status === 401 || res.status === 403) {
+                return {
+                    ok: false,
+                    status: res.status,
+                    revoked: true,
+                    error: data?.error_description || data?.msg || data?.error || 'Session revoked',
+                };
+            }
+            if (!res.ok || typeof data?.access_token !== 'string' || !data.access_token) {
+                return {
+                    ok: false,
+                    status: res.status,
+                    revoked: false,
+                    error: data?.error_description || data?.msg || `HTTP ${res.status}`,
+                };
+            }
+            const nextAccess = data.access_token.trim();
+            const nextRefresh = typeof data.refresh_token === 'string' && data.refresh_token.trim()
+                ? data.refresh_token.trim()
+                : refreshToken;
+            if (stateDir) {
+                updateEnvLocalTokens(stateDir, {
+                    NIDO_ACCOUNT_ACCESS_TOKEN: nextAccess,
+                    NIDO_ACCOUNT_REFRESH_TOKEN: nextRefresh,
+                }, useSecretStore, secretStoreOptions);
+            }
             return {
-                ok: false,
-                status: res.status,
-                revoked: true,
-                error: data?.error_description || data?.msg || data?.error || 'Session revoked',
+                ok: true,
+                status: 200,
+                accessToken: nextAccess,
+                refreshToken: nextRefresh,
             };
         }
-        if (!res.ok || typeof data?.access_token !== 'string' || !data.access_token) {
+        catch (err) {
             return {
                 ok: false,
-                status: res.status,
+                status: 0,
                 revoked: false,
-                error: data?.error_description || data?.msg || `HTTP ${res.status}`,
+                error: err instanceof Error ? err.message : 'Network error',
             };
         }
-        const nextAccess = data.access_token.trim();
-        const nextRefresh = typeof data.refresh_token === 'string' && data.refresh_token.trim()
-            ? data.refresh_token.trim()
-            : refreshToken;
-        if (stateDir) {
-            updateEnvLocalTokens(stateDir, {
-                NIDO_ACCOUNT_ACCESS_TOKEN: nextAccess,
-                NIDO_ACCOUNT_REFRESH_TOKEN: nextRefresh,
-            }, useSecretStore, secretStoreOptions);
+        finally {
+            releaseLock();
         }
-        return {
-            ok: true,
-            status: 200,
-            accessToken: nextAccess,
-            refreshToken: nextRefresh,
-        };
+    })();
+    _inFlightRefreshByKey.set(coalesceKey, run);
+    try {
+        return await run;
     }
-    catch (err) {
-        return {
-            ok: false,
-            status: 0,
-            revoked: false,
-            error: err instanceof Error ? err.message : 'Network error',
-        };
+    finally {
+        if (_inFlightRefreshByKey.get(coalesceKey) === run) {
+            _inFlightRefreshByKey.delete(coalesceKey);
+        }
     }
 }
 

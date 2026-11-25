@@ -21,11 +21,13 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import threading
 import time
 import urllib.parse
 import urllib.request
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -197,20 +199,22 @@ def parse_release_architectures(release_text: str) -> set[str]:
 
 @dataclass
 class OperationHandle:
-    """Tracks a running install/remove/update subprocess for safe cancellation."""
+    """Tracks a running install/remove/update/agent subprocess for safe cancellation."""
 
     label: str
     _lock: threading.Lock = None  # type: ignore[assignment]
     _proc: subprocess.Popen[str] | None = None
     _safe_to_cancel: bool = True
     _cancelled: bool = False
+    _use_pgid: bool = False
 
     def __post_init__(self) -> None:
         self._lock = threading.Lock()
 
-    def attach(self, proc: subprocess.Popen[str]) -> None:
+    def attach(self, proc: subprocess.Popen[str], use_pgid: bool = False) -> None:
         with self._lock:
             self._proc = proc
+            self._use_pgid = bool(use_pgid)
 
     def set_safe_to_cancel(self, safe: bool) -> None:
         with self._lock:
@@ -235,11 +239,35 @@ class OperationHandle:
                 )
             self._cancelled = True
             proc = self._proc
+            use_pgid = self._use_pgid
         if proc is not None and proc.poll() is None:
-            try:
-                proc.terminate()
-            except OSError:
-                pass
+            if use_pgid:
+                try:
+                    os.killpg(proc.pid, signal.SIGTERM)
+                except (ProcessLookupError, PermissionError, OSError):
+                    try:
+                        proc.terminate()
+                    except OSError:
+                        pass
+
+                def _escalate_kill() -> None:
+                    if proc.poll() is None:
+                        try:
+                            os.killpg(proc.pid, signal.SIGKILL)
+                        except (ProcessLookupError, PermissionError, OSError):
+                            try:
+                                proc.kill()
+                            except OSError:
+                                pass
+
+                timer = threading.Timer(3.0, _escalate_kill)
+                timer.daemon = True
+                timer.start()
+            else:
+                try:
+                    proc.terminate()
+                except OSError:
+                    pass
         return True, "Đã gửi tín hiệu hủy thao tác an toàn."
 
 
@@ -714,7 +742,7 @@ class NidoAppStore:
         handle.attach(proc)
         assert proc.stdout is not None
         last_msg = ""
-        error_lines: list[str] = []
+        error_lines: deque[str] = deque(maxlen=50)
 
         for raw in proc.stdout:
             line = raw.strip()
@@ -740,7 +768,7 @@ class NidoAppStore:
         if rc == 0:
             return True, last_msg or "Hoàn tất thành công.", False
 
-        joined_err = " | ".join(error_lines[-3:]) if error_lines else last_msg
+        joined_err = " | ".join(list(error_lines)[-3:]) if error_lines else last_msg
         low = joined_err.lower()
         needs_repair = any(
             k in low for k in ("dpkg was interrupted", "unmet dependencies", "dpkg --configure", "broken packages")
@@ -864,10 +892,11 @@ class NidoAppStore:
             stderr=subprocess.STDOUT,
             text=True,
             bufsize=1,
+            start_new_session=True,
         )
-        op.attach(proc)
+        op.attach(proc, use_pgid=True)
         assert proc.stdout is not None
-        last_lines: list[str] = []
+        last_lines: deque[str] = deque(maxlen=50)
         for raw in proc.stdout:
             line = raw.strip()
             if not line:
@@ -885,7 +914,7 @@ class NidoAppStore:
             if on_progress:
                 on_progress(100, f"Đã cài đặt {app_id} từ Flathub.", False)
             return True, f"Đã cài đặt thành công {app_id} (Flathub).", False
-        return False, (" | ".join(last_lines[-2:]) or f"Lỗi cài Flatpak (mã {rc})"), False
+        return False, (" | ".join(list(last_lines)[-2:]) or f"Lỗi cài Flatpak (mã {rc})"), False
 
     def upgrade_system(
         self,

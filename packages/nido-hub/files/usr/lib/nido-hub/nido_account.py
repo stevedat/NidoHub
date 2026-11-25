@@ -10,6 +10,7 @@ import json
 import os
 import re
 import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -687,6 +688,51 @@ class NidoAccountManager:
         msg = data.get("msg") or data.get("error_description") or data.get("error") if isinstance(data, dict) else ""
         return False, str(msg or err or f"Gửi lại xác nhận thất bại (HTTP {status}).")
 
+    def _is_refresh_lock_stale(self, lock_path: Path, stale_sec: float = 20.0) -> bool:
+        try:
+            st = lock_path.stat()
+            if (time.time() - st.st_mtime) > stale_sec:
+                return True
+            raw = json.loads(lock_path.read_text(encoding="utf-8"))
+            owner_pid = int(raw.get("pid", 0))
+            if owner_pid > 1 and owner_pid != os.getpid():
+                try:
+                    os.kill(owner_pid, 0)
+                    return False
+                except ProcessLookupError:
+                    return True
+                except PermissionError:
+                    return False
+        except Exception:
+            return True
+        return False
+
+    def _acquire_refresh_lock(self, wait_sec: float = 6.0) -> Path | None:
+        self.nidoai_dir.mkdir(parents=True, exist_ok=True)
+        os.chmod(self.nidoai_dir, 0o700)
+        lock_path = self.nidoai_dir / ".nido-refresh.lock"
+        payload = json.dumps({"pid": os.getpid(), "ts": int(time.time() * 1000)}) + "\n"
+        deadline = time.monotonic() + wait_sec
+        while time.monotonic() < deadline:
+            try:
+                fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+                try:
+                    os.write(fd, payload.encode("utf-8"))
+                finally:
+                    os.close(fd)
+                return lock_path
+            except FileExistsError:
+                if self._is_refresh_lock_stale(lock_path):
+                    try:
+                        lock_path.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                    continue
+                time.sleep(0.06)
+            except OSError:
+                return None
+        return None
+
     def refresh_session(self, force: bool = False) -> tuple[bool, str, dict[str, Any] | None]:
         access_token, refresh_token = self._load_tokens()
         profile = self.read_profile()
@@ -695,23 +741,54 @@ class NidoAccountManager:
 
         cfg = self.provider_config()
         if (force or not is_jwt_fresh(access_token)) and refresh_token:
-            st_r, data_r, err_r = self.http_requester(
-                "POST",
-                f"{cfg.auth_url}/auth/v1/token?grant_type=refresh_token",
-                self._headers(cfg),
-                {"refresh_token": refresh_token},
-                AUTH_TIMEOUT_SEC,
-            )
-            if st_r in (400, 401, 403):
-                self._clear_tokens()
-                self.clear_profile()
-                return False, "Phiên đăng nhập Tài khoản Nido đã hết hạn. Vui lòng đăng nhập lại.", None
-            if st_r == 200 and isinstance(data_r, dict) and data_r.get("access_token"):
-                access_token = str(data_r["access_token"]).strip()
-                next_refresh = str(data_r.get("refresh_token") or refresh_token).strip()
-                self._save_tokens(access_token, next_refresh, set_as_primary=False)
-            elif not access_token:
-                return False, f"Không làm mới được phiên Nido: {err_r or st_r}", profile
+            stale_refresh = refresh_token
+            lock_path = self._acquire_refresh_lock()
+            try:
+                # Re-read tokens after acquiring cross-process lock: another process
+                # (e.g. NidoAI Gateway) may have already rotated the token.
+                latest_access, latest_refresh = self._load_tokens()
+                already_rotated = bool(
+                    latest_access
+                    and is_jwt_fresh(latest_access)
+                    and latest_refresh
+                    and latest_refresh != stale_refresh
+                )
+                if already_rotated:
+                    access_token = latest_access
+                    refresh_token = latest_refresh
+                else:
+                    if latest_refresh and latest_refresh != stale_refresh:
+                        refresh_token = latest_refresh
+                    st_r, data_r, err_r = self.http_requester(
+                        "POST",
+                        f"{cfg.auth_url}/auth/v1/token?grant_type=refresh_token",
+                        self._headers(cfg),
+                        {"refresh_token": refresh_token},
+                        AUTH_TIMEOUT_SEC,
+                    )
+                    if st_r in (400, 401, 403):
+                        # Re-check once more in case lock timed out while peer finished rotating
+                        retry_access, retry_refresh = self._load_tokens()
+                        if retry_access and is_jwt_fresh(retry_access) and retry_refresh != refresh_token:
+                            access_token = retry_access
+                            refresh_token = retry_refresh
+                        else:
+                            self._clear_tokens()
+                            self.clear_profile()
+                            return False, "Phiên đăng nhập Tài khoản Nido đã hết hạn. Vui lòng đăng nhập lại.", None
+                    elif st_r == 200 and isinstance(data_r, dict) and data_r.get("access_token"):
+                        access_token = str(data_r["access_token"]).strip()
+                        next_refresh = str(data_r.get("refresh_token") or refresh_token).strip()
+                        self._save_tokens(access_token, next_refresh, set_as_primary=False)
+                        refresh_token = next_refresh
+                    elif not access_token:
+                        return False, f"Không làm mới được phiên Nido: {err_r or st_r}", profile
+            finally:
+                if lock_path is not None:
+                    try:
+                        lock_path.unlink(missing_ok=True)
+                    except OSError:
+                        pass
 
         quota_res = self._fetch_quota(cfg, access_token)
         if not quota_res.get("ok"):

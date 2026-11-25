@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Primary path: open NidoHub Agent page (GTK4/Libadwaita)
 if [[ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]] && command -v nido-hub >/dev/null 2>&1; then
-  exec nido-hub --page agent
+  exec nido-hub --page assistant
 fi
 
 # Fallback: open terminal chat

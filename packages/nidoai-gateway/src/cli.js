@@ -103,8 +103,17 @@ async function main() {
             configDir: config.configDir,
             ephemeralClientToken,
         });
+        let shuttingDown = false;
         const shutdown = () => {
-            handle.close().finally(() => process.exit(0));
+            if (shuttingDown)
+                return;
+            shuttingDown = true;
+            const forceExitTimer = setTimeout(() => process.exit(0), 4000);
+            forceExitTimer.unref?.();
+            handle.close().finally(() => {
+                clearTimeout(forceExitTimer);
+                process.exit(0);
+            });
         };
         process.once('SIGINT', shutdown);
         process.once('SIGTERM', shutdown);

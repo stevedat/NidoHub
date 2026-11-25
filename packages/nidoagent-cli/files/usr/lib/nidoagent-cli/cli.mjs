@@ -772,17 +772,35 @@ function executeAgyStreamOnce(agent, promptText, options = {}) {
   });
 }
 
+const AGY_WARM_IDLE_MS = 10 * 60 * 1000;
+const MAX_CHAT_HISTORY_MESSAGES = 40;
+
 class AgyWarmSession {
   constructor(agent, options = {}) {
     this.agent = agent;
     this.options = options;
     this.child = null;
     this.buf = '';
+    this.stderrTail = '';
     this.pending = null;
+    this.idleTimer = null;
+  }
+
+  _touchIdleTimer() {
+    if (this.idleTimer) {
+      clearTimeout(this.idleTimer);
+    }
+    this.idleTimer = setTimeout(() => {
+      if (!this.pending) {
+        this.close();
+      }
+    }, AGY_WARM_IDLE_MS);
+    this.idleTimer.unref?.();
   }
 
   ensureStarted() {
     if (this.child && !this.child.killed && this.child.exitCode === null) {
+      this._touchIdleTimer();
       return;
     }
     const args = buildAgyStreamArgs(this.options);
@@ -792,6 +810,7 @@ class AgyWarmSession {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     this.buf = '';
+    this.stderrTail = '';
     this.child.stdout.setEncoding('utf8');
     this.child.stdout.on('data', (chunk) => {
       this.buf += chunk;
@@ -801,7 +820,16 @@ class AgyWarmSession {
         this.buf = this.buf.slice(idx + 1);
       }
     });
+    // Drain stderr continuously so long-lived sessions never hit the 64 KB pipe-buffer deadlock.
+    this.child.stderr?.setEncoding('utf8');
+    this.child.stderr?.on('data', (chunk) => {
+      this.stderrTail = (this.stderrTail + chunk).slice(-4096);
+    });
     this.child.on('close', (code) => {
+      if (this.idleTimer) {
+        clearTimeout(this.idleTimer);
+        this.idleTimer = null;
+      }
       if (this.pending) {
         const p = this.pending;
         this.pending = null;
@@ -810,11 +838,17 @@ class AgyWarmSession {
         if (partial && code === 0) {
           p.resolve({ reply: partial, streamed: p.streamed });
         } else {
-          p.reject(new Error(`Phiên giữ ấm agy đã đóng đột ngột (mã ${code}).`));
+          const tail = this.stderrTail.trim();
+          p.reject(
+            new Error(
+              `Phiên giữ ấm agy đã đóng đột ngột (mã ${code}${tail ? `: ${tail.slice(-160)}` : ''}).`
+            )
+          );
         }
       }
       this.child = null;
     });
+    this._touchIdleTimer();
   }
 
   _handleLine(line) {
@@ -842,6 +876,7 @@ class AgyWarmSession {
       const p = this.pending;
       this.pending = null;
       clearTimeout(p.timer);
+      this._touchIdleTimer();
       if (parsed.result.status === 'ERROR') {
         p.reject(new Error(String(parsed.result.error || 'Lỗi phản hồi từ agy')));
       } else {
@@ -853,6 +888,7 @@ class AgyWarmSession {
 
   sendTurn(content, onDelta) {
     this.ensureStarted();
+    this._touchIdleTimer();
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         if (this.pending) {
@@ -873,18 +909,39 @@ class AgyWarmSession {
   }
 
   close() {
-    if (this.child) {
-      try {
-        this.child.stdin.end();
-      } catch {
-        // ignore
-      }
-      try {
-        this.child.kill('SIGTERM');
-      } catch {
-        // ignore
-      }
+    if (this.idleTimer) {
+      clearTimeout(this.idleTimer);
+      this.idleTimer = null;
+    }
+    if (this.pending) {
+      const p = this.pending;
+      this.pending = null;
+      clearTimeout(p.timer);
+      p.reject(new Error('Phiên agy đã được đóng.'));
+    }
+    const child = this.child;
+    if (child) {
       this.child = null;
+      try {
+        child.stdin.end();
+      } catch {
+        // ignore
+      }
+      try {
+        child.kill('SIGTERM');
+      } catch {
+        // ignore
+      }
+      const killTimer = setTimeout(() => {
+        if (child.exitCode === null) {
+          try {
+            child.kill('SIGKILL');
+          } catch {
+            // ignore
+          }
+        }
+      }, 2000);
+      killTimer.unref?.();
     }
   }
 }
@@ -1051,7 +1108,7 @@ async function cmdStatus() {
             ? {}
             : {
                 setupHint:
-                  'Chưa cấu hình model AI trên máy. Mở NidoHub (`nido-hub --page welcome`) để đăng nhập Tài khoản Nido, Google Antigravity (Google AI Ultra/Pro/Free), OpenAI Codex / Claude Code, dán Google AI Studio GEMINI_API_KEY miễn phí ($0), hoặc cài Ollama theo cấu hình máy.',
+                  'Chưa cấu hình model AI trên máy. Mở NidoHub (`nido-hub --page settings`) để đăng nhập Tài khoản Nido, Google Antigravity (Google AI Ultra/Pro/Free), OpenAI Codex / Claude Code, dán Google AI Studio GEMINI_API_KEY miễn phí ($0), hoặc cài Ollama theo cấu hình máy.',
               }),
           gateway: payload,
         },
@@ -1544,7 +1601,7 @@ async function isGatewayReadyFast(conn) {
 }
 
 const NOT_SIGNED_IN_AI_MESSAGE =
-  'Chưa đăng nhập tài khoản AI hoặc chưa có nguồn AI sẵn sàng. Mở NidoHub (`nido-hub --onboarding` hoặc `nido-hub --page welcome`) để đăng nhập Tài khoản Nido, Google/Gemini, ChatGPT, Claude hoặc cấu hình khóa API / Ollama.';
+  'Chưa đăng nhập tài khoản AI hoặc chưa có nguồn AI sẵn sàng. Mở NidoHub (`nido-hub --onboarding` hoặc `nido-hub --page settings`) để đăng nhập Tài khoản Nido, Google/Gemini, ChatGPT, Claude hoặc cấu hình khóa API / Ollama.';
 
 async function ensureAiReadyForExecution(conn) {
   if (!isAiEnabledByPolicy()) {
@@ -1599,7 +1656,7 @@ async function sendChatCompletion(conn, messages, options = {}) {
       if (unconfigured) {
         throw new Error(
           `Chưa cấu hình AI sẵn sàng (${msg}).\n` +
-            'Gợi ý thiết lập nhanh (30 giây): chạy `nido-hub --page welcome` để đăng nhập Tài khoản Nido, Google Antigravity (Ultra/Pro/Free), dán Google AI Studio GEMINI_API_KEY miễn phí ($0), đăng nhập OpenAI Codex / Claude Code, hoặc tải model cục bộ Ollama.'
+            'Gợi ý thiết lập nhanh (30 giây): chạy `nido-hub --page settings` để đăng nhập Tài khoản Nido, Google Antigravity (Ultra/Pro/Free), dán Google AI Studio GEMINI_API_KEY miễn phí ($0), đăng nhập OpenAI Codex / Claude Code, hoặc tải model cục bộ Ollama.'
         );
       }
       throw new Error(`Lỗi NidoAI Gateway: ${msg}`);
@@ -1610,7 +1667,7 @@ async function sendChatCompletion(conn, messages, options = {}) {
       }
       if (err instanceof TypeError) {
         throw new Error(
-          `Không kết nối được tới NidoAI Gateway (${conn.baseUrl}). Mở NidoHub (\`nido-hub --page welcome\`) để bật Trợ lý AI hoặc đăng nhập tài khoản AI.`
+          `Không kết nối được tới NidoAI Gateway (${conn.baseUrl}). Mở NidoHub (\`nido-hub --page settings\`) để bật Trợ lý AI hoặc đăng nhập tài khoản AI.`
         );
       }
       throw err;
@@ -1622,7 +1679,7 @@ async function sendChatCompletion(conn, messages, options = {}) {
     return { ...cliRes, backend: fallbackAgents[0].id, model: options.model || 'default' };
   }
   throw new Error(
-    'Chưa có khóa AI hay tài khoản Agent đã đăng nhập. Hãy mở NidoHub (`nido-hub --page welcome`) để đăng nhập Google Antigravity (Ultra/Pro/Free), dán Google AI Studio GEMINI_API_KEY miễn phí ($0) hoặc đăng nhập OpenAI Codex / Claude Code.'
+    'Chưa có khóa AI hay tài khoản Agent đã đăng nhập. Hãy mở NidoHub (`nido-hub --page settings`) để đăng nhập Google Antigravity (Ultra/Pro/Free), dán Google AI Studio GEMINI_API_KEY miễn phí ($0) hoặc đăng nhập OpenAI Codex / Claude Code.'
   );
 }
 
@@ -1857,13 +1914,20 @@ async function cmdChat(args = []) {
   console.log(`NidoOS Agent Chat (${modeNote}) — gõ "exit" để thoát.`);
   safePrompt();
 
+  let cleanedUp = false;
   const cleanup = () => {
+    if (cleanedUp) return;
+    cleanedUp = true;
     if (warmAgy) warmAgy.close();
   };
-  process.on('SIGINT', () => {
+  const onSignalExit = () => {
     cleanup();
+    if (!rlClosed) rl.close();
     process.exit(0);
-  });
+  };
+  process.once('SIGINT', onSignalExit);
+  process.once('SIGTERM', onSignalExit);
+  process.once('SIGHUP', onSignalExit);
 
   try {
     let firstWarmTurn = true;
@@ -1877,6 +1941,9 @@ async function cmdChat(args = []) {
         break;
       }
       messages.push({ role: 'user', content: trimmed });
+      if (messages.length > MAX_CHAT_HISTORY_MESSAGES + 1) {
+        messages.splice(1, messages.length - 1 - MAX_CHAT_HISTORY_MESSAGES);
+      }
       try {
         const writer = new MarkdownStreamWriter(outMode, (s) => process.stdout.write(s));
         let resObj;

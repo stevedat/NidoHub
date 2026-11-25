@@ -1747,7 +1747,40 @@ export async function startGatewayServer(initialConfig, options = {}) {
             totalMs,
         });
     };
+    const configureHttpTimeouts = (srv) => {
+        srv.keepAliveTimeout = 15_000;
+        srv.headersTimeout = 20_000;
+        srv.requestTimeout = 130_000;
+    };
+    const closeHttpServerGracefully = (srv, graceMs = 2500) => new Promise((resClose) => {
+        let done = false;
+        const finish = () => {
+            if (done)
+                return;
+            done = true;
+            clearTimeout(forceTimer);
+            resClose();
+        };
+        const forceTimer = setTimeout(() => {
+            try {
+                srv.closeAllConnections?.();
+            }
+            catch {
+                // ignore
+            }
+            finish();
+        }, graceMs);
+        forceTimer.unref?.();
+        try {
+            srv.closeIdleConnections?.();
+            srv.close(() => finish());
+        }
+        catch {
+            finish();
+        }
+    });
     const server = http.createServer(handleHttpRequest);
+    configureHttpTimeouts(server);
     let udsServer = null;
     const rawUdsCandidate = typeof options.udsPath === 'string'
         ? options.udsPath
@@ -1768,6 +1801,7 @@ export async function startGatewayServer(initialConfig, options = {}) {
                 fs.unlinkSync(udsCandidate);
             }
             const sockSrv = http.createServer(handleHttpRequest);
+            configureHttpTimeouts(sockSrv);
             sockSrv.once('error', () => {
                 resUds(null);
             });
@@ -1831,10 +1865,9 @@ export async function startGatewayServer(initialConfig, options = {}) {
                             codexWorker = null;
                         }
                         if (udsServer) {
-                            await new Promise((resUdsClose) => {
-                                udsServer.close(() => resUdsClose());
-                            });
+                            const closingUds = udsServer;
                             udsServer = null;
+                            await closeHttpServerGracefully(closingUds);
                         }
                         if (activeSocketPath && fs.existsSync(activeSocketPath)) {
                             try {
@@ -1856,9 +1889,7 @@ export async function startGatewayServer(initialConfig, options = {}) {
                                 }
                             }
                         }
-                        await new Promise((resClose, rejClose) => {
-                            server.close((err) => (err ? rejClose(err) : resClose()));
-                        });
+                        await closeHttpServerGracefully(server);
                     },
                 });
             });
