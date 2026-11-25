@@ -22,13 +22,36 @@ fi
 # Apply fast installed-system desktop perf tweaks immediately (<100ms) before slow snap removal
 # Disable Desktop Icons NG (ding@rastersoft.com, ~100 MB gjs RAM) on installed systems
 # (Live ISO keeps ding enabled for the "Cài đặt NidoOS" desktop icon; users can still re-enable it.)
+# Also disable GNOME animations on VMs with software GPU (Cairo renderer = CPU-only
+# 60fps transitions). On bare metal this key is absent so animations stay enabled.
 mkdir -p /etc/dconf/db/local.d
-cat > /etc/dconf/db/local.d/10-nido-installed-perf <<'DCONF_PERF'
+VM_TYPE="$(systemd-detect-virt --vm 2>/dev/null || true)"
+VM_ANIM_LINE=""
+if [ -n "$VM_TYPE" ] && [ "$VM_TYPE" != "none" ]; then
+  # Only disable animations when no hardware GPU is detected (same logic as 60-nido-vm-gsk)
+  HAS_HW_GPU=0
+  for _uev in /sys/class/drm/card*/device/uevent; do
+    [ -f "$_uev" ] || continue
+    _drv="$(awk -F= '$1 == "DRIVER" { print $2; exit }' "$_uev" 2>/dev/null || true)"
+    case "$_drv" in
+      i915|xe|amdgpu|radeon|nvidia|nouveau|apple|asahi|msm|panfrost|panthor|etnaviv|vc4|v3d) HAS_HW_GPU=1 ;;
+    esac
+  done
+  if [ "$HAS_HW_GPU" -eq 0 ]; then
+    VM_ANIM_LINE=$'\n[org/gnome/desktop/interface]\nenable-animations=false'
+  fi
+fi
+cat > /etc/dconf/db/local.d/10-nido-installed-perf <<DCONF_PERF
 [org/gnome/shell]
-disabled-extensions=['ding@rastersoft.com']
+disabled-extensions=['ding@rastersoft.com']${VM_ANIM_LINE}
 DCONF_PERF
 if command -v dconf >/dev/null 2>&1; then
   dconf compile /etc/dconf/db/local /etc/dconf/db/local.d >/dev/null 2>&1 || dconf update >/dev/null 2>&1 || true
+fi
+
+# Pre-compile Python bytecache for NidoHub modules (saves ~100-200ms on first launch)
+if command -v python3 >/dev/null 2>&1; then
+  python3 -m compileall -q /usr/lib/nido-hub/ >/dev/null 2>&1 || true
 fi
 
 # Ensure NTP clock sync is enabled on first boot (resilient to VMware/UTM RTC clock drift)
