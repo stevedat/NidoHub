@@ -22,6 +22,9 @@ fi
 
 if [ "$SYSTEM_INSTALLED" -eq 1 ]; then
   unset NIDO_SKILLS_DIR
+  if [ -x /usr/libexec/nidoai/nidoai-sea ]; then
+    exec /usr/libexec/nidoai/nidoai-sea --nido-sea-mode=agent "$@"
+  fi
   CLI_ENTRY="/usr/lib/nidoagent-cli/cli.mjs"
 else
   CLI_ENTRY="${NIDOAGENT_CLI_ENTRY:-/usr/lib/nidoagent-cli/cli.mjs}"

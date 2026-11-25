@@ -18,6 +18,8 @@ profile nidoai-gateway /usr/libexec/nidoai/gateway-daemon {
   dbus (send, receive) bus=session,
 
   /usr/libexec/nidoai/gateway-daemon r,
+  # Stage 2 native Node 22 SEA ELF binary (when installed)
+  /usr/libexec/nidoai/nidoai-sea mrix,
   /bin/dash ix,
   /usr/bin/dash ix,
   /bin/sh ix,

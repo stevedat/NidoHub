@@ -11,6 +11,7 @@ import argparse
 import gzip
 import hashlib
 import io
+import lzma
 import os
 import re
 import shutil
@@ -100,59 +101,76 @@ def _normalize_permissions(stage_dir: Path) -> None:
             fp.chmod(0o755 if (mode & 0o111) else 0o644)
 
 
-def _build_tar_gz_from_dir(root_dir: Path, force_exec_names: set[str] | None = None) -> bytes:
-    buf = io.BytesIO()
-    with gzip.GzipFile(fileobj=buf, mode="wb", mtime=0) as gz:
-        with tarfile.open(fileobj=gz, mode="w", format=tarfile.GNU_FORMAT) as tf:
-            root_info = tarfile.TarInfo(name="./")
-            root_info.type = tarfile.DIRTYPE
-            root_info.mode = 0o755
-            root_info.uid = 0
-            root_info.gid = 0
-            root_info.uname = "root"
-            root_info.gname = "root"
-            root_info.mtime = 0
-            tf.addfile(root_info)
+def _build_tar_from_dir(
+    root_dir: Path,
+    force_exec_names: set[str] | None = None,
+    compression: str = "gz",
+    arch: str = "all",
+) -> bytes:
+    tar_buf = io.BytesIO()
+    with tarfile.open(fileobj=tar_buf, mode="w", format=tarfile.GNU_FORMAT) as tf:
+        root_info = tarfile.TarInfo(name="./")
+        root_info.type = tarfile.DIRTYPE
+        root_info.mode = 0o755
+        root_info.uid = 0
+        root_info.gid = 0
+        root_info.uname = "root"
+        root_info.gname = "root"
+        root_info.mtime = 0
+        tf.addfile(root_info)
 
-            entries: list[Path] = []
-            for cur_root, dirs, files in os.walk(root_dir, followlinks=False):
-                dirs[:] = sorted(d for d in dirs if d not in SKIP_NAMES)
-                for d in dirs:
-                    entries.append(Path(cur_root) / d)
-                for f in sorted(files):
-                    if f not in SKIP_NAMES:
-                        entries.append(Path(cur_root) / f)
+        entries: list[Path] = []
+        for cur_root, dirs, files in os.walk(root_dir, followlinks=False):
+            dirs[:] = sorted(d for d in dirs if d not in SKIP_NAMES)
+            for d in dirs:
+                entries.append(Path(cur_root) / d)
+            for f in sorted(files):
+                if f not in SKIP_NAMES:
+                    entries.append(Path(cur_root) / f)
 
-            entries.sort(key=lambda p: str(p.relative_to(root_dir)))
-            for entry in entries:
-                rel = entry.relative_to(root_dir).as_posix()
-                arcname = f"./{rel}"
-                ti = tarfile.TarInfo(name=arcname)
-                ti.uid = 0
-                ti.gid = 0
-                ti.uname = "root"
-                ti.gname = "root"
-                ti.mtime = 0
+        entries.sort(key=lambda p: str(p.relative_to(root_dir)))
+        for entry in entries:
+            rel = entry.relative_to(root_dir).as_posix()
+            arcname = f"./{rel}"
+            ti = tarfile.TarInfo(name=arcname)
+            ti.uid = 0
+            ti.gid = 0
+            ti.uname = "root"
+            ti.gname = "root"
+            ti.mtime = 0
 
-                if entry.is_symlink():
-                    ti.type = tarfile.SYMTYPE
-                    ti.linkname = os.readlink(entry)
-                    ti.mode = 0o777
-                    tf.addfile(ti)
-                elif entry.is_dir():
-                    ti.type = tarfile.DIRTYPE
-                    ti.mode = 0o755
-                    tf.addfile(ti)
+            if entry.is_symlink():
+                ti.type = tarfile.SYMTYPE
+                ti.linkname = os.readlink(entry)
+                ti.mode = 0o777
+                tf.addfile(ti)
+            elif entry.is_dir():
+                ti.type = tarfile.DIRTYPE
+                ti.mode = 0o755
+                tf.addfile(ti)
+            else:
+                ti.type = tarfile.REGTYPE
+                data = entry.read_bytes()
+                ti.size = len(data)
+                if force_exec_names is not None:
+                    ti.mode = 0o755 if entry.name in force_exec_names else 0o644
                 else:
-                    ti.type = tarfile.REGTYPE
-                    data = entry.read_bytes()
-                    ti.size = len(data)
-                    if force_exec_names is not None:
-                        ti.mode = 0o755 if entry.name in force_exec_names else 0o644
-                    else:
-                        ti.mode = 0o755 if (entry.stat().st_mode & 0o111) else 0o644
-                    tf.addfile(ti, io.BytesIO(data))
-    return buf.getvalue()
+                    ti.mode = 0o755 if (entry.stat().st_mode & 0o111) else 0o644
+                tf.addfile(ti, io.BytesIO(data))
+
+    raw_tar = tar_buf.getvalue()
+    if compression == "xz":
+        if arch == "amd64":
+            filters = [
+                {"id": lzma.FILTER_X86},
+                {"id": lzma.FILTER_LZMA2, "preset": 9},
+            ]
+            return lzma.compress(raw_tar, format=lzma.FORMAT_XZ, filters=filters)
+        return lzma.compress(raw_tar, format=lzma.FORMAT_XZ, preset=9)
+    out = io.BytesIO()
+    with gzip.GzipFile(fileobj=out, mode="wb", mtime=0) as gz:
+        gz.write(raw_tar)
+    return out.getvalue()
 
 
 def _ar_member(name: str, payload: bytes) -> bytes:
@@ -267,6 +285,7 @@ def build_deb(
     version_suffix: str = "",
     integrity_manifest: bool = False,
     gpg_key: str = "",
+    compression: str = "gz",
 ) -> None:
     debian_src = source_dir / "DEBIAN"
     files_src = source_dir / "files"
@@ -288,14 +307,15 @@ def build_deb(
 
         dpkg_deb = shutil.which("dpkg-deb")
         if dpkg_deb:
+            zflags = ["-Zxz", "-z9"] if compression == "xz" else ["-Zgzip"]
             subprocess.run(
-                [dpkg_deb, "-Zgzip", "--root-owner-group", "--build", str(stage), str(output_path)],
+                [dpkg_deb, *zflags, "--root-owner-group", "--build", str(stage), str(output_path)],
                 check=True,
             )
             return
 
         # Portable pure-Python Debian 2.0 archive
-        control_tar = _build_tar_gz_from_dir(stage / "DEBIAN", force_exec_names=MAINTAINER_SCRIPTS)
+        control_tar = _build_tar_from_dir(stage / "DEBIAN", force_exec_names=MAINTAINER_SCRIPTS, compression="gz")
         data_stage = Path(tmp) / "data"
         data_stage.mkdir(parents=True, exist_ok=True)
         for child in stage.iterdir():
@@ -306,13 +326,19 @@ def build_deb(
                 shutil.copytree(child, dest, symlinks=True)
             else:
                 shutil.copy2(child, dest)
-        data_tar = _build_tar_gz_from_dir(data_stage, force_exec_names=None)
+        data_tar = _build_tar_from_dir(
+            data_stage,
+            force_exec_names=None,
+            compression=compression,
+            arch=fields.get("Architecture", "all"),
+        )
+        data_member = "data.tar.xz" if compression == "xz" else "data.tar.gz"
 
         deb_bytes = (
             b"!<arch>\n"
             + _ar_member("debian-binary", b"2.0\n")
             + _ar_member("control.tar.gz", control_tar)
-            + _ar_member("data.tar.gz", data_tar)
+            + _ar_member(data_member, data_tar)
         )
         output_path.write_bytes(deb_bytes)
 
@@ -323,6 +349,7 @@ def main() -> None:
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--extra-files", type=Path, default=None)
     parser.add_argument("--version-suffix", default="", help="Optional '+' suffix appended to Version during dev builds")
+    parser.add_argument("--compression", choices=("gz", "xz"), default="gz", help="Data tarball compression format")
     parser.add_argument(
         "--integrity-manifest",
         action="store_true",
@@ -342,6 +369,7 @@ def main() -> None:
         version_suffix=args.version_suffix,
         integrity_manifest=args.integrity_manifest,
         gpg_key=args.gpg_key,
+        compression=args.compression,
     )
     print(f"Built {args.output} ({args.output.stat().st_size} bytes)")
 

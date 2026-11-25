@@ -68,12 +68,55 @@ def _hashes(data: bytes) -> tuple[str, str, str]:
     )
 
 
-def build_apt_repo(dist_dir: Path, out_dir: Path, vendor_dir: Path | None = None) -> None:
+def _collect_stanza(deb_path: Path, pool_main: Path, out_dir: Path) -> tuple[str, str, str, str]:
+    control_text = extract_control_text(deb_path).strip()
+    pkg_name = ""
+    pkg_arch = "all"
+    pkg_ver = ""
+    for line in control_text.splitlines():
+        if line.startswith("Package:"):
+            pkg_name = line.split(":", 1)[1].strip()
+        elif line.startswith("Architecture:"):
+            pkg_arch = line.split(":", 1)[1].strip()
+        elif line.startswith("Version:"):
+            pkg_ver = line.split(":", 1)[1].strip()
+
+    subdir = pool_main / (pkg_name[:1] or "n") / (pkg_name or deb_path.stem)
+    subdir.mkdir(parents=True, exist_ok=True)
+    dest_deb = subdir / deb_path.name
+    shutil.copy2(deb_path, dest_deb)
+
+    raw_bytes = deb_path.read_bytes()
+    md5, sha1, sha256 = _hashes(raw_bytes)
+    rel_filename = dest_deb.relative_to(out_dir).as_posix()
+
+    stanza = (
+        f"{control_text}\n"
+        f"Filename: {rel_filename}\n"
+        f"Size: {len(raw_bytes)}\n"
+        f"MD5sum: {md5}\n"
+        f"SHA1: {sha1}\n"
+        f"SHA256: {sha256}\n"
+    )
+    return pkg_name, pkg_arch, pkg_ver, stanza
+
+
+def build_apt_repo(
+    dist_dir: Path,
+    out_dir: Path,
+    vendor_dir: Path | None = None,
+    native_dir: Path | None = None,
+    native_suites: tuple[str, ...] = ("resolute",),
+) -> None:
     deb_files = sorted(dist_dir.glob("*.deb"))
     if vendor_dir is not None and vendor_dir.is_dir():
         deb_files.extend(sorted(vendor_dir.glob("*.deb")))
     if not deb_files:
         raise FileNotFoundError(f"No .deb files found in {dist_dir}")
+
+    native_files: list[Path] = []
+    if native_dir is not None and native_dir.is_dir():
+        native_files = sorted(native_dir.glob("*.deb"))
 
     if out_dir.exists():
         shutil.rmtree(out_dir)
@@ -81,39 +124,30 @@ def build_apt_repo(dist_dir: Path, out_dir: Path, vendor_dir: Path | None = None
     pool_main = out_dir / "pool" / "main"
     pool_main.mkdir(parents=True, exist_ok=True)
 
-    stanzas_by_arch: dict[str, list[str]] = {arch: [] for arch in ARCHES}
+    # Map (suite, arch, pkg_name, pkg_ver) -> (priority, stanza), where arch-specific beats 'all'
+    entries_by_suite_arch: dict[tuple[str, str], dict[tuple[str, str], tuple[int, str]]] = {
+        (suite, arch): {} for suite in SUITES for arch in ARCHES
+    }
 
     for deb_path in deb_files:
-        control_text = extract_control_text(deb_path).strip()
-        pkg_name = ""
-        pkg_arch = "all"
-        for line in control_text.splitlines():
-            if line.startswith("Package:"):
-                pkg_name = line.split(":", 1)[1].strip()
-            elif line.startswith("Architecture:"):
-                pkg_arch = line.split(":", 1)[1].strip()
-
-        subdir = pool_main / (pkg_name[:1] or "n") / (pkg_name or deb_path.stem)
-        subdir.mkdir(parents=True, exist_ok=True)
-        dest_deb = subdir / deb_path.name
-        shutil.copy2(deb_path, dest_deb)
-
-        raw_bytes = deb_path.read_bytes()
-        md5, sha1, sha256 = _hashes(raw_bytes)
-        rel_filename = dest_deb.relative_to(out_dir).as_posix()
-
-        stanza = (
-            f"{control_text}\n"
-            f"Filename: {rel_filename}\n"
-            f"Size: {len(raw_bytes)}\n"
-            f"MD5sum: {md5}\n"
-            f"SHA1: {sha1}\n"
-            f"SHA256: {sha256}\n"
-        )
-
+        pkg_name, pkg_arch, pkg_ver, stanza = _collect_stanza(deb_path, pool_main, out_dir)
         target_arches = ARCHES if pkg_arch == "all" else (pkg_arch,) if pkg_arch in ARCHES else ()
-        for arch in target_arches:
-            stanzas_by_arch[arch].append(stanza)
+        prio = 1 if pkg_arch == "all" else 2
+        for suite in SUITES:
+            for arch in target_arches:
+                key = (pkg_name, pkg_ver)
+                cur = entries_by_suite_arch[(suite, arch)].get(key)
+                if cur is None or prio >= cur[0]:
+                    entries_by_suite_arch[(suite, arch)][key] = (prio, stanza)
+
+    for deb_path in native_files:
+        pkg_name, pkg_arch, pkg_ver, stanza = _collect_stanza(deb_path, pool_main, out_dir)
+        target_arches = ARCHES if pkg_arch == "all" else (pkg_arch,) if pkg_arch in ARCHES else ()
+        for suite in native_suites:
+            if suite not in SUITES:
+                continue
+            for arch in target_arches:
+                entries_by_suite_arch[(suite, arch)][(pkg_name, pkg_ver)] = (3, stanza)
 
     now_rfc2822 = datetime.now(timezone.utc).strftime("%a, %d %b %Y %H:%M:%S +0000")
 
@@ -124,7 +158,10 @@ def build_apt_repo(dist_dir: Path, out_dir: Path, vendor_dir: Path | None = None
         for arch in ARCHES:
             bin_dir = suite_dir / "main" / f"binary-{arch}"
             bin_dir.mkdir(parents=True, exist_ok=True)
-            pkg_content = "\n".join(stanzas_by_arch[arch])
+            stanzas = [
+                stanza for _, (_, stanza) in sorted(entries_by_suite_arch[(suite, arch)].items())
+            ]
+            pkg_content = "\n".join(stanzas)
             if pkg_content and not pkg_content.endswith("\n"):
                 pkg_content += "\n"
             pkg_bytes = pkg_content.encode("utf-8")
@@ -160,16 +197,23 @@ def build_apt_repo(dist_dir: Path, out_dir: Path, vendor_dir: Path | None = None
 
         (suite_dir / "Release").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
-    print(f"Generated static APT repository in {out_dir} ({len(deb_files)} package(s))")
+    total_pkgs = len(deb_files) + len(native_files)
+    print(f"Generated static APT repository in {out_dir} ({total_pkgs} package(s))")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build static APT repository from .deb artifacts.")
     parser.add_argument("--dist-dir", type=Path, default=Path("packages/dist"))
     parser.add_argument("--vendor-dir", type=Path, default=Path("packages/vendor"))
+    parser.add_argument("--native-dir", type=Path, default=None, help="Optional Stage 2 native .deb directory (applied to resolute)")
     parser.add_argument("--out-dir", type=Path, default=Path("apt-repo"))
     args = parser.parse_args()
-    build_apt_repo(args.dist_dir.resolve(), args.out_dir.resolve(), args.vendor_dir.resolve())
+    build_apt_repo(
+        args.dist_dir.resolve(),
+        args.out_dir.resolve(),
+        args.vendor_dir.resolve(),
+        native_dir=args.native_dir.resolve() if args.native_dir else None,
+    )
 
 
 if __name__ == "__main__":

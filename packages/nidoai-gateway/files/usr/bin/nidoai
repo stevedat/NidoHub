@@ -18,6 +18,10 @@ mkdir -p "$STATE_DIR"
 chmod 700 "$STATE_DIR" 2>/dev/null || true
 cd "$STATE_DIR"
 
+if [ "$SYSTEM_INSTALLED" -eq 1 ] && [ -x /usr/libexec/nidoai/nidoai-sea ]; then
+  exec /usr/libexec/nidoai/nidoai-sea "$@"
+fi
+
 if ! command -v node >/dev/null 2>&1; then
   echo "nidoai: Node.js (>= 18.0.0) is required." >&2
   exit 1

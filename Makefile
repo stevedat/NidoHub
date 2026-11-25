@@ -1,4 +1,4 @@
-.PHONY: help assets packages apt-repo dev-apt dev-apt-deploy release-apt release-apt-deploy check security-audit native-packages-amd64 native-packages-arm64 iso iso-arm64 iso-arm64-fast docker-iso clean
+.PHONY: help assets packages apt-repo dev-apt dev-apt-deploy release-apt release-apt-deploy release-apt-native release-apt-native-deploy check security-audit native-packages native-packages-amd64 native-packages-arm64 iso iso-arm64 iso-arm64-fast docker-iso clean
 
 UBUNTU_VERSION     ?= 26.04
 NIDO_VERSION       ?= 0.2.0
@@ -18,8 +18,10 @@ help:
 	@echo "  make release-apt        Build & GPG-sign clean release packages (no +dev suffix) in apt-repo/"
 	@echo "  make release-apt-deploy Build, sign, and deploy clean release apt-repo/ to $(APT_PAGES_PROJECT)"
 	@echo "  make security-audit     Run integrity verification, firewall & distribution hardening self-tests"
+	@echo "  make native-packages        Build Stage 2 native Cython/SEA packages for both amd64 & arm64 (Docker)"
 	@echo "  make native-packages-amd64  Build Stage 2 native Cython/SEA packages for amd64 (requires Docker)"
 	@echo "  make native-packages-arm64  Build Stage 2 native Cython/SEA packages for arm64 (requires Docker)"
+	@echo "  make release-apt-native-deploy  Build Stage 1+2 native APT repo (resolute=native, noble=all) & deploy"
 	@echo "  make iso            Build NidoOS amd64 ISO (Linux host/root)"
 	@echo "  make iso-arm64      Build NidoOS arm64 ISO (Linux host/root)"
 	@echo "  make iso-arm64-fast Build NidoOS arm64 ISO locally (FAST_ISO=1 + ext4 workspace/cache)"
@@ -82,11 +84,35 @@ security-audit:
 	node scripts/harden_js.mjs --self-test
 	bash scripts/native-build/build_native_debs.sh --dry-run
 
+native-packages:
+	APT_GPG_KEY="$(APT_GPG_KEY)" bash scripts/native-build/build_native_debs.sh --arch all
+
 native-packages-amd64:
-	bash scripts/native-build/build_native_debs.sh --arch amd64
+	APT_GPG_KEY="$(APT_GPG_KEY)" bash scripts/native-build/build_native_debs.sh --arch amd64
 
 native-packages-arm64:
-	bash scripts/native-build/build_native_debs.sh --arch arm64
+	APT_GPG_KEY="$(APT_GPG_KEY)" bash scripts/native-build/build_native_debs.sh --arch arm64
+
+release-apt-native:
+	DEB_VERSION_SUFFIX="" bash packages/build-all.sh
+	@if [ ! -f packages/dist/native/nidoai-gateway_0.2.0_arm64.deb ] || [ ! -f packages/dist/native/nidoai-gateway_0.2.0_amd64.deb ]; then \
+		APT_GPG_KEY="$(APT_GPG_KEY)" DEB_VERSION_SUFFIX="" bash scripts/native-build/build_native_debs.sh --arch all; \
+	fi
+	python3 scripts/build_apt_repo.py --dist-dir packages/dist --vendor-dir packages/vendor --native-dir packages/dist/native --out-dir apt-repo
+	cp packages/nido-desktop-settings/files/etc/apt/keyrings/ubuntu-nido.asc apt-repo/ubuntu-nido.asc
+	@if command -v gpg >/dev/null 2>&1 && gpg --list-secret-keys "$(APT_GPG_KEY)" >/dev/null 2>&1; then \
+		for suite in resolute noble; do \
+			rel="apt-repo/dists/$${suite}/Release"; \
+			gpg --batch --yes -u "$(APT_GPG_KEY)" -abs -o "apt-repo/dists/$${suite}/Release.gpg" "$$rel"; \
+			gpg --batch --yes -u "$(APT_GPG_KEY)" --clearsign -o "apt-repo/dists/$${suite}/InRelease" "$$rel"; \
+		done; \
+		echo "Signed Stage 2 native release apt-repo Release metadata with $(APT_GPG_KEY)."; \
+	else \
+		echo "WARN: GPG secret key $(APT_GPG_KEY) not found; apt-repo left unsigned." >&2; \
+	fi
+
+release-apt-native-deploy: release-apt-native
+	wrangler pages deploy apt-repo --project-name="$(APT_PAGES_PROJECT)" --branch=main --commit-dirty=true
 
 iso: assets packages
 	cd iso-builder && sudo TARGET_ARCH=amd64 UBUNTU_VERSION=$(UBUNTU_VERSION) NIDO_VERSION=$(NIDO_VERSION) ./build.sh

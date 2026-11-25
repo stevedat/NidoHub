@@ -9,4 +9,8 @@ fi
 chmod 700 "$STATE_DIR" 2>/dev/null || true
 cd "$STATE_DIR"
 
+if [ -x /usr/libexec/nidoai/nidoai-sea ]; then
+  exec /usr/libexec/nidoai/nidoai-sea serve
+fi
+
 exec /usr/bin/node /usr/lib/nidoai/src/cli.mjs serve

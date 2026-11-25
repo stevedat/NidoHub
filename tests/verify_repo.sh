@@ -1743,9 +1743,15 @@ assert "After=dbus.socket gnome-keyring-daemon.service" in gw_unit_txt, "nidoai-
 for bad_user_opt in ("PrivateTmp=", "ProtectKernelTunables=", "ProtectKernelModules=", "ProtectControlGroups="):
     assert bad_user_opt not in gw_unit_txt, f"Unprivileged user unit nidoai-gateway.service must not set root-only {bad_user_opt}"
 gw_aa_txt = (root / "packages/nidoai-gateway/files/etc/apparmor.d/nidoai-gateway").read_text(encoding="utf-8")
-for req_aa in ("/usr/bin/secret-tool ix,", "/usr/bin/mkdir ix,", "/usr/bin/chmod ix,", "/usr/lib/cargo/bin/coreutils/chmod ix,", "/usr/bin/which* rix,", "@{PROC}/version* r,", "unix,", "dbus (send, receive) bus=session,", "network inet dgram,"):
+for req_aa in ("/usr/libexec/nidoai/nidoai-sea mrix,", "/usr/bin/secret-tool ix,", "/usr/bin/mkdir ix,", "/usr/bin/chmod ix,", "/usr/lib/cargo/bin/coreutils/chmod ix,", "/usr/bin/which* rix,", "@{PROC}/version* r,", "unix,", "dbus (send, receive) bus=session,", "network inet dgram,"):
     assert req_aa in gw_aa_txt, f"nidoai-gateway AppArmor profile missing {req_aa}"
 assert "/usr/bin/secret-tool PUx" not in gw_aa_txt, "PUx fails under NoNewPrivileges=yes; secret-tool must use ix"
+for sea_launcher in (
+    "packages/nidoai-gateway/files/usr/libexec/nidoai/gateway-daemon",
+    "packages/nidoai-gateway/files/usr/bin/nidoai",
+    "packages/nidoagent-cli/files/usr/bin/nidoagent",
+):
+    assert "/usr/libexec/nidoai/nidoai-sea" in (root / sea_launcher).read_text(encoding="utf-8"), f"{sea_launcher} must dispatch to Stage 2 nidoai-sea when installed"
 cleanup_unit_txt = (root / "packages/nido-desktop/files/usr/lib/systemd/system/nido-native-first-cleanup.service").read_text(encoding="utf-8")
 assert "Type=simple" in cleanup_unit_txt, "nido-native-first-cleanup.service must use Type=simple so first boot is non-blocking"
 cleanup_txt = (root / "packages/nido-desktop/files/usr/libexec/ubuntu-nido/native-first-cleanup").read_text(encoding="utf-8")

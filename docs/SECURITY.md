@@ -42,8 +42,8 @@ NidoOS v0.2.0 implements a 4-layer defense-in-depth architecture to protect user
 - **Kernel Hardening (`/etc/sysctl.d/90-nidoos-hardening.conf`)**:
   - `kernel.yama.ptrace_scope = 2`, `fs.suid_dumpable = 0`, `kernel.kptr_restrict = 2`, `kernel.dmesg_restrict = 1`, `kernel.unprivileged_bpf_disabled = 1`, protected symlinks/hardlinks/FIFOs/regular files, and IP spoofing/redirect protections.
 - **Systemd & AppArmor Confinement**:
-  - `nidoai-gateway.service` executes `/usr/libexec/nidoai/gateway-daemon` with `NoNewPrivileges=yes`, `PrivateTmp=yes`, `RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX`, `LimitCORE=0`, `UMask=0077`, and memory/CPU bounds.
-  - Enforcing AppArmor profiles protect `/usr/libexec/nidoai/gateway-daemon` (`etc/apparmor.d/nidoai-gateway`), `/usr/libexec/nido-hub/nido-pkg-helper` (`etc/apparmor.d/nido-pkg-helper`), and NidoOffice (`/etc/apparmor.d/nidooffice`).
+  - `nidoai-gateway.service` executes `/usr/libexec/nidoai/gateway-daemon` with unprivileged-safe hardening (`NoNewPrivileges=yes`, `RestrictSUIDSGID=yes`, `RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK`, `RestrictNamespaces=yes`, `LockPersonality=yes`, `LimitCORE=0`, `UMask=0077`, and memory/CPU bounds), delegating filesystem confinement to AppArmor.
+  - Enforcing AppArmor profiles protect `/usr/libexec/nidoai/gateway-daemon` + `/usr/libexec/nidoai/nidoai-sea` (`etc/apparmor.d/nidoai-gateway`), `/usr/libexec/nido-hub/nido-pkg-helper` (`etc/apparmor.d/nido-pkg-helper`), and NidoOffice (`/etc/apparmor.d/nidooffice`).
 - **UFW Firewall (`/usr/libexec/ubuntu-nido/configure-firewall`)**:
   - Default `deny incoming`, `allow outgoing`, allowing only multicast mDNS (`5353/udp`) and NidoDrop LAN (`54321/tcp`) scoped strictly to RFC1918 and link-local IPv6 subnets.
 - **Signed Package Integrity Manifests & Auditing**:
@@ -59,9 +59,9 @@ NidoOS v0.2.0 implements a 4-layer defense-in-depth architecture to protect user
    - `scripts/harden_dist.py` strips docstrings/comments via Python `ast` and wraps staged `.py` payloads with `zlib` + deterministic XOR + `base85` (compiled with `-OO` bytecode in `postinst`).
    - `scripts/harden_js.mjs` lexically strips comments/whitespace and validates output via `node --check`.
 2. **Stage 2 (Native `amd64` + `arm64` Commercial Builds)**:
-   - Triggered via `make native-packages-amd64` / `make native-packages-arm64` (`scripts/native-build/build_native_debs.sh`) using `Dockerfile.native`.
-   - `compile_hub_cython.py` compiles core NidoHub Python modules to stripped ELF `.so` extensions (`-O2 -fvisibility=hidden`).
-   - `build_gateway_sea.sh` bundles and compiles `nidoai-gateway` and `nidoagent-cli` into Node 22+ Single Executable Application (SEA) binaries.
+   - Triggered via `make native-packages` (`native-packages-amd64` / `native-packages-arm64`) and deployed to APT (`resolute` native, `noble` fallback) via `make release-apt-native-deploy`.
+   - `compile_hub_cython.py` compiles all 6 core NidoHub Python modules to stripped ELF `.so` extensions (`-O2 -fvisibility=hidden`, Python 3.14 ABI) with transparent `sys.modules` proxy shims and Stage 1 hardened `app.py`/`self_test.py`.
+   - `build_gateway_sea.sh` bundles both `nidoai-gateway` and `nidoagent-cli` into ONE stripped multi-call Node 22.23.5 Single Executable Application (SEA) ELF binary (`/usr/libexec/nidoai/nidoai-sea`, V8 bytecode cache enabled, zero raw JS source shipped in native `.deb`s) and runs an in-container live E2E smoke test.
    - Commercial proprietary IP and server-side quota/licensing logic live on private backend services (`ai-proxy` + RLS) and private release repositories rather than client-side trust checks.
 
 ### NidoOffice Desktop Electron Fuses Checklist (Upstream Build)
