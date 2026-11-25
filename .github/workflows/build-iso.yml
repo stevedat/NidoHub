@@ -86,8 +86,16 @@ jobs:
             sudo apt-get install -y qemu-system-arm
           fi
 
-      - name: Build assets, .deb packages & static APT repo
-        run: make assets packages apt-repo
+      - name: Build assets, .deb packages (Stage 1 + Stage 2 native on 26.04) & static APT repo
+        run: |
+          make assets packages
+          if [ "${UBUNTU_VERSION}" = "26.04" ]; then
+            echo "==> Building Stage 2 native Cython .so + Node 22 SEA ELF for ${TARGET_ARCH}..."
+            APT_GPG_KEY="" bash scripts/native-build/build_native_debs.sh --arch "${TARGET_ARCH}"
+            python3 scripts/build_apt_repo.py --dist-dir packages/dist --vendor-dir packages/vendor --native-dir packages/dist/native --out-dir apt-repo
+          else
+            python3 scripts/build_apt_repo.py --dist-dir packages/dist --vendor-dir packages/vendor --out-dir apt-repo
+          fi
 
       - name: Build NidoOS ISO
         run: |

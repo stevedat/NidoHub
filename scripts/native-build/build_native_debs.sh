@@ -173,6 +173,9 @@ run_compile_in_container() {
   local image_tag="nidoos-native-builder:${arch}"
   local cur_ctx=""
   cur_ctx="$(docker context show 2>/dev/null || true)"
+  local host_uid host_gid
+  host_uid="$(id -u)"
+  host_gid="$(id -g)"
 
   mkdir -p "${NATIVE_OUT}/${arch}"
 
@@ -241,6 +244,7 @@ PYTAR
           --arch '${arch}' \
           --stage-only '/workspace/packages/dist/native/${arch}/nido-hub-stage'
         bash /workspace/scripts/native-build/build_gateway_sea.sh '${arch}' '/workspace/packages/dist/native/${arch}'
+        chown -R '${host_uid}:${host_gid}' '/workspace/packages/dist/native/${arch}'
       "
     return 0
   fi
@@ -263,6 +267,7 @@ PYTAR
         --arch ${arch} \
         --stage-only /workspace/packages/dist/native/${arch}/nido-hub-stage
       bash /workspace/scripts/native-build/build_gateway_sea.sh ${arch} /workspace/packages/dist/native/${arch}
+      chown -R '${host_uid}:${host_gid}' '/workspace/packages/dist/native/${arch}'
     "
 }
 

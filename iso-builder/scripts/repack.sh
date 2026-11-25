@@ -156,6 +156,12 @@ repack_layered_live_overlays() {
     test -x /usr/bin/nidoai
     test -x /usr/bin/nidoagent
     test -x /usr/bin/nido-hub
+    test -x /usr/bin/nido-security-verify
+    test -f /etc/apparmor.d/nidoai-gateway
+    if [ -x /usr/libexec/nidoai/nidoai-sea ]; then
+      test ! -d /usr/lib/nidoai/src
+      ls /usr/lib/nido-hub/_*_native*.so >/dev/null
+    fi
     test -x /usr/bin/nidobox
     test -x /usr/bin/nidooffice
     test -x /usr/bin/nidooffice-desktop

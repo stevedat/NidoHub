@@ -237,8 +237,9 @@ step_customize() {
 
   ensure_chroot_nodejs_22
 
-  # Stage and install Ubuntu-Nido .deb packages (plus matching arch vendor debs)
+  # Stage and install Ubuntu-Nido .deb packages (prefer Stage 2 native debs on resolute when present)
   local pkg_dist="$SCRIPT_DIR/../packages/dist"
+  local pkg_native="$SCRIPT_DIR/../packages/dist/native"
   local pkg_vendor="$SCRIPT_DIR/../packages/vendor"
   if [ -x "$SCRIPT_DIR/../packages/build-all.sh" ]; then
     info "  → Building Ubuntu-Nido .deb packages..."
@@ -248,21 +249,42 @@ step_customize() {
   mkdir -p "$WORK_DIR/squashfs/tmp/nido-debs" "$WORK_DIR/squashfs/tmp/nido-meta-debs"
   local deb_count=0
   local meta_count=0
+  local native_used=0
   local deb
   for deb in "$pkg_dist"/*.deb; do
     if [ -f "$deb" ]; then
-      case "$(basename "$deb")" in
+      local base pkg_name native_match=""
+      base="$(basename "$deb")"
+      pkg_name="${base%%_*}"
+      if [ "$UBUNTU_CODENAME" = "resolute" ] && [ -d "$pkg_native" ]; then
+        for cand in "$pkg_native/${pkg_name}_"*"_${TARGET_ARCH}.deb"; do
+          if [ -f "$cand" ]; then
+            native_match="$cand"
+            break
+          fi
+        done
+      fi
+      local chosen="$deb"
+      if [ -n "$native_match" ]; then
+        chosen="$native_match"
+        native_used=$((native_used + 1))
+        info "  → Using Stage 2 native package: $(basename "$chosen")"
+      fi
+      case "$base" in
         nido-desktop_*.deb)
-          cp "$deb" "$WORK_DIR/squashfs/tmp/nido-meta-debs/"
+          cp "$chosen" "$WORK_DIR/squashfs/tmp/nido-meta-debs/"
           meta_count=$((meta_count + 1))
           ;;
         *)
-          cp "$deb" "$WORK_DIR/squashfs/tmp/nido-debs/"
+          cp "$chosen" "$WORK_DIR/squashfs/tmp/nido-debs/"
           deb_count=$((deb_count + 1))
           ;;
       esac
     fi
   done
+  if [ "$native_used" -gt 0 ]; then
+    ok "Selected $native_used Stage 2 native (${TARGET_ARCH}) package(s) for ISO."
+  fi
   if [ -d "$pkg_vendor" ]; then
     for deb in "$pkg_vendor"/*_"${TARGET_ARCH}".deb "$pkg_vendor"/*_all.deb; do
       if [ -f "$deb" ]; then
@@ -408,6 +430,12 @@ check_vi(\"/usr/share/fonts/truetype/noto/NotoMono-Regular.ttf\")"
     /usr/bin/nido-security-verify --verify >/dev/null
     test -x /usr/bin/nidoagent
     test -x /usr/bin/nido-hub
+    if [ -x /usr/libexec/nidoai/nidoai-sea ]; then
+      test ! -d /usr/lib/nidoai/src
+      test ! -d /usr/lib/nidoagent-cli
+      ls /usr/lib/nido-hub/_*_native*.so >/dev/null
+      /usr/bin/nidoagent --version | grep -q "^nidoagent "
+    fi
     test -x /usr/bin/nido-doctor
     /usr/bin/nido-doctor --self-test >/dev/null
     test -x /usr/lib/systemd/user-environment-generators/60-nido-vm-gsk

@@ -1379,6 +1379,14 @@ deb_stage = sandbox / "mock-office-deb-stage"
 (deb_stage / "opt/NidoOffice/nidooffice").write_text("#!/bin/sh\necho nidooffice-deb\n", encoding="utf-8")
 (deb_stage / "opt/NidoOffice/nidooffice").chmod(0o755)
 (deb_stage / "opt/NidoOffice/resources/app.asar").write_bytes(b"mock-asar-with-nidoos_gateway-sso")
+deb_ctrl_buf = _io.BytesIO()
+with _tarfile.open(fileobj=deb_ctrl_buf, mode="w:gz") as tf:
+    ctrl_bytes = b"Package: nidooffice-mock\nVersion: 0.13.1\nArchitecture: arm64\nMaintainer: Test <t@example.com>\nDescription: Mock\n"
+    ti = _tarfile.TarInfo("./control")
+    ti.size = len(ctrl_bytes)
+    ti.mode = 0o644
+    tf.addfile(ti, _io.BytesIO(ctrl_bytes))
+deb_ctrl = deb_ctrl_buf.getvalue()
 deb_tar_buf = _io.BytesIO()
 with _tarfile.open(fileobj=deb_tar_buf, mode="w:gz") as tf:
     tf.add(deb_stage / "opt", arcname="./opt")
@@ -1386,7 +1394,7 @@ deb_data = deb_tar_buf.getvalue()
 def _ar_entry(name: str, data: bytes) -> bytes:
     hdr = f"{name:<16}{'0':<12}{'0':<6}{'0':<6}{'100644':<8}{len(data):<10}`\n".encode("ascii")
     return hdr + data + (b"\n" if len(data) % 2 else b"")
-mock_deb_bytes = b"!<arch>\n" + _ar_entry("debian-binary", b"2.0\n") + _ar_entry("data.tar.gz", deb_data)
+mock_deb_bytes = b"!<arch>\n" + _ar_entry("debian-binary", b"2.0\n") + _ar_entry("control.tar.gz", deb_ctrl) + _ar_entry("data.tar.gz", deb_data)
 mock_deb_sha = _hashlib.sha256(mock_deb_bytes).hexdigest()
 mock_appimg_bytes = b"stale-appimage-without-sso"
 mock_appimg_sha = _hashlib.sha256(mock_appimg_bytes).hexdigest()
@@ -1752,6 +1760,8 @@ for sea_launcher in (
     "packages/nidoagent-cli/files/usr/bin/nidoagent",
 ):
     assert "/usr/libexec/nidoai/nidoai-sea" in (root / sea_launcher).read_text(encoding="utf-8"), f"{sea_launcher} must dispatch to Stage 2 nidoai-sea when installed"
+customize_iso_txt = (root / "iso-builder/scripts/customize.sh").read_text(encoding="utf-8")
+assert "packages/dist/native" in customize_iso_txt and "/usr/libexec/nidoai/nidoai-sea" in customize_iso_txt, "customize.sh must integrate Stage 2 native packages"
 cleanup_unit_txt = (root / "packages/nido-desktop/files/usr/lib/systemd/system/nido-native-first-cleanup.service").read_text(encoding="utf-8")
 assert "Type=simple" in cleanup_unit_txt, "nido-native-first-cleanup.service must use Type=simple so first boot is non-blocking"
 cleanup_txt = (root / "packages/nido-desktop/files/usr/libexec/ubuntu-nido/native-first-cleanup").read_text(encoding="utf-8")

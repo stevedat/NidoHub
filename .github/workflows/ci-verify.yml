@@ -37,6 +37,7 @@ jobs:
           nidoagent --version
           nidoai doctor
           nido-hub --self-test
+          nido-security-verify --verify
           pkcs11-helper --self-test
           nidooffice --version
           test -x /usr/bin/nidooffice-desktop
