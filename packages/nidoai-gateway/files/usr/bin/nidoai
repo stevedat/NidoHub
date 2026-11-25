@@ -1,7 +1,17 @@
 #!/bin/sh
 set -eu
 
-NIDOAI_BIN="${NIDOAI_ENTRY:-/usr/lib/nidoai/src/cli.mjs}"
+SELF_REAL="$(readlink -f "$0" 2>/dev/null || printf '%s' "$0")"
+case "$SELF_REAL" in
+  /usr/bin/*) SYSTEM_INSTALLED=1 ;;
+  *) SYSTEM_INSTALLED=0 ;;
+esac
+
+if [ "$SYSTEM_INSTALLED" -eq 1 ]; then
+  NIDOAI_BIN="/usr/lib/nidoai/src/cli.mjs"
+else
+  NIDOAI_BIN="${NIDOAI_ENTRY:-/usr/lib/nidoai/src/cli.mjs}"
+fi
 STATE_DIR="${NIDOAI_HOME:-${HOME}/.nidoai}"
 
 mkdir -p "$STATE_DIR"

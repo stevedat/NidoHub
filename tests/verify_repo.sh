@@ -15,15 +15,18 @@ SHELL_SCRIPTS=(
   "${ROOT_DIR}/packages/nidoai-gateway/DEBIAN/postinst"
   "${ROOT_DIR}/packages/nidoai-gateway/DEBIAN/prerm"
   "${ROOT_DIR}/packages/nidoai-gateway/files/usr/bin/nidoai"
+  "${ROOT_DIR}/packages/nidoai-gateway/files/usr/libexec/nidoai/gateway-daemon"
   "${ROOT_DIR}/packages/nidoagent-cli/files/usr/bin/nidoagent"
   "${ROOT_DIR}/packages/nido-desktop-settings/DEBIAN/postinst"
   "${ROOT_DIR}/packages/nido-desktop-settings/files/usr/libexec/ubuntu-nido/bind-installer-fonts"
+  "${ROOT_DIR}/packages/nido-desktop-settings/files/usr/libexec/ubuntu-nido/configure-firewall"
   "${ROOT_DIR}/packages/nido-desktop-settings/files/usr/local/bin/nido-welcome"
   "${ROOT_DIR}/packages/nido-desktop-settings/files/usr/local/bin/nidoagent-quicklaunch"
   "${ROOT_DIR}/packages/nido-desktop-settings/files/etc/skel/.local/share/nautilus/scripts/Giao-cho-NidoAgent"
   "${ROOT_DIR}/packages/nido-desktop-settings/files/etc/skel/.local/share/nautilus/scripts/Gui-qua-NidoDrop-LAN"
   "${ROOT_DIR}/packages/nido-desktop-settings/files/etc/skel/.local/share/nautilus/scripts/Giai-nen-Chuan-Tieng-Viet"
   "${ROOT_DIR}/packages/nido-hub/DEBIAN/postinst"
+  "${ROOT_DIR}/packages/nido-hub/DEBIAN/prerm"
   "${ROOT_DIR}/packages/nido-hub/files/usr/bin/nido-hub"
   "${ROOT_DIR}/packages/nidooffice-cli/files/usr/bin/nidooffice"
   "${ROOT_DIR}/packages/nidooffice-desktop/DEBIAN/postinst"
@@ -54,6 +57,8 @@ SHELL_SCRIPTS=(
   "${ROOT_DIR}/iso-builder/config/hooks/live/0180-nido-email-stack.hook.chroot"
   "${ROOT_DIR}/iso-builder/config/hooks/live/0200-nido-ai-stack.hook.chroot"
   "${ROOT_DIR}/iso-builder/config/hooks/live/0900-nido-plymouth.hook.chroot"
+  "${ROOT_DIR}/scripts/native-build/build_gateway_sea.sh"
+  "${ROOT_DIR}/scripts/native-build/build_native_debs.sh"
   "${ROOT_DIR}/tests/verify_repo.sh"
 )
 
@@ -157,13 +162,20 @@ for fname in expected:
             assert "./usr/lib/nidoai/src/gateway/anthropic-adapter.js" in names, f"{fname}: missing unified anthropic-adapter.js"
             assert "./usr/lib/nidoai/src/gateway/nido-account-adapter.js" in names, f"{fname}: missing nido-account-adapter.js"
             assert "./usr/lib/nidoai/src/security/secret-store.js" in names, f"{fname}: missing unified secret-store.js"
+            assert "./usr/libexec/nidoai/gateway-daemon" in names, f"{fname}: missing gateway-daemon"
+            assert "./etc/apparmor.d/nidoai-gateway" in names, f"{fname}: missing AppArmor profile"
+            assert "./usr/share/nido-security/manifests/nidoai-gateway.sha256" in names, f"{fname}: missing integrity manifest"
             assert "./usr/lib/nidoai/src/cli.ts" not in names, f"{fname}: stale cli.ts found (breaks stock Ubuntu nodejs)"
+            srv_js = tf.extractfile("./usr/lib/nidoai/src/gateway/server.js").read().decode("utf-8")
+            assert "// Rule 1:" not in srv_js, f"{fname}: Stage 1 JS hardening did not strip comments"
         elif fname == "nido-desktop-settings_0.2.0_all.deb":
             for req_cfg in (
                 "./etc/dconf/profile/user",
                 "./etc/dconf/profile/gdm",
                 "./etc/dconf/db/local.d/00-ubuntu-nido-settings",
                 "./etc/dconf/db/gdm.d/01-nidoos-logo",
+                "./etc/sysctl.d/90-nidoos-hardening.conf",
+                "./etc/ufw/applications.d/nidoos",
                 "./usr/share/glib-2.0/schemas/90_nidoos-input-sources.gschema.override",
                 "./etc/fonts/conf.d/52-ubuntu-nido-vietnamese.conf",
                 "./usr/share/backgrounds/ubuntu-nido/wallpaper.png",
@@ -184,8 +196,10 @@ for fname in expected:
                 "./usr/local/share/applications/org.gnome.Yelp.desktop",
                 "./usr/lib/systemd/system/nido-installer-fonts.service",
                 "./usr/bin/nido-doctor",
+                "./usr/bin/nido-security-verify",
                 "./usr/lib/systemd/user-environment-generators/60-nido-vm-gsk",
                 "./usr/libexec/ubuntu-nido/bind-installer-fonts",
+                "./usr/libexec/ubuntu-nido/configure-firewall",
                 "./usr/libexec/ubuntu-nido/ensure-vietnamese-ime",
                 "./usr/libexec/ubuntu-nido/nidobox-tray",
                 "./etc/xdg/autostart/nidobox-tray.desktop",
@@ -195,6 +209,7 @@ for fname in expected:
                 "./usr/share/ubuntu-nido/skills/ubuntu-nido-box/SKILL.md",
                 "./usr/share/ubuntu-nido/skills/ubuntu-nido-agent/SKILL.md",
                 "./usr/share/ubuntu-nido/skills/ubuntu-nido-email/SKILL.md",
+                "./usr/share/nido-security/manifests/nido-desktop-settings.sha256",
             ):
                 assert req_cfg in names, f"{fname}: missing {req_cfg}"
             wl_txt = tf.extractfile("./usr/share/desktop-provision/whitelabel.yaml").read().decode("utf-8")
@@ -209,8 +224,10 @@ for fname in expected:
                 "./usr/lib/nido-hub/printer_probe.py",
                 "./usr/lib/nido-hub/self_test.py",
                 "./usr/libexec/nido-hub/nido-pkg-helper",
+                "./etc/apparmor.d/nido-pkg-helper",
                 "./usr/share/nido-hub/vendors.json",
                 "./usr/share/polkit-1/actions/com.nidoholdings.nidohub.pkg.policy",
+                "./usr/share/nido-security/manifests/nido-hub.sha256",
                 "./usr/share/icons/hicolor/scalable/apps/com.nidoholdings.NidoHub.svg",
                 "./usr/share/icons/hicolor/256x256/apps/com.nidoholdings.NidoHub.png",
                 "./usr/share/icons/hicolor/scalable/apps/nidoos-logo.svg",
@@ -219,6 +236,10 @@ for fname in expected:
                 "./usr/share/icons/hicolor/scalable/actions/nidoos-app-grid-symbolic.svg",
             ):
                 assert req_hub in names, f"{fname}: missing {req_hub}"
+            acct_py = tf.extractfile("./usr/lib/nido-hub/nido_account.py").read().decode("utf-8")
+            assert "Unified Nido Account (SSO), AI quota inspection" not in acct_py, (
+                f"{fname}: Stage 1 Python hardening did not strip docstring in nido_account.py"
+            )
         elif fname == "nido-desktop_0.2.0_all.deb":
             ctrl_key = next((k for k in members if k.startswith("control.tar")), None)
             ctrl_raw = members[ctrl_key]
@@ -248,6 +269,8 @@ for fname in expected:
                 "./usr/bin/pkcs11-helper",
                 "./usr/lib/nidooffice-desktop/install-runtime.sh",
                 "./usr/share/applications/nidooffice.desktop",
+                "./usr/share/polkit-1/actions/com.nidoholdings.nidooffice.update.policy",
+                "./usr/share/nido-security/manifests/nidooffice-desktop.sha256",
             ):
                 assert req_od in names, f"{fname}: missing {req_od}"
 print(f"Audited all {len(expected)} .deb archives: valid ar format, zero secret files.")
@@ -848,6 +871,193 @@ try:
     hot_res = json.loads(raw_hot)
     assert hot_res["signedIn"] is True and hot_res["backendConfigured"] is True and hot_res["email"] == "hotreload@nido.vn", hot_res
     print("Verified Nido Account SSO, OpenAI JSON/SSE Proxy, auto-refresh, nido-llama routing, hot-reload, 422 vision guard, and nidoagent account E2E.")
+
+    # 10. Security hardening E2E tests (DNS rebinding, default-off Web UI, pairing-token disabled,
+    #     Codex CWD sandbox, PII-free /healthz, auth rate-limiting, ephemeral token rotation)
+    import http.client as _hc
+    # 10a. Unauthenticated /healthz must NEVER expose user email
+    _, _, h_raw = gw_req("/healthz")
+    h_json = json.loads(h_raw)
+    assert "email" not in (h_json.get("nidoAccount") or {}), f"/healthz leaked email: {h_json}"
+
+    # 10b. Host header DNS rebinding & cross-origin Origin must be rejected with 403
+    conn_reb = _hc.HTTPConnection("127.0.0.1", e2e_port, timeout=3)
+    conn_reb.request("GET", "/healthz", headers={"Host": "evil.attacker.example:18992"})
+    reb_resp = conn_reb.getresponse()
+    reb_resp.read()
+    assert reb_resp.status == 403, f"Expected 403 on DNS rebinding Host, got {reb_resp.status}"
+    conn_reb.close()
+
+    conn_orig = _hc.HTTPConnection("127.0.0.1", e2e_port, timeout=3)
+    conn_orig.request("GET", "/healthz", headers={"Host": f"127.0.0.1:{e2e_port}", "Origin": "https://evil.attacker.example"})
+    orig_resp = conn_orig.getresponse()
+    orig_resp.read()
+    assert orig_resp.status == 403, f"Expected 403 on cross-origin Origin, got {orig_resp.status}"
+    conn_orig.close()
+
+    # 10c. GET / (Web Control Panel) disabled by default (404, no Set-Cookie) & /api/admin/pairing-token blocked (403)
+    try:
+        urllib.request.urlopen(f"http://127.0.0.1:{e2e_port}/", timeout=2.0)
+        raise SystemExit("Expected 404 on default-disabled GET /")
+    except urllib.error.HTTPError as err:
+        assert err.code == 404, f"Expected 404 on GET /, got {err.code}"
+        assert not err.headers.get("Set-Cookie"), "Disabled Web UI must NOT issue CSRF cookie"
+    try:
+        gw_req("/api/admin/pairing-token")
+        raise SystemExit("Expected 403 on /api/admin/pairing-token")
+    except urllib.error.HTTPError as err:
+        assert err.code == 403, f"Expected 403 on /api/admin/pairing-token, got {err.code}"
+
+    # 10d. Codex workspace CWD sandbox must reject /etc and ~/.ssh with 403
+    for bad_cwd in ("/etc", str(e2e_home / ".ssh")):
+        bad_cx = urllib.request.Request(
+            f"http://127.0.0.1:{e2e_port}/api/admin/codex/thread/start",
+            data=json.dumps({"cwd": bad_cwd}).encode("utf-8"),
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {e2e_token}"},
+            method="POST",
+        )
+        try:
+            urllib.request.urlopen(bad_cx, timeout=3.0)
+            raise SystemExit(f"Expected 403 for Codex CWD {bad_cwd}")
+        except urllib.error.HTTPError as err:
+            assert err.code == 403, f"Expected 403 for Codex CWD {bad_cwd}, got {err.code}"
+
+    # 10e. Account provider pinning must ignore user-writable ~/.config/ubuntu-nido/account-provider.json
+    (e2e_cfg / "ubuntu-nido/account-provider.json").write_text(
+        json.dumps({"authUrl": "https://evil-phish.example", "aiProxyUrl": "https://evil-phish.example"}) + "\n",
+        encoding="utf-8",
+    )
+    pin_js = subprocess.run(
+        [
+            "node",
+            "-e",
+            f"import({(sandbox / 'rootfs/usr/lib/nidoai/src/gateway/nido-account-adapter.js').as_uri()!r}).then(m=>console.log(JSON.stringify(m.resolveNidoAccountProviderConfig({{}}, {str(e2e_cfg / 'ubuntu-nido')!r}))))",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    pin_js_obj = json.loads(pin_js)
+    assert "evil-phish.example" not in pin_js_obj["authUrl"] and "supabase.co" in pin_js_obj["authUrl"], pin_js_obj
+    pin_py = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            f"import sys; sys.path.insert(0, {str(sandbox / 'rootfs/usr/lib/nido-hub')!r}); from pathlib import Path; import nido_account; c = nido_account.resolve_account_provider_config(Path({str(e2e_cfg / 'ubuntu-nido')!r}), env={{}}); print(c.auth_url + '|' + c.ai_proxy_url)",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert "evil-phish.example" not in pin_py and "supabase.co" in pin_py, pin_py
+
+    # 10f. NidoAgent CLI must block attaching ~/.nidoai/.env.local & ~/.ssh/* and ignore ~/.local/share/nidoagent/bin
+    fake_ssh = e2e_home / ".ssh"
+    fake_ssh.mkdir(parents=True, exist_ok=True)
+    fake_key = fake_ssh / "id_ed25519"
+    fake_key.write_text("PRIVATE-KEY-TEST\n", encoding="utf-8")
+    for sensitive_file in (e2e_nidoai / ".env.local", fake_key):
+        att_res = subprocess.run(
+            [nidoagent_bin, "ask", "--file", str(sensitive_file), "summarize"],
+            env=e2e_env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert att_res.returncode != 0 and "nhạy cảm" in att_res.stderr, (sensitive_file, att_res.returncode, att_res.stderr)
+
+    hijack_dir = e2e_home / ".local/share/nidoagent/bin"
+    hijack_dir.mkdir(parents=True, exist_ok=True)
+    hijack_bin = hijack_dir / "nidoagent"
+    hijack_bin.write_text("#!/bin/sh\necho HIJACKED\nexit 99\n", encoding="utf-8")
+    hijack_bin.chmod(0o755)
+    clean_agent_out = subprocess.run(
+        [nidoagent_bin, "--version"],
+        env={k: v for k, v in e2e_env.items() if k != "NIDOAGENT_STANDALONE"},
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert "HIJACKED" not in clean_agent_out and "nidoagent" in clean_agent_out, clean_agent_out
+
+    # 10g. Isolated gateway instance: ephemeral token rotation across restarts & brute-force 429 rate-limit
+    eph_home = sandbox / "eph-home"
+    (eph_home / ".nidoai").mkdir(parents=True, exist_ok=True)
+    (eph_home / ".config/ubuntu-nido").mkdir(parents=True, exist_ok=True)
+    eph_env = {
+        k: v for k, v in os.environ.items()
+        if k not in ("NIDOAI_CLIENT_TOKEN", "NIDOAI_EPHEMERAL_TOKEN", "NIDOAI_BASE_URL")
+    }
+    eph_env.update({
+        "HOME": str(eph_home),
+        "XDG_CONFIG_HOME": str(eph_home / ".config"),
+        "NIDOAI_HOME": str(eph_home / ".nidoai"),
+        "NIDOAI_SECRET_STORE": "file",
+        "NIDOAI_PORT": "18994",
+        "NIDOAI_ENTRY": str(sandbox / "rootfs/usr/lib/nidoai/src/cli.mjs"),
+    })
+    seen_tokens = []
+    for run_idx in (1, 2):
+        ep = subprocess.Popen(
+            [str(sandbox / "rootfs/usr/bin/nidoai"), "serve"],
+            env=eph_env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        try:
+            rt_p = eph_home / ".nidoai/runtime.json"
+            for _ in range(50):
+                if rt_p.is_file():
+                    break
+                time.sleep(0.1)
+            assert rt_p.is_file(), f"Ephemeral gateway run {run_idx} did not write runtime.json"
+            rt_obj = json.loads(rt_p.read_text("utf-8"))
+            seen_tokens.append(rt_obj["clientToken"])
+            if run_idx == 2:
+                # 20 failed auth attempts -> 21st returns 429 Retry-After
+                for attempt in range(21):
+                    r_bad = urllib.request.Request(
+                        "http://127.0.0.1:18994/v1/models",
+                        headers={"Authorization": "Bearer invalid_wrong_token_000000"},
+                    )
+                    try:
+                        urllib.request.urlopen(r_bad, timeout=2.0)
+                        raise SystemExit("Expected 401/429 on invalid token")
+                    except urllib.error.HTTPError as err:
+                        if attempt < 20:
+                            assert err.code == 401, f"Attempt {attempt} expected 401, got {err.code}"
+                        else:
+                            assert err.code == 429, f"Attempt 21 expected 429 rate-limit, got {err.code}"
+        finally:
+            ep.terminate()
+            ep.wait(timeout=5)
+    assert len(seen_tokens[0]) >= 24 and seen_tokens[0] != seen_tokens[1], (
+        f"Expected distinct ephemeral tokens across gateway restarts: {seen_tokens}"
+    )
+
+    # 10h. Signed package integrity manifest verification on unpacked .deb rootfs (PASS -> 1-byte tamper -> FAIL)
+    sec_verify = str(sandbox / "rootfs/usr/bin/nido-security-verify")
+    sv_ok = subprocess.run(
+        [sys.executable, sec_verify, "--verify", "--json", "--root", str(sandbox / "rootfs")],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    sv_obj = json.loads(sv_ok)
+    assert sv_obj["ok"] is True and sv_obj["integrity"]["filesChecked"] >= 20, sv_obj
+    victim = sandbox / "rootfs/usr/libexec/nidoai/gateway-daemon"
+    orig_bytes = victim.read_bytes()
+    victim.write_bytes(orig_bytes + b"\n# tampered\n")
+    sv_bad = subprocess.run(
+        [sys.executable, sec_verify, "--verify", "--json", "--root", str(sandbox / "rootfs")],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    victim.write_bytes(orig_bytes)
+    assert sv_bad.returncode != 0 and "hash mismatch" in sv_bad.stdout, sv_bad.stdout
+
+    print("Verified Gateway security guards (anti-rebinding, default-off UI, Codex CWD, rate-limit, ephemeral rotation), provider pinning, NidoAgent isolation, and signed integrity manifests.")
 finally:
     gw_proc.terminate()
     try:
@@ -1351,6 +1561,27 @@ assert "Package: firefox\nPin: release o=Ubuntu*\nPin-Priority: -1" in pin_txt
 assert (fake_root / "etc/apt/keyrings/nido-vendor-mozilla.gpg").is_file()
 helper_src = helper.read_text(encoding="utf-8")
 assert "--allow-downgrades" in helper_src, "nido-pkg-helper must pass --allow-downgrades for pinPriority >= 1000 vendors (e.g. Mozilla DEB replacing Ubuntu 1:1snap1)"
+pol_src = (helper.parents[2] / "share/polkit-1/actions/com.nidoholdings.nidohub.pkg.policy").read_text(encoding="utf-8")
+assert "<allow_active>auth_admin</allow_active>" in pol_src and "auth_admin_keep" not in pol_src, "Polkit policy must enforce auth_admin"
+
+# Verify root security guards prevent unprivileged --vendors-file / --key-file / --root overrides & core deb replacement
+import importlib.machinery as _im, importlib.util as _iu, types as _tp
+_hloader = _im.SourceFileLoader("nidopkghelper_test", str(helper))
+_hspec = _iu.spec_from_loader("nidopkghelper_test", _hloader)
+_hmod = _iu.module_from_spec(_hspec)
+_hloader.exec_module(_hmod)
+for bad_ns in (
+    _tp.SimpleNamespace(vendors_file=test_vendors, key_file=None, root=Path("/")),
+    _tp.SimpleNamespace(vendors_file=_hmod.DEFAULT_VENDORS_PATH, key_file=sample_key, root=Path("/")),
+    _tp.SimpleNamespace(vendors_file=_hmod.DEFAULT_VENDORS_PATH, key_file=None, root=fake_root),
+):
+    denied = False
+    try:
+        _hmod.enforce_root_security_guards(bad_ns, effective_uid=0)
+    except PermissionError:
+        denied = True
+    assert denied, f"Root security guard failed to block override: {bad_ns}"
+
 hook_120 = Path(sys.argv[3]).parents[1] / "config/hooks/live/0120-nido-native-first.hook.chroot"
 assert hook_120.is_file() and "--allow-downgrades" in hook_120.read_text(encoding="utf-8"), (
     "0120-nido-native-first.hook.chroot must pass --allow-downgrades for Firefox DEB"
@@ -1495,6 +1726,13 @@ tray_script = root / "packages/nido-desktop-settings/files/usr/libexec/ubuntu-ni
 subprocess.run([sys.executable, str(tray_script), "--self-test"], check=True)
 doctor_script = root / "packages/nido-desktop-settings/files/usr/bin/nido-doctor"
 subprocess.run([sys.executable, str(doctor_script), "--self-test"], check=True)
+sec_verify_script = root / "packages/nido-desktop-settings/files/usr/bin/nido-security-verify"
+subprocess.run([sys.executable, str(sec_verify_script), "--self-test"], check=True)
+fw_script = root / "packages/nido-desktop-settings/files/usr/libexec/ubuntu-nido/configure-firewall"
+subprocess.run(["bash", str(fw_script), "--self-test"], check=True)
+subprocess.run([sys.executable, str(root / "scripts/harden_dist.py"), "--self-test"], check=True)
+subprocess.run(["node", str(root / "scripts/harden_js.mjs"), "--self-test"], check=True)
+subprocess.run(["bash", str(root / "scripts/native-build/build_native_debs.sh"), "--dry-run"], check=True)
 vm_gsk_script = root / "packages/nido-desktop-settings/files/usr/lib/systemd/user-environment-generators/60-nido-vm-gsk"
 subprocess.run(["bash", str(vm_gsk_script), "--self-test"], check=True)
 

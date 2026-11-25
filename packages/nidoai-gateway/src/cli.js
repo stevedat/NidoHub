@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -90,10 +91,17 @@ async function main() {
         const { config, bootstrapped } = ensureClientTokenBootstrapped(stateDir, {
             useSecretStore: process.env.NIDOAI_SECRET_STORE !== 'file',
         });
+        const explicitEnvToken = (process.env.NIDOAI_CLIENT_TOKEN ?? '').trim();
+        const ephemeralClientToken = !explicitEnvToken && process.env.NIDOAI_EPHEMERAL_TOKEN !== '0';
+        if (ephemeralClientToken) {
+            config.clientToken = `nidoai_${crypto.randomBytes(24).toString('hex')}`;
+            config.clientTokenConfigured = true;
+        }
         const handle = await startGatewayServer(config, {
             writeRuntimeDiscovery: true,
             stateDir,
             configDir: config.configDir,
+            ephemeralClientToken,
         });
         const shutdown = () => {
             handle.close().finally(() => process.exit(0));

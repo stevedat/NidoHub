@@ -1,0 +1,11 @@
+#!/bin/sh
+set -e
+
+if [ "$1" = "remove" ] || [ "$1" = "purge" ]; then
+  if command -v apparmor_parser >/dev/null 2>&1 && [ -f /etc/apparmor.d/nido-pkg-helper ]; then
+    apparmor_parser -R /etc/apparmor.d/nido-pkg-helper >/dev/null 2>&1 || true
+  fi
+  rm -rf /usr/lib/nido-hub/__pycache__ || true
+fi
+
+exit 0

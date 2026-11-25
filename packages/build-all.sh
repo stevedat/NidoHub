@@ -6,15 +6,22 @@ ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 DIST_DIR="${SCRIPT_DIR}/dist"
 STAGE_DIR="${SCRIPT_DIR}/nidoai-gateway/stage"
 NIDOHUB_STAGE_DIR="${SCRIPT_DIR}/nido-hub/stage"
+NIDOAGENT_STAGE_DIR="${SCRIPT_DIR}/nidoagent-cli/stage"
+NIDOOFFICE_CLI_STAGE_DIR="${SCRIPT_DIR}/nidooffice-cli/stage"
 SETTINGS_STAGE_DIR="${SCRIPT_DIR}/nido-desktop-settings/stage"
 NIDOAI_SRC_DIR="${NIDOAI_SRC_DIR:-}"
 VIELOTUS_BIN_DIR="${VIELOTUS_BIN_DIR:-}"
 NIDOBOX_BIN_DIR="${NIDOBOX_BIN_DIR:-}"
 DEB_VERSION_SUFFIX="${DEB_VERSION_SUFFIX:-}"
+NIDO_HARDEN_DIST="${NIDO_HARDEN_DIST:-1}"
+APT_GPG_KEY="${APT_GPG_KEY:-AC980631CB8BA9D2602A0990528AF2083F61DC2F}"
 DEB_BUILDER="${ROOT_DIR}/scripts/build_deb_portable.py"
 
-rm -rf "$DIST_DIR" "$STAGE_DIR" "$NIDOHUB_STAGE_DIR" "$SETTINGS_STAGE_DIR"
+rm -rf "$DIST_DIR" "$STAGE_DIR" "$NIDOHUB_STAGE_DIR" "$NIDOAGENT_STAGE_DIR" "$NIDOOFFICE_CLI_STAGE_DIR" "$SETTINGS_STAGE_DIR"
 mkdir -p "$DIST_DIR" "${STAGE_DIR}/usr/lib/nidoai" "${NIDOHUB_STAGE_DIR}/usr/share/icons/hicolor" \
+  "${NIDOHUB_STAGE_DIR}/usr/lib/nido-hub" \
+  "${NIDOAGENT_STAGE_DIR}/usr/lib/nidoagent-cli" \
+  "${NIDOOFFICE_CLI_STAGE_DIR}/usr/lib/nidooffice-cli" \
   "${SETTINGS_STAGE_DIR}/usr/share/backgrounds/ubuntu-nido" \
   "${SETTINGS_STAGE_DIR}/usr/share/pixmaps" \
   "${SETTINGS_STAGE_DIR}/usr/share/icons/hicolor" \
@@ -97,10 +104,12 @@ chmod 755 \
   "${SCRIPT_DIR}/nidoai-gateway/DEBIAN/postinst" \
   "${SCRIPT_DIR}/nidoai-gateway/DEBIAN/prerm" \
   "${SCRIPT_DIR}/nidoai-gateway/files/usr/bin/nidoai" \
+  "${SCRIPT_DIR}/nidoai-gateway/files/usr/libexec/nidoai/gateway-daemon" \
   "${SCRIPT_DIR}/nidoagent-cli/files/usr/bin/nidoagent" \
   "${SCRIPT_DIR}/nidoagent-cli/files/usr/lib/nidoagent-cli/cli.mjs" \
   "${SCRIPT_DIR}/nido-desktop-settings/DEBIAN/postinst" \
   "${SCRIPT_DIR}/nido-desktop-settings/files/usr/libexec/ubuntu-nido/bind-installer-fonts" \
+  "${SCRIPT_DIR}/nido-desktop-settings/files/usr/libexec/ubuntu-nido/configure-firewall" \
   "${SCRIPT_DIR}/nido-desktop-settings/files/usr/libexec/ubuntu-nido/ensure-vietnamese-ime" \
   "${SCRIPT_DIR}/nido-desktop-settings/files/usr/libexec/ubuntu-nido/nidobox-tray" \
   "${SCRIPT_DIR}/nido-desktop-settings/files/usr/local/bin/nido-welcome" \
@@ -108,9 +117,11 @@ chmod 755 \
   "${SCRIPT_DIR}/nido-desktop-settings/files/etc/skel/.local/share/nautilus/scripts/Giao-cho-NidoAgent" \
   "${SCRIPT_DIR}/nido-desktop-settings/files/etc/skel/.local/share/nautilus/scripts/Gui-qua-NidoDrop-LAN" \
   "${SCRIPT_DIR}/nido-desktop-settings/files/usr/bin/nido-doctor" \
+  "${SCRIPT_DIR}/nido-desktop-settings/files/usr/bin/nido-security-verify" \
   "${SCRIPT_DIR}/nido-desktop-settings/files/usr/lib/systemd/user-environment-generators/60-nido-vm-gsk" \
   "${SCRIPT_DIR}/nido-desktop-settings/files/etc/skel/.local/share/nautilus/scripts/Giai-nen-Chuan-Tieng-Viet" \
   "${SCRIPT_DIR}/nido-hub/DEBIAN/postinst" \
+  "${SCRIPT_DIR}/nido-hub/DEBIAN/prerm" \
   "${SCRIPT_DIR}/nido-hub/files/usr/bin/nido-hub" \
   "${SCRIPT_DIR}/nido-hub/files/usr/lib/nido-hub/app.py" \
   "${SCRIPT_DIR}/nido-hub/files/usr/libexec/nido-hub/nido-pkg-helper" \
@@ -126,6 +137,32 @@ chmod 755 \
   "${SCRIPT_DIR}/nido-desktop/files/usr/libexec/ubuntu-nido/showtime-launch" \
   "${SCRIPT_DIR}/nido-desktop/files/usr/libexec/ubuntu-nido/native-first-cleanup"
 
+# Stage 1 Distribution Hardening (obfuscate/minify staged copies only; raw Git sources stay untouched)
+cp -R "${SCRIPT_DIR}/nido-hub/files/usr/lib/nido-hub/." "${NIDOHUB_STAGE_DIR}/usr/lib/nido-hub/"
+cp "${SCRIPT_DIR}/nidoagent-cli/files/usr/lib/nidoagent-cli/cli.mjs" "${NIDOAGENT_STAGE_DIR}/usr/lib/nidoagent-cli/cli.mjs"
+cp "${SCRIPT_DIR}/nidooffice-cli/files/usr/lib/nidooffice-cli/engine.py" "${NIDOOFFICE_CLI_STAGE_DIR}/usr/lib/nidooffice-cli/engine.py"
+chmod 755 "${NIDOAGENT_STAGE_DIR}/usr/lib/nidoagent-cli/cli.mjs" "${NIDOOFFICE_CLI_STAGE_DIR}/usr/lib/nidooffice-cli/engine.py"
+
+if [[ "$NIDO_HARDEN_DIST" == "1" ]]; then
+  echo "==> Applying Stage 1 distribution hardening (AST/zlib Python + lexical JS compaction)..."
+  PY_TARGETS=()
+  while IFS= read -r pyf; do
+    PY_TARGETS+=("$pyf")
+  done < <(find "${NIDOHUB_STAGE_DIR}/usr/lib/nido-hub" "${NIDOOFFICE_CLI_STAGE_DIR}/usr/lib/nidooffice-cli" -name '*.py' | sort)
+  python3 "${ROOT_DIR}/scripts/harden_dist.py" "${PY_TARGETS[@]}"
+
+  JS_TARGETS=()
+  while IFS= read -r jsf; do
+    JS_TARGETS+=("$jsf")
+  done < <(find "${STAGE_DIR}/usr/lib/nidoai/src" "${NIDOAGENT_STAGE_DIR}/usr/lib/nidoagent-cli" \( -name '*.js' -o -name '*.mjs' \) | sort)
+  node "${ROOT_DIR}/scripts/harden_js.mjs" "${JS_TARGETS[@]}"
+fi
+
+MANIFEST_ARGS=(--integrity-manifest)
+if [[ -n "$APT_GPG_KEY" ]]; then
+  MANIFEST_ARGS+=(--gpg-key "$APT_GPG_KEY")
+fi
+
 VER_ARGS=()
 if [[ -n "$DEB_VERSION_SUFFIX" ]]; then
   VER_ARGS=(--version-suffix "$DEB_VERSION_SUFFIX")
@@ -135,38 +172,47 @@ fi
 python3 "$DEB_BUILDER" \
   --source-dir "${SCRIPT_DIR}/nidoai-gateway" \
   --extra-files "$STAGE_DIR" \
+  "${MANIFEST_ARGS[@]}" \
   ${VER_ARGS[@]+"${VER_ARGS[@]}"} \
   --output "${DIST_DIR}/nidoai-gateway_0.2.0${DEB_VERSION_SUFFIX}_all.deb"
 
 python3 "$DEB_BUILDER" \
   --source-dir "${SCRIPT_DIR}/nidoagent-cli" \
+  --extra-files "$NIDOAGENT_STAGE_DIR" \
+  "${MANIFEST_ARGS[@]}" \
   ${VER_ARGS[@]+"${VER_ARGS[@]}"} \
   --output "${DIST_DIR}/nidoagent-cli_0.2.0${DEB_VERSION_SUFFIX}_all.deb"
 
 python3 "$DEB_BUILDER" \
   --source-dir "${SCRIPT_DIR}/nido-desktop-settings" \
   --extra-files "$SETTINGS_STAGE_DIR" \
+  "${MANIFEST_ARGS[@]}" \
   ${VER_ARGS[@]+"${VER_ARGS[@]}"} \
   --output "${DIST_DIR}/nido-desktop-settings_0.2.0${DEB_VERSION_SUFFIX}_all.deb"
 
 python3 "$DEB_BUILDER" \
   --source-dir "${SCRIPT_DIR}/nido-hub" \
   --extra-files "$NIDOHUB_STAGE_DIR" \
+  "${MANIFEST_ARGS[@]}" \
   ${VER_ARGS[@]+"${VER_ARGS[@]}"} \
   --output "${DIST_DIR}/nido-hub_0.2.0${DEB_VERSION_SUFFIX}_all.deb"
 
 python3 "$DEB_BUILDER" \
   --source-dir "${SCRIPT_DIR}/nidooffice-cli" \
+  --extra-files "$NIDOOFFICE_CLI_STAGE_DIR" \
+  "${MANIFEST_ARGS[@]}" \
   ${VER_ARGS[@]+"${VER_ARGS[@]}"} \
   --output "${DIST_DIR}/nidooffice-cli_0.2.0${DEB_VERSION_SUFFIX}_all.deb"
 
 python3 "$DEB_BUILDER" \
   --source-dir "${SCRIPT_DIR}/nidooffice-desktop" \
+  "${MANIFEST_ARGS[@]}" \
   ${VER_ARGS[@]+"${VER_ARGS[@]}"} \
   --output "${DIST_DIR}/nidooffice-desktop_0.13.1${DEB_VERSION_SUFFIX}_all.deb"
 
 python3 "$DEB_BUILDER" \
   --source-dir "${SCRIPT_DIR}/nido-desktop" \
+  "${MANIFEST_ARGS[@]}" \
   ${VER_ARGS[@]+"${VER_ARGS[@]}"} \
   --output "${DIST_DIR}/nido-desktop_0.2.0${DEB_VERSION_SUFFIX}_all.deb"
 

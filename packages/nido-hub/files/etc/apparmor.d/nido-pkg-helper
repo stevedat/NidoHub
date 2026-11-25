@@ -1,0 +1,55 @@
+abi <abi/4.0>,
+include <tunables/global>
+
+profile nido-pkg-helper /usr/libexec/nido-hub/nido-pkg-helper {
+  include <abstractions/base>
+  include <abstractions/nameservice>
+  include <abstractions/python>
+  include <abstractions/ssl_certs>
+
+  capability chown,
+  capability dac_override,
+  capability fowner,
+  capability fsetid,
+  capability setgid,
+  capability setuid,
+
+  network inet stream,
+  network inet6 stream,
+  network unix stream,
+
+  /usr/libexec/nido-hub/nido-pkg-helper r,
+  /usr/bin/python3* ix,
+  /usr/share/nido-hub/vendors.json r,
+  /etc/os-release r,
+  /usr/lib/os-release r,
+
+  # Package management & printer utilities invoked via explicit argv
+  /usr/bin/apt-get PUx,
+  /usr/bin/dpkg PUx,
+  /usr/bin/dpkg-deb PUx,
+  /usr/bin/gpg PUx,
+  /usr/bin/flatpak PUx,
+  /usr/bin/systemctl PUx,
+  /usr/sbin/lpadmin PUx,
+  /usr/bin/debconf-set-selections PUx,
+
+  # APT repo configuration written by helper
+  /etc/apt/** rw,
+  /etc/default/google-chrome rw,
+  /var/lib/dpkg/** r,
+  /var/lib/apt/** rw,
+  /var/cache/apt/** rw,
+  /tmp/** rwlk,
+
+  # Explicitly deny access to user credentials and private keys
+  deny /home/*/.ssh/** rwkx,
+  deny /home/*/.gnupg/** rwkx,
+  deny /home/*/.nidoai/** rwkx,
+  deny /root/.ssh/** rwkx,
+  deny /root/.gnupg/** rwkx,
+  deny /etc/shadow rwx,
+  deny /etc/gshadow rwx,
+
+  include if exists <local/nido-pkg-helper>
+}

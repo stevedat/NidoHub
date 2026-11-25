@@ -1,13 +1,30 @@
 #!/bin/sh
 set -eu
 
-for full_bin in \
-  "/opt/NidoAgent/resources/bin/nidoagent" \
-  "${HOME:-/root}/.local/share/nidoagent/bin/nidoagent"; do
-  if [ -x "$full_bin" ] && [ "${NIDOAGENT_STANDALONE:-0}" != "1" ]; then
-    exec "$full_bin" "$@"
-  fi
-done
+SELF_REAL="$(readlink -f "$0" 2>/dev/null || printf '%s' "$0")"
+case "$SELF_REAL" in
+  /usr/bin/*) SYSTEM_INSTALLED=1 ;;
+  *) SYSTEM_INSTALLED=0 ;;
+esac
 
-CLI_ENTRY="${NIDOAGENT_CLI_ENTRY:-/usr/lib/nidoagent-cli/cli.mjs}"
+FULL_BIN="/opt/NidoAgent/resources/bin/nidoagent"
+if [ -x "$FULL_BIN" ] && [ "${NIDOAGENT_STANDALONE:-0}" != "1" ]; then
+  if [ "$SYSTEM_INSTALLED" -eq 1 ]; then
+    OWNER_UID="$(stat -c '%u' "$FULL_BIN" 2>/dev/null || echo 1)"
+    BAD_PERM="$(find "$FULL_BIN" -maxdepth 0 \( -perm -020 -o -perm -002 \) 2>/dev/null || true)"
+    if [ "$OWNER_UID" = "0" ] && [ -z "$BAD_PERM" ]; then
+      exec "$FULL_BIN" "$@"
+    fi
+  else
+    exec "$FULL_BIN" "$@"
+  fi
+fi
+
+if [ "$SYSTEM_INSTALLED" -eq 1 ]; then
+  unset NIDO_SKILLS_DIR
+  CLI_ENTRY="/usr/lib/nidoagent-cli/cli.mjs"
+else
+  CLI_ENTRY="${NIDOAGENT_CLI_ENTRY:-/usr/lib/nidoagent-cli/cli.mjs}"
+fi
+
 exec node "$CLI_ENTRY" "$@"

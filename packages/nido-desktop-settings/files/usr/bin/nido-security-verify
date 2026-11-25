@@ -1,0 +1,449 @@
+#!/usr/bin/env python3
+"""Verify NidoOS signed package integrity manifests and runtime OS security hardening."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import pwd
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+from typing import Any
+
+TRUSTED_GPG_FPR = "AC980631CB8BA9D2602A0990528AF2083F61DC2F"
+
+
+def _resolve_desktop_user_home() -> Path:
+    if os.geteuid() == 0:
+        sudo_user = (os.environ.get("SUDO_USER") or "").strip()
+        if sudo_user and sudo_user != "root":
+            try:
+                return Path(pwd.getpwnam(sudo_user).pw_dir)
+            except KeyError:
+                pass
+    return Path.home()
+
+
+def _verify_detached_gpg_sig(
+    manifest_path: Path,
+    sig_path: Path,
+    keyring_path: Path,
+    trusted_fpr: str = TRUSTED_GPG_FPR,
+) -> tuple[bool, str]:
+    gpg = shutil.which("gpg")
+    if not gpg:
+        return False, "gpg command unavailable"
+    if not keyring_path.is_file():
+        return False, f"missing keyring: {keyring_path}"
+    if not sig_path.is_file():
+        return False, f"missing signature: {sig_path}"
+
+    gpg_tmp_base = "/tmp" if Path("/tmp").is_dir() else None
+    with tempfile.TemporaryDirectory(prefix="nsgpg-", dir=gpg_tmp_base) as gpghome:
+        os.chmod(gpghome, 0o700)
+        imp = subprocess.run(
+            [gpg, "--batch", "--no-tty", "--homedir", gpghome, "--import", str(keyring_path)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if imp.returncode != 0:
+            return False, f"keyring import failed: {imp.stderr.strip()}"
+        ver = subprocess.run(
+            [
+                gpg,
+                "--batch",
+                "--no-tty",
+                "--homedir",
+                gpghome,
+                "--status-fd=1",
+                "--verify",
+                str(sig_path),
+                str(manifest_path),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if ver.returncode != 0:
+            return False, f"bad GPG signature on {manifest_path.name}"
+        expected = trusted_fpr.upper()
+        for line in ver.stdout.splitlines():
+            if line.startswith("[GNUPG:] VALIDSIG "):
+                tokens = line.upper().split()
+                if expected in tokens:
+                    return True, f"gpg VALIDSIG {expected[:12]}"
+        return False, f"signature does not match trusted NidoOS key {trusted_fpr[:12]}"
+
+
+def verify_manifests(
+    root: Path = Path("/"),
+    keyring: Path | None = None,
+    require_signature: bool = False,
+    trusted_fpr: str = TRUSTED_GPG_FPR,
+) -> dict[str, Any]:
+    root_resolved = root.resolve()
+    is_live_system_root = root_resolved == Path("/")
+    manifests_dir = root_resolved / "usr/share/nido-security/manifests"
+    keyring_path = keyring if keyring is not None else (root_resolved / "etc/apt/keyrings/ubuntu-nido.asc")
+
+    if not manifests_dir.is_dir():
+        return {
+            "ok": False,
+            "manifestsChecked": 0,
+            "filesChecked": 0,
+            "signedManifests": 0,
+            "errors": [f"Manifest directory not found: {manifests_dir}"],
+        }
+
+    manifest_files = sorted(manifests_dir.glob("*.sha256"))
+    if not manifest_files:
+        return {
+            "ok": False,
+            "manifestsChecked": 0,
+            "filesChecked": 0,
+            "signedManifests": 0,
+            "errors": [f"No integrity manifests found in {manifests_dir}"],
+        }
+
+    errors: list[str] = []
+    files_checked = 0
+    signed_manifests = 0
+
+    for mf in manifest_files:
+        sig_path = Path(f"{mf}.asc")
+        if sig_path.is_file() or require_signature:
+            sig_ok, sig_detail = _verify_detached_gpg_sig(mf, sig_path, keyring_path, trusted_fpr=trusted_fpr)
+            if not sig_ok:
+                errors.append(f"{mf.name}: {sig_detail}")
+            else:
+                signed_manifests += 1
+
+        try:
+            lines = mf.read_text(encoding="utf-8").splitlines()
+        except OSError as exc:
+            errors.append(f"{mf.name}: unreadable ({exc})")
+            continue
+
+        for raw in lines:
+            line = raw.strip()
+            if not line:
+                continue
+            parts = line.split("  ", 1)
+            if len(parts) != 2 or len(parts[0]) != 64:
+                errors.append(f"{mf.name}: malformed manifest line {raw!r}")
+                continue
+            expected_hex, target_rel = parts[0].lower(), parts[1]
+            if not target_rel.startswith("/") or ".." in Path(target_rel).parts:
+                errors.append(f"{mf.name}: unsafe manifest path {target_rel!r}")
+                continue
+
+            target_path = root_resolved / target_rel.lstrip("/")
+            try:
+                resolved_target = target_path.resolve(strict=True)
+            except OSError:
+                errors.append(f"{mf.name}: missing target file {target_rel}")
+                continue
+
+            if resolved_target != root_resolved and not str(resolved_target).startswith(
+                ("" if is_live_system_root else str(root_resolved)) + "/"
+            ):
+                errors.append(f"{mf.name}: symlink escapes root for {target_rel}")
+                continue
+
+            if not resolved_target.is_file():
+                errors.append(f"{mf.name}: not a regular file {target_rel}")
+                continue
+
+            st = resolved_target.stat()
+            if (st.st_mode & 0o022) != 0:
+                errors.append(f"{mf.name}: insecure writable mode {oct(st.st_mode & 0o777)} on {target_rel}")
+            if is_live_system_root and st.st_uid != 0:
+                errors.append(f"{mf.name}: non-root uid={st.st_uid} on {target_rel}")
+
+            actual_hex = hashlib.sha256(resolved_target.read_bytes()).hexdigest().lower()
+            files_checked += 1
+            if actual_hex != expected_hex:
+                errors.append(f"{mf.name}: hash mismatch for {target_rel}")
+
+    return {
+        "ok": len(errors) == 0,
+        "manifestsChecked": len(manifest_files),
+        "filesChecked": files_checked,
+        "signedManifests": signed_manifests,
+        "errors": errors,
+    }
+
+
+def _read_proc_sysctl(root: Path, rel_path: str) -> str | None:
+    p = root / "proc/sys" / rel_path
+    if not p.is_file():
+        return None
+    try:
+        return p.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return None
+
+
+def _parse_env_file(path: Path) -> dict[str, str]:
+    out: dict[str, str] = {}
+    if not path.is_file():
+        return out
+    try:
+        for raw in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            out[k.strip()] = v.strip().strip("'\"")
+    except OSError:
+        pass
+    return out
+
+
+def audit_runtime_hardening(
+    root: Path = Path("/"),
+    home_dir: Path | None = None,
+    nidoai_dir: Path | None = None,
+) -> dict[str, Any]:
+    warnings: list[str] = []
+    failures: list[str] = []
+    details: list[str] = []
+
+    is_linux = sys.platform.startswith("linux") and (root / "proc/sys").is_dir()
+    if is_linux:
+        ptrace = _read_proc_sysctl(root, "kernel/yama/ptrace_scope")
+        if ptrace is not None:
+            if ptrace.isdigit() and int(ptrace) >= 2:
+                details.append(f"ptrace_scope={ptrace}")
+            else:
+                warnings.append(f"ptrace_scope={ptrace} (expected >=2)")
+        dumpable = _read_proc_sysctl(root, "fs/suid_dumpable")
+        if dumpable is not None:
+            if dumpable == "0":
+                details.append("suid_dumpable=0")
+            else:
+                warnings.append(f"suid_dumpable={dumpable} (expected 0)")
+
+        aa_enabled = root / "sys/module/apparmor/parameters/enabled"
+        aa_profiles = root / "sys/kernel/security/apparmor/profiles"
+        if aa_enabled.is_file() and aa_profiles.is_file():
+            try:
+                prof_txt = aa_profiles.read_text(encoding="utf-8", errors="replace")
+                loaded = [
+                    p for p in ("nido-pkg-helper", "nidoai-gateway", "nidooffice") if p in prof_txt
+                ]
+                details.append(f"apparmor={len(loaded)}/3")
+                missing_aa = [p for p in ("nido-pkg-helper", "nidoai-gateway") if p not in prof_txt]
+                if missing_aa:
+                    warnings.append(f"unloaded AppArmor profiles: {','.join(missing_aa)}")
+            except OSError:
+                details.append("apparmor=readable-restricted")
+
+        if shutil.which("ufw"):
+            proc = subprocess.run(["ufw", "status"], capture_output=True, text=True, check=False)
+            if proc.returncode == 0:
+                if "Status: active" in proc.stdout:
+                    details.append("ufw=active")
+                else:
+                    warnings.append("ufw=inactive")
+
+    home = home_dir or _resolve_desktop_user_home()
+    ai_dir = nidoai_dir or (
+        Path(os.environ["NIDOAI_HOME"])
+        if (home_dir is None and os.environ.get("NIDOAI_HOME") and os.geteuid() != 0)
+        else home / ".nidoai"
+    )
+    if ai_dir.is_dir():
+        st_dir = ai_dir.stat().st_mode & 0o777
+        if (st_dir & 0o077) != 0:
+            failures.append(f"~/.nidoai permissions {oct(st_dir)} too open (must be 0700)")
+        else:
+            details.append("nidoai_dir=0700")
+        env_file = ai_dir / ".env.local"
+        if env_file.is_file():
+            st_env = env_file.stat().st_mode & 0o777
+            if (st_env & 0o077) != 0:
+                failures.append(f".env.local permissions {oct(st_env)} too open (must be 0600)")
+            else:
+                details.append("env_local=0600")
+            env_vars = _parse_env_file(env_file)
+            uid = os.getuid()
+            has_dbus = bool(os.environ.get("DBUS_SESSION_BUS_ADDRESS")) or Path(f"/run/user/{uid}/bus").exists()
+            if has_dbus and shutil.which("secret-tool"):
+                leaked_keys = [
+                    k
+                    for k in (
+                        "GEMINI_API_KEY",
+                        "OPENAI_API_KEY",
+                        "ANTHROPIC_API_KEY",
+                        "NIDO_ACCOUNT_ACCESS_TOKEN",
+                        "NIDO_ACCOUNT_REFRESH_TOKEN",
+                    )
+                    if env_vars.get(k)
+                ]
+                if leaked_keys:
+                    warnings.append(f"plaintext keys in .env.local while keyring available: {','.join(leaked_keys)}")
+
+    status = "FAIL" if failures else ("WARN" if warnings else "PASS")
+    return {
+        "ok": len(failures) == 0,
+        "status": status,
+        "details": details,
+        "warnings": warnings,
+        "failures": failures,
+    }
+
+
+def run_self_test() -> int:
+    tmp_base = "/tmp" if Path("/tmp").is_dir() else None
+    with tempfile.TemporaryDirectory(prefix="nsvt-", dir=tmp_base) as td:
+        root = Path(td)
+        target = root / "usr/bin/nido-demo"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("#!/bin/sh\necho ok\n", encoding="utf-8")
+        target.chmod(0o755)
+
+        mf_dir = root / "usr/share/nido-security/manifests"
+        mf_dir.mkdir(parents=True, exist_ok=True)
+        mf = mf_dir / "nido-demo.sha256"
+        digest = hashlib.sha256(target.read_bytes()).hexdigest()
+        mf.write_text(f"{digest}  /usr/bin/nido-demo\n", encoding="utf-8")
+        mf.chmod(0o644)
+
+        res_ok = verify_manifests(root=root, require_signature=False)
+        assert res_ok["ok"] is True and res_ok["filesChecked"] == 1, res_ok
+
+        # Mutate 1 byte -> must FAIL
+        target.write_text("#!/bin/sh\necho XX\n", encoding="utf-8")
+        res_bad_hash = verify_manifests(root=root, require_signature=False)
+        assert res_bad_hash["ok"] is False and any("hash mismatch" in e for e in res_bad_hash["errors"]), res_bad_hash
+
+        # Restore hash, make world-writable -> must FAIL
+        target.write_text("#!/bin/sh\necho ok\n", encoding="utf-8")
+        target.chmod(0o777)
+        res_bad_mode = verify_manifests(root=root, require_signature=False)
+        assert res_bad_mode["ok"] is False and any("writable mode" in e for e in res_bad_mode["errors"]), res_bad_mode
+        target.chmod(0o755)
+
+        # GPG detached signature verification test (when gpg available)
+        gpg = shutil.which("gpg")
+        if gpg:
+            gnupg = root / "gnupg"
+            gnupg.mkdir(mode=0o700)
+            genv = {**os.environ, "GNUPGHOME": str(gnupg)}
+            subprocess.run(
+                [
+                    gpg,
+                    "--batch",
+                    "--passphrase",
+                    "",
+                    "--quick-generate-key",
+                    "NidoOS Sec Test <test@nido-holdings.com>",
+                    "ed25519",
+                    "sign",
+                    "never",
+                ],
+                env=genv,
+                check=True,
+                capture_output=True,
+            )
+            fpr_out = subprocess.run(
+                [gpg, "--batch", "--list-keys", "--with-colons", "test@nido-holdings.com"],
+                env=genv,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout
+            test_fpr = next(
+                ln.split(":")[9].upper() for ln in fpr_out.splitlines() if ln.startswith("fpr:")
+            )
+            pub_asc = subprocess.run(
+                [gpg, "--batch", "--armor", "--export", "test@nido-holdings.com"],
+                env=genv,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout
+            keyring = root / "etc/apt/keyrings/ubuntu-nido.asc"
+            keyring.parent.mkdir(parents=True, exist_ok=True)
+            keyring.write_text(pub_asc, encoding="utf-8")
+            sig_path = mf_dir / "nido-demo.sha256.asc"
+            subprocess.run(
+                [gpg, "--batch", "--yes", "--armor", "-u", test_fpr, "--detach-sign", "-o", str(sig_path), str(mf)],
+                env=genv,
+                check=True,
+                capture_output=True,
+            )
+            res_gpg_ok = verify_manifests(root=root, keyring=keyring, require_signature=True, trusted_fpr=test_fpr)
+            assert res_gpg_ok["ok"] is True and res_gpg_ok["signedManifests"] == 1, res_gpg_ok
+
+            # Tamper manifest after signing -> GPG verification must FAIL
+            mf.write_text(f"{'0' * 64}  /usr/bin/nido-demo\n", encoding="utf-8")
+            res_gpg_bad = verify_manifests(root=root, keyring=keyring, require_signature=True, trusted_fpr=test_fpr)
+            assert res_gpg_bad["ok"] is False, res_gpg_bad
+
+        # Audit runtime directory mode check
+        bad_ai = root / "home/.nidoai"
+        bad_ai.mkdir(parents=True, exist_ok=True)
+        bad_ai.chmod(0o755)
+        aud_bad = audit_runtime_hardening(root=root, home_dir=root / "home", nidoai_dir=bad_ai)
+        assert aud_bad["ok"] is False and aud_bad["status"] == "FAIL", aud_bad
+        bad_ai.chmod(0o700)
+        aud_ok = audit_runtime_hardening(root=root, home_dir=root / "home", nidoai_dir=bad_ai)
+        assert aud_ok["ok"] is True, aud_ok
+
+    print("nido-security-verify self-test passed.")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Verify NidoOS integrity manifests and runtime hardening.")
+    parser.add_argument("--verify", action="store_true", help="Verify manifests and runtime hardening (default).")
+    parser.add_argument("--json", action="store_true", help="Output JSON report.")
+    parser.add_argument("--root", type=Path, default=Path("/"), help="Target root filesystem path.")
+    parser.add_argument("--keyring", type=Path, default=None, help="Path to trusted NidoOS ASCII public key.")
+    parser.add_argument("--require-signature", action="store_true", help="Fail if any manifest lacks a valid GPG signature.")
+    parser.add_argument("--self-test", action="store_true", help="Run built-in unit self-test.")
+    args = parser.parse_args(argv)
+
+    if args.self_test:
+        return run_self_test()
+
+    manifest_res = verify_manifests(
+        root=args.root,
+        keyring=args.keyring,
+        require_signature=args.require_signature,
+    )
+    runtime_res = audit_runtime_hardening(root=args.root)
+    overall_ok = bool(manifest_res["ok"] and runtime_res["ok"])
+    payload = {
+        "ok": overall_ok,
+        "integrity": manifest_res,
+        "hardening": runtime_res,
+    }
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(
+            f"Integrity: {'PASS' if manifest_res['ok'] else 'FAIL'} "
+            f"(manifests={manifest_res['manifestsChecked']}, files={manifest_res['filesChecked']}, "
+            f"signed={manifest_res['signedManifests']})"
+        )
+        for err in manifest_res["errors"]:
+            print(f"  [ERR] {err}")
+        print(f"Hardening: {runtime_res['status']} ({', '.join(runtime_res['details']) or 'ok'})")
+        for w in runtime_res["warnings"]:
+            print(f"  [WARN] {w}")
+        for f_msg in runtime_res["failures"]:
+            print(f"  [FAIL] {f_msg}")
+    return 0 if overall_ok else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

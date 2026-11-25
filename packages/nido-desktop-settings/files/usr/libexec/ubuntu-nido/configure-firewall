@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+DRY_RUN=0
+FORCE=0
+SELF_TEST=0
+
+for arg in "$@"; do
+  case "$arg" in
+    --dry-run) DRY_RUN=1 ;;
+    --force) FORCE=1 ;;
+    --self-test) SELF_TEST=1 ;;
+    --help|-h)
+      echo "Usage: configure-firewall [--dry-run] [--force] [--self-test]"
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $arg" >&2
+      exit 2
+      ;;
+  esac
+done
+
+run_self_test() {
+  local out
+  out="$("$0" --dry-run)"
+  grep -Fq "ufw default deny incoming" <<< "$out"
+  grep -Fq "ufw default allow outgoing" <<< "$out"
+  grep -Fq "224.0.0.251 port 5353" <<< "$out"
+  grep -Fq "192.168.0.0/16 to any port 54321 proto tcp" <<< "$out"
+  grep -Fq "ufw --force enable" <<< "$out"
+  if grep -Eq "allow in from (0\.0\.0\.0/0|any) to any port 54321" <<< "$out"; then
+    echo "ERROR: NidoDrop rule must be restricted to RFC1918/link-local LAN subnets" >&2
+    exit 1
+  fi
+  echo "configure-firewall self-test passed."
+  exit 0
+}
+
+if [ "$SELF_TEST" -eq 1 ]; then
+  run_self_test
+fi
+
+run_ufw() {
+  if [ "$DRY_RUN" -eq 1 ]; then
+    printf 'ufw'
+    printf ' %q' "$@"
+    printf '\n'
+    return 0
+  fi
+  ufw "$@" >/dev/null
+}
+
+if [ "$DRY_RUN" -eq 0 ]; then
+  if [ -f /run/casper-md5check.json ] || [ -f /cdrom/.disk/info ] || grep -qw 'boot=casper' /proc/cmdline 2>/dev/null; then
+    exit 0
+  fi
+  if command -v systemd-detect-virt >/dev/null 2>&1 && systemd-detect-virt -r >/dev/null 2>&1; then
+    exit 0
+  fi
+  if [ "$(id -u)" -ne 0 ]; then
+    echo "configure-firewall requires root privileges." >&2
+    exit 1
+  fi
+  if ! command -v ufw >/dev/null 2>&1; then
+    echo "[NidoOS] ufw not installed; skipping firewall setup." >&2
+    exit 0
+  fi
+  if [ "$FORCE" -eq 0 ] && ufw status 2>/dev/null | grep -q '^Status: active'; then
+    exit 0
+  fi
+fi
+
+run_ufw default deny incoming
+run_ufw default allow outgoing
+run_ufw allow in proto udp to 224.0.0.251 port 5353 comment 'NidoOS mDNS'
+run_ufw allow in proto udp to ff02::fb port 5353 comment 'NidoOS mDNS IPv6'
+run_ufw allow in from 10.0.0.0/8 to any port 54321 proto tcp comment 'NidoDrop LAN'
+run_ufw allow in from 172.16.0.0/12 to any port 54321 proto tcp comment 'NidoDrop LAN'
+run_ufw allow in from 192.168.0.0/16 to any port 54321 proto tcp comment 'NidoDrop LAN'
+run_ufw allow in from fe80::/10 to any port 54321 proto tcp comment 'NidoDrop LAN IPv6'
+run_ufw --force enable

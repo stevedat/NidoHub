@@ -40,6 +40,7 @@ export function writeRuntimeDiscovery(info, homeDir) {
         clientToken: info.clientToken,
         pid: process.pid,
         updatedAt: new Date().toISOString(),
+        ...(typeof info.socketPath === 'string' && info.socketPath ? { socketPath: info.socketPath } : {}),
         ...(info.capabilities ? { capabilities: info.capabilities } : {}),
     };
     const tmpPath = path.join(dir, `.runtime.${process.pid}.${Date.now()}.tmp`);
@@ -69,6 +70,9 @@ export function readRuntimeDiscovery(homeDir) {
                 clientToken: parsed.clientToken,
                 pid: typeof parsed.pid === 'number' ? parsed.pid : 0,
                 updatedAt: typeof parsed.updatedAt === 'string' ? parsed.updatedAt : '',
+                ...(typeof parsed.socketPath === 'string' && parsed.socketPath
+                    ? { socketPath: parsed.socketPath }
+                    : {}),
                 ...(parsed.capabilities && typeof parsed.capabilities === 'object'
                     ? { capabilities: parsed.capabilities }
                     : {}),

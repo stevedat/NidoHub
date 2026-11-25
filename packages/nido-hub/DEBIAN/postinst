@@ -50,6 +50,14 @@ for path in (
 PY
 fi
 
+if [ -d /sys/kernel/security/apparmor ] && [ -f /etc/apparmor.d/nido-pkg-helper ] && command -v apparmor_parser >/dev/null 2>&1; then
+  apparmor_parser -r /etc/apparmor.d/nido-pkg-helper >/dev/null 2>&1 || true
+fi
+
+if [ "${1:-}" = "configure" ] && command -v python3 >/dev/null 2>&1 && [ -d /usr/lib/nido-hub ]; then
+  python3 -OO -m compileall -q /usr/lib/nido-hub >/dev/null 2>&1 || true
+fi
+
 if command -v gtk-update-icon-cache >/dev/null 2>&1; then
   gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor || true
 fi

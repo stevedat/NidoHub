@@ -207,8 +207,40 @@ class NidoSecretStore:
         runner: CommandRunner | None = None,
     ) -> None:
         self.platform = platform or sys.platform
+        self._is_custom_env = env is not None
         self.env = env if env is not None else dict(os.environ)
         self.runner = runner or default_command_runner
+
+    def _resolve_linux_secret_env(self) -> dict[str, str]:
+        env = dict(self.env)
+        if env.get("DBUS_SESSION_BUS_ADDRESS", "").strip():
+            return env
+        if self._is_custom_env:
+            return env
+        try:
+            uid = os.getuid()
+            bus_path = Path(f"/run/user/{uid}/bus")
+            if bus_path.exists():
+                env.setdefault("XDG_RUNTIME_DIR", f"/run/user/{uid}")
+                env.setdefault("DBUS_SESSION_BUS_ADDRESS", f"unix:path={bus_path}")
+        except Exception:
+            pass
+        return env
+
+    def _run_secret_cmd(
+        self,
+        argv: list[str],
+        stdin_text: str | None = None,
+        timeout: float = 3.0,
+    ) -> CommandResult:
+        if self.runner is default_command_runner:
+            return default_command_runner(
+                argv,
+                stdin_text=stdin_text,
+                timeout=timeout,
+                env=self._resolve_linux_secret_env(),
+            )
+        return self.runner(argv, stdin_text, timeout)
 
     def _has_cmd(self, name: str) -> bool:
         if self.runner is default_command_runner:
@@ -222,7 +254,8 @@ class NidoSecretStore:
             return "file-0600-fallback"
 
         if self.platform.startswith("linux"):
-            has_dbus = bool(self.env.get("DBUS_SESSION_BUS_ADDRESS", "").strip())
+            effective_env = self._resolve_linux_secret_env()
+            has_dbus = bool(effective_env.get("DBUS_SESSION_BUS_ADDRESS", "").strip())
             if (has_dbus or override == "keyring") and self._has_cmd("secret-tool"):
                 return "linux-libsecret"
             return "file-0600-fallback"
@@ -253,7 +286,7 @@ class NidoSecretStore:
             return None
         mode = self.detect_mode()
         if mode == "linux-libsecret":
-            res = self.runner(
+            res = self._run_secret_cmd(
                 ["secret-tool", "lookup", "service", KEYRING_SERVICE, "account", key],
                 None,
                 3.0,
@@ -283,7 +316,7 @@ class NidoSecretStore:
         mode = self.detect_mode()
         if mode == "linux-libsecret":
             # Secret passed strictly over stdin, never in process argv.
-            res = self.runner(
+            res = self._run_secret_cmd(
                 [
                     "secret-tool",
                     "store",
@@ -309,7 +342,7 @@ class NidoSecretStore:
             return False
         mode = self.detect_mode()
         if mode == "linux-libsecret":
-            res = self.runner(
+            res = self._run_secret_cmd(
                 ["secret-tool", "clear", "service", KEYRING_SERVICE, "account", key],
                 None,
                 3.0,

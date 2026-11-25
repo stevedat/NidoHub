@@ -396,6 +396,16 @@ check_vi(\"/usr/share/fonts/truetype/noto/NotoMono-Regular.ttf\")"
     dpkg -s geary >/dev/null 2>&1
     test -f /usr/share/plymouth/themes/spinner/bgrt-fallback.png
     test -x /usr/bin/nidoai
+    test -x /usr/libexec/nidoai/gateway-daemon
+    test -f /etc/apparmor.d/nidoai-gateway
+    test -f /etc/apparmor.d/nido-pkg-helper
+    test -f /etc/sysctl.d/90-nidoos-hardening.conf
+    test -f /etc/ufw/applications.d/nidoos
+    test -x /usr/libexec/ubuntu-nido/configure-firewall
+    /usr/libexec/ubuntu-nido/configure-firewall --self-test >/dev/null
+    test -x /usr/bin/nido-security-verify
+    /usr/bin/nido-security-verify --self-test >/dev/null
+    /usr/bin/nido-security-verify --verify >/dev/null
     test -x /usr/bin/nidoagent
     test -x /usr/bin/nido-hub
     test -x /usr/bin/nido-doctor

@@ -65,15 +65,33 @@ class NidoAccountProviderConfig:
     ai_proxy_url: str
 
 
-def _is_allowed_endpoint_url(raw_url: str) -> bool:
+TRUSTED_PROVIDER_HOSTS = frozenset(
+    {
+        "ahjpwfyaadpqyldxfjvi.supabase.co",
+        "educenter-ai-proxy.ttd1232004.workers.dev",
+    }
+)
+
+
+def _is_trusted_provider_hostname(hostname: str) -> bool:
+    h = (hostname or "").lower()
+    if h in TRUSTED_PROVIDER_HOSTS:
+        return True
+    return h in ("nido-holdings.com", "nidoos.vn") or h.endswith(".nido-holdings.com") or h.endswith(".nidoos.vn")
+
+
+def _is_allowed_endpoint_url(raw_url: str, allow_custom: bool = False) -> bool:
     try:
         parsed = urllib.parse.urlparse(raw_url.strip())
     except Exception:
         return False
-    if parsed.scheme == "https":
-        return bool(parsed.netloc)
-    if parsed.scheme == "http" and parsed.hostname in ("127.0.0.1", "localhost", "::1", "[::1]"):
+    host = parsed.hostname or ""
+    if parsed.scheme == "http" and host in ("127.0.0.1", "localhost", "::1", "[::1]"):
         return True
+    if parsed.scheme == "https":
+        if host in ("127.0.0.1", "localhost", "::1", "[::1]"):
+            return True
+        return bool(parsed.netloc) and (allow_custom or _is_trusted_provider_hostname(host))
     return False
 
 
@@ -87,25 +105,41 @@ def _read_json_dict(path: Path) -> dict[str, Any]:
         return {}
 
 
+def _read_verified_root_json_dict(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        return {}
+    try:
+        st = path.stat()
+        if st.st_uid != 0 or (st.st_mode & 0o022) != 0:
+            return {}
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
 def resolve_account_provider_config(
     config_dir: Path,
     env: dict[str, str] | None = None,
     system_cfg_path: Path = Path("/etc/ubuntu-nido/account-provider.json"),
 ) -> NidoAccountProviderConfig:
-    """Resolve IdP & AI proxy URLs (env override -> user/system JSON -> Nido defaults)."""
+    """Resolve IdP & AI proxy URLs (env override -> verified root /etc JSON -> Nido defaults)."""
+    _ = config_dir
     proc_env = os.environ if env is None else env
-    sys_cfg = _read_json_dict(system_cfg_path)
-    usr_cfg = _read_json_dict(config_dir / "account-provider.json")
+    sys_cfg = _read_verified_root_json_dict(system_cfg_path)
+    allow_custom = (
+        (proc_env.get("NIDO_ALLOW_CUSTOM_PROVIDER") or "").strip().lower() in ("1", "true", "yes")
+        or bool(sys_cfg.get("allowCustomProvider"))
+    )
 
     def _pick(env_keys: tuple[str, ...], cfg_key: str, default_val: str) -> str:
         for k in env_keys:
             val = (proc_env.get(k) or "").strip()
             if val:
                 return val
-        for cfg in (usr_cfg, sys_cfg):
-            val = cfg.get(cfg_key)
-            if isinstance(val, str) and val.strip():
-                return val.strip()
+        val = sys_cfg.get(cfg_key)
+        if isinstance(val, str) and val.strip():
+            return val.strip()
         return default_val
 
     auth_url = _pick(
@@ -125,10 +159,14 @@ def resolve_account_provider_config(
     ).rstrip("/")
 
     return NidoAccountProviderConfig(
-        auth_url=auth_url if _is_allowed_endpoint_url(auth_url) else DEFAULT_NIDO_AUTH_URL,
+        auth_url=(
+            auth_url if _is_allowed_endpoint_url(auth_url, allow_custom) else DEFAULT_NIDO_AUTH_URL
+        ),
         anon_key=anon_key,
         ai_proxy_url=(
-            ai_proxy_url if _is_allowed_endpoint_url(ai_proxy_url) else DEFAULT_NIDO_AI_PROXY_URL
+            ai_proxy_url
+            if _is_allowed_endpoint_url(ai_proxy_url, allow_custom)
+            else DEFAULT_NIDO_AI_PROXY_URL
         ),
     )
 

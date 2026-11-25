@@ -32,17 +32,33 @@ const SAFE_PROFILE_KEYS = new Set([
     'updatedAt',
 ]);
 
-function isAllowedEndpointUrl(rawUrl) {
+const TRUSTED_PROVIDER_HOSTS = new Set([
+    'ahjpwfyaadpqyldxfjvi.supabase.co',
+    'educenter-ai-proxy.ttd1232004.workers.dev',
+]);
+
+function isTrustedProviderHostname(hostname) {
+    const h = String(hostname || '').toLowerCase();
+    if (TRUSTED_PROVIDER_HOSTS.has(h))
+        return true;
+    return h.endsWith('.nido-holdings.com') || h.endsWith('.nidoos.vn') || h === 'nido-holdings.com' || h === 'nidoos.vn';
+}
+
+function isAllowedEndpointUrl(rawUrl, allowCustom = false) {
     try {
         const u = new URL(rawUrl);
-        if (u.protocol === 'https:')
-            return true;
         if (u.protocol === 'http:' &&
             (u.hostname === '127.0.0.1' ||
                 u.hostname === 'localhost' ||
                 u.hostname === '::1' ||
                 u.hostname === '[::1]')) {
             return true;
+        }
+        if (u.protocol === 'https:') {
+            if (u.hostname === '127.0.0.1' || u.hostname === 'localhost' || u.hostname === '::1' || u.hostname === '[::1]') {
+                return true;
+            }
+            return allowCustom || isTrustedProviderHostname(u.hostname);
         }
         return false;
     }
@@ -57,9 +73,12 @@ export function resolveNidoConfigDir(env = process.env, homeDir = os.homedir()) 
     return path.join(base, 'ubuntu-nido');
 }
 
-function readOptionalJsonFile(filePath) {
+function readVerifiedRootJsonFile(filePath) {
     try {
         if (!fs.existsSync(filePath))
+            return {};
+        const st = fs.statSync(filePath);
+        if (!st.isFile() || st.uid !== 0 || (st.mode & 0o022) !== 0)
             return {};
         const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
         return parsed && typeof parsed === 'object' ? parsed : {};
@@ -69,17 +88,15 @@ function readOptionalJsonFile(filePath) {
     }
 }
 
-export function resolveNidoAccountProviderConfig(env = process.env, configDir = resolveNidoConfigDir(env)) {
-    const sysCfg = readOptionalJsonFile('/etc/ubuntu-nido/account-provider.json');
-    const usrCfg = readOptionalJsonFile(path.join(configDir, 'account-provider.json'));
+export function resolveNidoAccountProviderConfig(env = process.env, _configDir = resolveNidoConfigDir(env)) {
+    const sysCfg = readVerifiedRootJsonFile('/etc/ubuntu-nido/account-provider.json');
+    const allowCustom = ['1', 'true', 'yes'].includes(String(env.NIDO_ALLOW_CUSTOM_PROVIDER ?? '').trim().toLowerCase()) ||
+        Boolean(sysCfg.allowCustomProvider);
     const pick = (envKeys, cfgKey, fallback) => {
         for (const k of envKeys) {
             const v = (env[k] ?? '').trim();
             if (v)
                 return v;
-        }
-        if (typeof usrCfg[cfgKey] === 'string' && usrCfg[cfgKey].trim()) {
-            return usrCfg[cfgKey].trim();
         }
         if (typeof sysCfg[cfgKey] === 'string' && sysCfg[cfgKey].trim()) {
             return sysCfg[cfgKey].trim();
@@ -90,9 +107,9 @@ export function resolveNidoAccountProviderConfig(env = process.env, configDir = 
     const anonKey = pick(['NIDO_ACCOUNT_ANON_KEY', 'NIDO_COMPANION_SUPABASE_ANON_KEY'], 'anonKey', DEFAULT_NIDO_ANON_KEY);
     const aiProxyUrl = pick(['NIDO_ACCOUNT_AI_PROXY_URL', 'NIDO_COMPANION_AI_PROXY_URL'], 'aiProxyUrl', DEFAULT_NIDO_AI_PROXY_URL).replace(/\/+$/, '');
     return {
-        authUrl: isAllowedEndpointUrl(authUrl) ? authUrl : DEFAULT_NIDO_AUTH_URL,
+        authUrl: isAllowedEndpointUrl(authUrl, allowCustom) ? authUrl : DEFAULT_NIDO_AUTH_URL,
         anonKey,
-        aiProxyUrl: isAllowedEndpointUrl(aiProxyUrl) ? aiProxyUrl : DEFAULT_NIDO_AI_PROXY_URL,
+        aiProxyUrl: isAllowedEndpointUrl(aiProxyUrl, allowCustom) ? aiProxyUrl : DEFAULT_NIDO_AI_PROXY_URL,
     };
 }
 

@@ -1,0 +1,10 @@
+#!/bin/sh
+set -eu
+
+umask 077
+STATE_DIR="${NIDOAI_HOME:-${HOME}/.nidoai}"
+mkdir -p "$STATE_DIR"
+chmod 700 "$STATE_DIR" 2>/dev/null || true
+cd "$STATE_DIR"
+
+exec /usr/bin/node /usr/lib/nidoai/src/cli.mjs serve

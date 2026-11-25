@@ -3300,7 +3300,22 @@ def run_gtk_app(
     return int(app.run([]))
 
 
+def enable_process_anti_dump() -> None:
+    """Disable ptrace attachment & core dumps for the running NidoHub process on Linux."""
+    if not sys.platform.startswith("linux"):
+        return
+    try:
+        import ctypes
+
+        libc = ctypes.CDLL("libc.so.6")
+        # PR_SET_DUMPABLE = 4 -> 0 blocks non-root ptrace/PTRACE_ATTACH and core dumps
+        libc.prctl(4, 0, 0, 0, 0)
+    except Exception:
+        pass
+
+
 def main() -> int:
+    enable_process_anti_dump()
     parser = argparse.ArgumentParser(description="NidoHub Desktop")
     parser.add_argument(
         "--page",

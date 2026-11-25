@@ -1,5 +1,6 @@
 import { PKG_VERSION } from '../config.js';
-export function renderControlPanelHtml(csrfToken, version = PKG_VERSION) {
+export function renderControlPanelHtml(csrfToken, version = PKG_VERSION, cspNonce = '') {
+    const nonceAttr = cspNonce ? ` nonce="${cspNonce}"` : '';
     return `<!doctype html>
 <html lang="vi">
 <head>
@@ -7,7 +8,7 @@ export function renderControlPanelHtml(csrfToken, version = PKG_VERSION) {
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="nidoai-csrf" content="${csrfToken}" />
   <title>NidoAI Control Plane</title>
-  <style>
+  <style${nonceAttr}>
     :root {
       color-scheme: dark;
       --bg: #090d14;
@@ -527,7 +528,7 @@ export function renderControlPanelHtml(csrfToken, version = PKG_VERSION) {
 
   <div class="toast" id="toast"></div>
 
-  <script>
+  <script${nonceAttr}>
     const I18N = {
       vi: {
         'header.title': 'Bảng điều khiển NidoAI',

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import gzip
+import hashlib
 import io
 import os
 import re
@@ -187,15 +188,89 @@ def _apply_version_suffix(control_path: Path, version_suffix: str) -> None:
     control_path.write_text("\n".join(updated) + "\n", encoding="utf-8")
 
 
+MANIFEST_INCLUDE_PREFIXES = (
+    "usr/bin/",
+    "usr/libexec/",
+    "usr/lib/",
+    "usr/share/polkit-1/",
+    "etc/apparmor.d/",
+    "etc/sysctl.d/",
+    "etc/ufw/",
+)
+
+
+def generate_integrity_manifest(stage_dir: Path, pkg_name: str, gpg_key: str = "") -> None:
+    """Write SHA-256 manifest (and optional detached GPG signature) of sensitive packaged files."""
+    entries: list[tuple[str, str]] = []
+    for root, dirs, files in os.walk(stage_dir, followlinks=False):
+        dirs[:] = sorted(d for d in dirs if d not in SKIP_NAMES)
+        rel_dir = Path(root).relative_to(stage_dir).as_posix()
+        if rel_dir == "DEBIAN" or rel_dir.startswith("DEBIAN/"):
+            continue
+        if rel_dir.startswith("usr/share/nido-security"):
+            continue
+        for fname in sorted(files):
+            if fname in SKIP_NAMES:
+                continue
+            fpath = Path(root) / fname
+            if fpath.is_symlink() or not fpath.is_file():
+                continue
+            rel_posix = fpath.relative_to(stage_dir).as_posix()
+            if not rel_posix.startswith(MANIFEST_INCLUDE_PREFIXES):
+                continue
+            digest = hashlib.sha256(fpath.read_bytes()).hexdigest()
+            entries.append((f"/{rel_posix}", digest))
+
+    if not entries:
+        return
+
+    manifest_dir = stage_dir / "usr/share/nido-security/manifests"
+    manifest_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = manifest_dir / f"{pkg_name}.sha256"
+    lines = [f"{digest}  {target_path}\n" for target_path, digest in sorted(entries)]
+    manifest_path.write_text("".join(lines), encoding="utf-8")
+    manifest_path.chmod(0o644)
+
+    clean_key = gpg_key.strip()
+    gpg = shutil.which("gpg")
+    if clean_key and gpg:
+        chk = subprocess.run(
+            [gpg, "--batch", "--list-secret-keys", clean_key],
+            capture_output=True,
+            check=False,
+        )
+        if chk.returncode == 0:
+            sig_path = manifest_dir / f"{pkg_name}.sha256.asc"
+            subprocess.run(
+                [
+                    gpg,
+                    "--batch",
+                    "--yes",
+                    "--armor",
+                    "-u",
+                    clean_key,
+                    "--detach-sign",
+                    "-o",
+                    str(sig_path),
+                    str(manifest_path),
+                ],
+                check=True,
+                capture_output=True,
+            )
+            sig_path.chmod(0o644)
+
+
 def build_deb(
     source_dir: Path,
     output_path: Path,
     extra_files_dir: Path | None = None,
     version_suffix: str = "",
+    integrity_manifest: bool = False,
+    gpg_key: str = "",
 ) -> None:
     debian_src = source_dir / "DEBIAN"
     files_src = source_dir / "files"
-    validate_control(debian_src)
+    fields = validate_control(debian_src)
 
     with tempfile.TemporaryDirectory(prefix="nidodeb-") as tmp:
         stage = Path(tmp) / "pkg"
@@ -205,6 +280,8 @@ def build_deb(
         _copy_tree_filtered(files_src, stage)
         if extra_files_dir is not None:
             _copy_tree_filtered(extra_files_dir, stage)
+        if integrity_manifest:
+            generate_integrity_manifest(stage, fields["Package"], gpg_key=gpg_key)
         _normalize_permissions(stage)
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -246,6 +323,16 @@ def main() -> None:
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--extra-files", type=Path, default=None)
     parser.add_argument("--version-suffix", default="", help="Optional '+' suffix appended to Version during dev builds")
+    parser.add_argument(
+        "--integrity-manifest",
+        action="store_true",
+        help="Embed SHA-256 manifest under /usr/share/nido-security/manifests/",
+    )
+    parser.add_argument(
+        "--gpg-key",
+        default="",
+        help="Optional GPG key ID/fingerprint used to detach-sign embedded integrity manifest",
+    )
     args = parser.parse_args()
 
     build_deb(
@@ -253,6 +340,8 @@ def main() -> None:
         args.output.resolve(),
         args.extra_files.resolve() if args.extra_files else None,
         version_suffix=args.version_suffix,
+        integrity_manifest=args.integrity_manifest,
+        gpg_key=args.gpg_key,
     )
     print(f"Built {args.output} ({args.output.stat().st_size} bytes)")
 

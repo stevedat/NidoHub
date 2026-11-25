@@ -1,4 +1,4 @@
-.PHONY: help assets packages apt-repo dev-apt dev-apt-deploy release-apt release-apt-deploy check iso iso-arm64 iso-arm64-fast docker-iso clean
+.PHONY: help assets packages apt-repo dev-apt dev-apt-deploy release-apt release-apt-deploy check security-audit native-packages-amd64 native-packages-arm64 iso iso-arm64 iso-arm64-fast docker-iso clean
 
 UBUNTU_VERSION     ?= 26.04
 NIDO_VERSION       ?= 0.2.0
@@ -17,6 +17,9 @@ help:
 	@echo "  make dev-apt-deploy     Build, sign, and deploy dev apt-repo/ to $(APT_PAGES_PROJECT) via wrangler"
 	@echo "  make release-apt        Build & GPG-sign clean release packages (no +dev suffix) in apt-repo/"
 	@echo "  make release-apt-deploy Build, sign, and deploy clean release apt-repo/ to $(APT_PAGES_PROJECT)"
+	@echo "  make security-audit     Run integrity verification, firewall & distribution hardening self-tests"
+	@echo "  make native-packages-amd64  Build Stage 2 native Cython/SEA packages for amd64 (requires Docker)"
+	@echo "  make native-packages-arm64  Build Stage 2 native Cython/SEA packages for arm64 (requires Docker)"
 	@echo "  make iso            Build NidoOS amd64 ISO (Linux host/root)"
 	@echo "  make iso-arm64      Build NidoOS arm64 ISO (Linux host/root)"
 	@echo "  make iso-arm64-fast Build NidoOS arm64 ISO locally (FAST_ISO=1 + ext4 workspace/cache)"
@@ -71,6 +74,19 @@ release-apt-deploy: release-apt
 
 check:
 	bash tests/verify_repo.sh
+
+security-audit:
+	python3 packages/nido-desktop-settings/files/usr/bin/nido-security-verify --self-test
+	bash packages/nido-desktop-settings/files/usr/libexec/ubuntu-nido/configure-firewall --self-test
+	python3 scripts/harden_dist.py --self-test
+	node scripts/harden_js.mjs --self-test
+	bash scripts/native-build/build_native_debs.sh --dry-run
+
+native-packages-amd64:
+	bash scripts/native-build/build_native_debs.sh --arch amd64
+
+native-packages-arm64:
+	bash scripts/native-build/build_native_debs.sh --arch arm64
 
 iso: assets packages
 	cd iso-builder && sudo TARGET_ARCH=amd64 UBUNTU_VERSION=$(UBUNTU_VERSION) NIDO_VERSION=$(NIDO_VERSION) ./build.sh

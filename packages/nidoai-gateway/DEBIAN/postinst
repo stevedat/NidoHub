@@ -8,6 +8,10 @@ if [ -d /etc/systemd/user ] && [ -f /usr/lib/systemd/user/nidoai-gateway.service
     /etc/systemd/user/default.target.wants/nidoai-gateway.service || true
 fi
 
+if [ -d /sys/kernel/security/apparmor ] && [ -f /etc/apparmor.d/nidoai-gateway ] && command -v apparmor_parser >/dev/null 2>&1; then
+  apparmor_parser -r /etc/apparmor.d/nidoai-gateway >/dev/null 2>&1 || true
+fi
+
 if command -v systemctl >/dev/null 2>&1; then
   systemctl --global daemon-reload >/dev/null 2>&1 || true
 fi

@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+  <vendor>Nido Holdings</vendor>
+  <vendor_url>https://nido-holdings.com</vendor_url>
+  <icon_name>nidooffice</icon_name>
+
+  <action id="com.nidoholdings.nidooffice.update">
+    <description>Update NidoOffice Desktop runtime</description>
+    <description xml:lang="vi">Cập nhật runtime NidoOffice Desktop</description>
+    <message>Authentication is required to update NidoOffice Desktop.</message>
+    <message xml:lang="vi">Cần xác thực quản trị để cập nhật NidoOffice Desktop.</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/lib/nidooffice-desktop/install-runtime.sh</annotate>
+    <annotate key="org.freedesktop.policykit.exec.allow_gui">false</annotate>
+  </action>
+</policyconfig>

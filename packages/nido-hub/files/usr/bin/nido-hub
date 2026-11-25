@@ -1,5 +1,16 @@
 #!/bin/sh
 set -eu
 
-APP_ENTRY="${NIDOHUB_APP_ENTRY:-/usr/lib/nido-hub/app.py}"
+SELF_REAL="$(readlink -f "$0" 2>/dev/null || printf '%s' "$0")"
+case "$SELF_REAL" in
+  /usr/bin/*) SYSTEM_INSTALLED=1 ;;
+  *) SYSTEM_INSTALLED=0 ;;
+esac
+
+if [ "$SYSTEM_INSTALLED" -eq 1 ]; then
+  APP_ENTRY="/usr/lib/nido-hub/app.py"
+else
+  APP_ENTRY="${NIDOHUB_APP_ENTRY:-/usr/lib/nido-hub/app.py}"
+fi
+
 exec python3 "$APP_ENTRY" "$@"

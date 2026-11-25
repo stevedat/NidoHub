@@ -29,6 +29,24 @@ from typing import Any
 
 PKG_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9+.-]{0,127}$")
 
+CORE_UNREPLACEABLE_PACKAGES = frozenset(
+    {
+        "apt",
+        "base-files",
+        "bash",
+        "ca-certificates",
+        "coreutils",
+        "dbus",
+        "dpkg",
+        "init",
+        "libc6",
+        "polkitd",
+        "sudo",
+        "systemd",
+        "systemd-sysv",
+    }
+)
+
 PROTECTED_PACKAGES = frozenset(
     {
         "apt",
@@ -91,7 +109,7 @@ def validate_pkg_names(pkgs: list[str]) -> list[str]:
 
 
 def detect_host_arch() -> str:
-    env_arch = os.environ.get("NIDO_PKG_ARCH", "").strip()
+    env_arch = "" if os.geteuid() == 0 else os.environ.get("NIDO_PKG_ARCH", "").strip()
     if env_arch:
         return env_arch
     dpkg = shutil.which("dpkg")
@@ -108,7 +126,7 @@ def detect_host_arch() -> str:
 
 
 def detect_ubuntu_codename(root_dir: Path) -> str:
-    env_codename = os.environ.get("NIDO_UBUNTU_CODENAME", "").strip()
+    env_codename = "" if os.geteuid() == 0 else os.environ.get("NIDO_UBUNTU_CODENAME", "").strip()
     if env_codename:
         return env_codename
     for rel in ("etc/os-release", "usr/lib/os-release"):
@@ -352,6 +370,32 @@ def run_apt_update() -> int:
     )
 
 
+def enforce_root_security_guards(
+    args: argparse.Namespace,
+    effective_uid: int | None = None,
+) -> None:
+    """Prevent unprivileged callers from overriding trust anchors when invoked as root."""
+    uid = os.geteuid() if effective_uid is None else effective_uid
+    if uid != 0:
+        return
+    default_vendors = DEFAULT_VENDORS_PATH.resolve()
+    if args.vendors_file.resolve() != default_vendors:
+        raise PermissionError(
+            f"Security violation: --vendors-file cannot be overridden as root (must be {DEFAULT_VENDORS_PATH})."
+        )
+    if not default_vendors.is_file():
+        raise PermissionError(f"Missing trusted vendors registry: {default_vendors}")
+    st = default_vendors.stat()
+    if st.st_uid != 0 or (st.st_mode & 0o022) != 0:
+        raise PermissionError(
+            f"Security violation: {default_vendors} must be owned by root with no group/world write bits."
+        )
+    if args.key_file is not None:
+        raise PermissionError("Security violation: --key-file override is prohibited when running as root.")
+    if args.root.resolve() != Path("/"):
+        raise PermissionError("Security violation: --root override is prohibited when running as root.")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="NidoHub narrowly scoped package helper")
     parser.add_argument("--vendors-file", type=Path, default=DEFAULT_VENDORS_PATH)
@@ -390,6 +434,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
+        enforce_root_security_guards(args)
         if args.action == "setup-vendor":
             setup_vendor_repo(args.vendor_id, args.vendors_file, args.root, args.key_file)
             emit_progress("done", 100, False, f"Đã thiết lập kho {args.vendor_id}.")
@@ -516,6 +561,10 @@ def main(argv: list[str] | None = None) -> int:
             pkg_label = chk.stdout.strip()
             if chk.returncode != 0 or not pkg_label or not PKG_NAME_RE.match(pkg_label):
                 raise ValueError(f"Tệp không phải gói Debian (.deb) hợp lệ: {deb_file.name}")
+            if pkg_label in CORE_UNREPLACEABLE_PACKAGES:
+                raise ValueError(
+                    f"Từ chối thay thế gói hệ thống cốt lõi bằng .deb cục bộ chưa ký: {pkg_label}"
+                )
             if args.dry_run:
                 emit_progress("done", 100, False, f"Dry-run OK: install-local-deb {pkg_label} ({deb_file.name})")
                 return 0

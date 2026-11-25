@@ -4,7 +4,7 @@ Section: metapackages
 Priority: optional
 Architecture: all
 Depends: nido-desktop-settings (>= 0.2.0), nido-hub (>= 0.2.0), nidoagent-cli (>= 0.2.0), nidoai-gateway (>= 0.2.0), nidooffice-cli (>= 0.2.0), nidooffice-desktop (>= 0.13.1), vielotus (>= 2.0.8), nidobox (>= 1.4.7), geary, showtime | totem
-Recommends: nautilus, gnome-terminal, zenity, libsecret-tools, fwupd, unattended-upgrades, flatpak, xdg-desktop-portal-gnome
+Recommends: nautilus, gnome-terminal, zenity, libsecret-tools, fwupd, unattended-upgrades, flatpak, xdg-desktop-portal-gnome, apparmor-utils, ufw
 Maintainer: Nido Holdings <support@nido-holdings.com>
 Homepage: https://nido-holdings.com
 Description: Nido Minimal Desktop metapackage for Ubuntu LTS

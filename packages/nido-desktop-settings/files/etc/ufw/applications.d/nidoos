@@ -1,0 +1,9 @@
+[NidoDrop]
+title=NidoDrop LAN File & Clipboard Station
+description=Local Wi-Fi / LAN file sharing via QR & PIN in NidoBox
+ports=54321/tcp
+
+[NidoOS-mDNS]
+title=NidoOS mDNS / Printer & LAN Discovery
+description=Multicast DNS discovery for CUPS printers and local devices
+ports=5353/udp

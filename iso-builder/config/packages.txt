@@ -1,4 +1,5 @@
 # Base utilities required for Ubuntu-Nido (Native-First architecture)
+apparmor-utils
 ca-certificates
 curl
 desktop-file-utils
@@ -45,6 +46,7 @@ systemd-zram-generator
 tesseract-ocr
 tesseract-ocr-eng
 tesseract-ocr-vie
+ufw
 unattended-upgrades
 unzip
 wget

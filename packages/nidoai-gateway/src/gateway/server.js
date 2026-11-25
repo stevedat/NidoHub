@@ -1,6 +1,7 @@
 import http from 'node:http';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { CHAT_BACKEND_KINDS, MIN_CLIENT_TOKEN_LENGTH, PKG_VERSION, isChatBackendKind, loadConfig, maskSecret, saveConfigUpdatesToEnvLocal, } from '../config.js';
 import { SUPPORTED_CHAT_COMPLETION_FIELDS, hasMultimodalContent, validateChatCompletionRequest, } from './schema.js';
@@ -14,11 +15,100 @@ import { getRuntimeDiscoveryPath, readAgentsStatus, readRuntimeDiscovery, resolv
 import { formatSecretStoreLabel } from '../security/secret-store.js';
 const MAX_TEXT_BODY_BYTES = 1_048_576; // 1 MiB for plain text/JSON requests
 const MAX_MULTIMODAL_BODY_BYTES = 4_194_304; // 4 MiB for vision image_url requests
+const LOOPBACK_HOST_RE = /^(?:127\.0\.0\.1|localhost|\[::1\])(?::\d{1,5})?$/i;
+const LOOPBACK_ORIGIN_RE = /^http:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::\d{1,5})?$/i;
+const AUTH_FAIL_LIMIT_PER_MIN = 20;
+const LOGIN_ATTEMPT_LIMIT_PER_MIN = 10;
+const RATE_LIMIT_WINDOW_MS = 60_000;
 const SECURITY_HEADERS = {
     'X-Content-Type-Options': 'nosniff',
     'X-Frame-Options': 'DENY',
     'Cache-Control': 'no-store',
+    'Referrer-Policy': 'no-referrer',
+    'Cross-Origin-Resource-Policy': 'same-origin',
 };
+function isValidLoopbackHost(hostHeader, allowEmptyOnUds = false) {
+    if (hostHeader === undefined || hostHeader === '') {
+        return allowEmptyOnUds;
+    }
+    if (typeof hostHeader !== 'string') {
+        return false;
+    }
+    return LOOPBACK_HOST_RE.test(hostHeader.trim());
+}
+function isValidLoopbackOrigin(originHeader) {
+    if (originHeader === undefined) {
+        return true;
+    }
+    if (typeof originHeader !== 'string') {
+        return false;
+    }
+    return LOOPBACK_ORIGIN_RE.test(originHeader.trim());
+}
+function pruneRateTimestamps(arr, now = Date.now(), windowMs = RATE_LIMIT_WINDOW_MS) {
+    while (arr.length > 0 && now - arr[0] > windowMs) {
+        arr.shift();
+    }
+}
+function isRateLimited(arr, limit, windowMs = RATE_LIMIT_WINDOW_MS) {
+    pruneRateTimestamps(arr, Date.now(), windowMs);
+    return arr.length >= limit;
+}
+function recordRateEvent(arr, windowMs = RATE_LIMIT_WINDOW_MS) {
+    const now = Date.now();
+    pruneRateTimestamps(arr, now, windowMs);
+    arr.push(now);
+}
+class WorkspacePathDeniedError extends Error {
+    statusCode = 403;
+    constructor(message) {
+        super(message);
+    }
+}
+function isPathInsideOrEqual(targetPath, basePath) {
+    const rel = path.relative(basePath, targetPath);
+    return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+}
+function resolveRealPathWithMissingSuffix(targetPath) {
+    const resolved = path.resolve(targetPath);
+    let probe = resolved;
+    const missingParts = [];
+    while (!fs.existsSync(probe)) {
+        const parent = path.dirname(probe);
+        if (parent === probe) {
+            break;
+        }
+        missingParts.unshift(path.basename(probe));
+        probe = parent;
+    }
+    const realBase = fs.existsSync(probe) ? fs.realpathSync(probe) : probe;
+    return path.join(realBase, ...missingParts);
+}
+function validateCodexWorkspaceCwd(requestedCwd, homeDir = os.homedir(), tmpDir = os.tmpdir()) {
+    const realTarget = resolveRealPathWithMissingSuffix(requestedCwd);
+    const realHome = fs.existsSync(homeDir) ? fs.realpathSync(homeDir) : path.resolve(homeDir);
+    const realTmp = fs.existsSync(tmpDir) ? fs.realpathSync(tmpDir) : path.resolve(tmpDir);
+    const allowedRoots = [realHome, realTmp];
+    if (!allowedRoots.some((rootDir) => isPathInsideOrEqual(realTarget, rootDir))) {
+        throw new WorkspacePathDeniedError(`Codex workspace path is outside user home/tmp: ${requestedCwd}`);
+    }
+    const xdgCfg = (process.env.XDG_CONFIG_HOME ?? '').trim() || path.join(realHome, '.config');
+    const nidoAiDir = resolveNidoAiStateDir(realHome, process.env);
+    const forbiddenSubdirs = [
+        path.join(realHome, '.ssh'),
+        path.join(realHome, '.gnupg'),
+        path.join(realHome, '.aws'),
+        path.join(realHome, '.kube'),
+        resolveRealPathWithMissingSuffix(nidoAiDir),
+        resolveRealPathWithMissingSuffix(path.join(xdgCfg, 'ubuntu-nido')),
+    ];
+    for (const blocked of forbiddenSubdirs) {
+        if (isPathInsideOrEqual(realTarget, blocked)) {
+            throw new WorkspacePathDeniedError(`Codex workspace path accesses protected credential directory: ${requestedCwd}`);
+        }
+    }
+    return realTarget;
+}
 function logOperational(entry, silent = false) {
     if (silent)
         return;
@@ -489,9 +579,12 @@ function timingSafeStringEqual(aStr, bStr) {
         return false;
     return crypto.timingSafeEqual(a, b);
 }
-function verifyAdminRequestAuth(req, expectedClientToken, expectedCsrfToken) {
+function verifyAdminRequestAuth(req, expectedClientToken, expectedCsrfToken, allowCsrfCookie = true) {
     if (timingSafeBearerMatch(req.headers.authorization, expectedClientToken)) {
         return true;
+    }
+    if (!allowCsrfCookie) {
+        return false;
     }
     const secFetchSite = req.headers['sec-fetch-site'];
     if (typeof secFetchSite === 'string' && secFetchSite === 'cross-site') {
@@ -512,8 +605,11 @@ export async function startGatewayServer(initialConfig, options = {}) {
     if (!initialConfig.clientToken || initialConfig.clientToken.length < MIN_CLIENT_TOKEN_LENGTH) {
         throw new Error(`NIDOAI_CLIENT_TOKEN must be explicitly configured (minimum ${MIN_CLIENT_TOKEN_LENGTH} characters) before starting the gateway server.`);
     }
-    let currentConfig = initialConfig;
+    let currentConfig = { ...initialConfig };
+    let activeClientToken = initialConfig.clientToken;
     let actualPort = initialConfig.port;
+    let activeSocketPath = null;
+    const ephemeralClientToken = Boolean(options.ephemeralClientToken);
     const stateDir = options.stateDir || initialConfig.stateDir || resolveNidoAiStateDir();
     const configDir = options.configDir || initialConfig.configDir || resolveNidoConfigDir();
     const useSecretStore = process.env.NIDOAI_SECRET_STORE !== 'file';
@@ -533,6 +629,10 @@ export async function startGatewayServer(initialConfig, options = {}) {
     let lastKeyringRetryAt = 0;
     const reloadCurrentConfig = () => {
         currentConfig = loadConfig({ cwd: stateDir, useSecretStore });
+        if (activeClientToken && activeClientToken.length >= MIN_CLIENT_TOKEN_LENGTH) {
+            currentConfig.clientToken = activeClientToken;
+            currentConfig.clientTokenConfigured = true;
+        }
         lastEnvMtimeMs = statMtimeMs(envLocalPath);
         lastAccountMtimeMs = statMtimeMs(accountProfilePath);
     };
@@ -586,7 +686,6 @@ export async function startGatewayServer(initialConfig, options = {}) {
         const acct = buildSanitizedAccountPayload();
         return {
             signedIn: acct.signedIn,
-            email: acct.email,
             planName: acct.planName,
             isPro: acct.isPro,
             aiCreditsRemaining: acct.quota?.aiCreditsRemaining ?? null,
@@ -603,6 +702,7 @@ export async function startGatewayServer(initialConfig, options = {}) {
         writeRuntimeDiscovery({
             baseUrl: `http://127.0.0.1:${actualPort}`,
             clientToken: currentConfig.clientToken,
+            ...(activeSocketPath ? { socketPath: activeSocketPath } : {}),
             capabilities: {
                 vision: p.kind !== 'nido',
                 streaming: true,
@@ -690,9 +790,13 @@ export async function startGatewayServer(initialConfig, options = {}) {
         };
     };
     const csrfToken = crypto.randomUUID();
+    const enableWebUi = ['1', 'true', 'yes'].includes(String(process.env.NIDOAI_ENABLE_WEB_UI ?? '').trim().toLowerCase());
+    const cspNonce = enableWebUi ? crypto.randomBytes(16).toString('base64') : '';
+    const authFailTimestamps = [];
+    const loginAttemptTimestamps = [];
     const recentLogs = [];
     let codexWorker = null;
-    let codexWorkerCwd = process.cwd();
+    let codexWorkerCwd = os.homedir();
     let activeCodexThreadId = null;
     const recordLog = (entry) => {
         recentLogs.unshift(entry);
@@ -710,7 +814,7 @@ export async function startGatewayServer(initialConfig, options = {}) {
         await prev;
         try {
             const targetCwd = typeof requestedCwd === 'string' && requestedCwd.trim().length > 0
-                ? requestedCwd.trim()
+                ? validateCodexWorkspaceCwd(requestedCwd.trim())
                 : codexWorkerCwd;
             fs.mkdirSync(targetCwd, { recursive: true });
             if (!codexWorker || !codexWorker.isRunning() || codexWorkerCwd !== targetCwd) {
@@ -732,18 +836,59 @@ export async function startGatewayServer(initialConfig, options = {}) {
             release();
         }
     };
-    const cachedHtml = renderControlPanelHtml(csrfToken);
+    const cachedHtml = enableWebUi ? renderControlPanelHtml(csrfToken, PKG_VERSION, cspNonce) : '';
     const cachedHtmlBytes = Buffer.byteLength(cachedHtml).toString();
-    const server = http.createServer(async (req, res) => {
+    const handleHttpRequest = async (req, res) => {
         const requestStartMs = performance.now();
         const requestId = crypto.randomUUID();
         const method = req.method ?? 'GET';
+        const isUdsSocket = !req.socket?.remoteAddress;
+        if (!isValidLoopbackHost(req.headers.host, isUdsSocket)) {
+            sendJson(res, 403, {
+                error: {
+                    type: 'security_error',
+                    code: 'invalid_host_header',
+                    message: 'Rejected non-loopback Host header.',
+                },
+            });
+            return;
+        }
+        if (!isValidLoopbackOrigin(req.headers.origin)) {
+            sendJson(res, 403, {
+                error: {
+                    type: 'security_error',
+                    code: 'invalid_origin',
+                    message: 'Rejected cross-origin browser request.',
+                },
+            });
+            return;
+        }
         const url = new URL(req.url ?? '/', `http://${currentConfig.host}:${actualPort}`);
         const pathname = url.pathname;
-        // 0. GET / (Interactive Control Panel)
+        // 0. GET / (Interactive Control Panel — disabled by default unless NIDOAI_ENABLE_WEB_UI=1)
         if ((method === 'GET' || method === 'HEAD') && pathname === '/') {
             const totalMs = Math.round(performance.now() - requestStartMs);
+            if (!enableWebUi) {
+                sendJson(res, 404, {
+                    error: {
+                        type: 'not_found',
+                        code: 'web_ui_disabled',
+                        message: 'NidoAI Web Control Panel is disabled by default for security. Use NidoHub or set NIDOAI_ENABLE_WEB_UI=1.',
+                    },
+                });
+                recordLog({
+                    timestamp: new Date().toISOString(),
+                    requestId,
+                    method,
+                    path: pathname,
+                    status: 404,
+                    totalMs,
+                });
+                return;
+            }
             res.writeHead(200, {
+                ...SECURITY_HEADERS,
+                'Content-Security-Policy': `default-src 'none'; style-src 'nonce-${cspNonce}'; script-src 'nonce-${cspNonce}'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'`,
                 'Content-Type': 'text/html; charset=utf-8',
                 'Content-Length': cachedHtmlBytes,
                 'Set-Cookie': `nidoai_ui_csrf=${csrfToken}; HttpOnly; SameSite=Strict; Path=/`,
@@ -764,7 +909,18 @@ export async function startGatewayServer(initialConfig, options = {}) {
         }
         // 0b. Admin Control Plane API (/api/admin/*)
         if (pathname.startsWith('/api/admin/')) {
-            if (!verifyAdminRequestAuth(req, currentConfig.clientToken, csrfToken)) {
+            if (isRateLimited(authFailTimestamps, AUTH_FAIL_LIMIT_PER_MIN)) {
+                sendJson(res, 429, {
+                    error: {
+                        type: 'rate_limit_error',
+                        code: 'rate_limited',
+                        message: 'Too many authentication failures. Try again later.',
+                    },
+                }, { 'Retry-After': '60' });
+                return;
+            }
+            if (!verifyAdminRequestAuth(req, currentConfig.clientToken, csrfToken, enableWebUi)) {
+                recordRateEvent(authFailTimestamps);
                 sendJson(res, 401, {
                     error: {
                         type: 'authentication_error',
@@ -775,7 +931,13 @@ export async function startGatewayServer(initialConfig, options = {}) {
                 return;
             }
             if (method === 'GET' && pathname === '/api/admin/pairing-token') {
-                sendJson(res, 200, { pairingToken: currentConfig.clientToken });
+                sendJson(res, 403, {
+                    error: {
+                        type: 'security_error',
+                        code: 'endpoint_disabled',
+                        message: 'Raw token export over HTTP is disabled. Read ~/.nidoai/runtime.json directly.',
+                    },
+                });
                 return;
             }
             if (method === 'GET' && pathname === '/api/admin/state') {
@@ -860,6 +1022,18 @@ export async function startGatewayServer(initialConfig, options = {}) {
                 return;
             }
             if (method === 'POST' && pathname === '/api/admin/nido-account/login') {
+                if (isRateLimited(loginAttemptTimestamps, LOGIN_ATTEMPT_LIMIT_PER_MIN)) {
+                    sendJson(res, 429, {
+                        ok: false,
+                        error: {
+                            type: 'rate_limit_error',
+                            code: 'rate_limited',
+                            message: 'Too many login attempts. Please wait a minute before retrying.',
+                        },
+                    }, { 'Retry-After': '60' });
+                    return;
+                }
+                recordRateEvent(loginAttemptTimestamps);
                 try {
                     const { text: raw } = await readRequestBody(req);
                     const body = JSON.parse(raw || '{}');
@@ -937,15 +1111,17 @@ export async function startGatewayServer(initialConfig, options = {}) {
             }
             if (method === 'POST' && pathname === '/api/admin/rotate-token') {
                 const newToken = `nidoai_${crypto.randomBytes(24).toString('hex')}`;
-                saveConfigUpdatesToEnvLocal({ clientToken: newToken }, stateDir, { useSecretStore, secretStoreOptions });
-                reloadCurrentConfig();
-                if (options.writeRuntimeDiscovery) {
-                    writeRuntimeDiscovery({
-                        baseUrl: `http://127.0.0.1:${actualPort}`,
-                        clientToken: currentConfig.clientToken,
-                    });
+                activeClientToken = newToken;
+                if (!ephemeralClientToken) {
+                    saveConfigUpdatesToEnvLocal({ clientToken: newToken }, stateDir, { useSecretStore, secretStoreOptions });
+                    reloadCurrentConfig();
                 }
-                sendJson(res, 200, { ok: true, clientToken: currentConfig.clientToken });
+                else {
+                    currentConfig.clientToken = newToken;
+                    currentConfig.clientTokenConfigured = true;
+                }
+                await publishRuntimeDiscoveryNow();
+                sendJson(res, 200, { ok: true, rotated: true });
                 return;
             }
             if (method === 'POST' && pathname === '/api/admin/playground/chat') {
@@ -1004,7 +1180,8 @@ export async function startGatewayServer(initialConfig, options = {}) {
                     });
                 }
                 catch (err) {
-                    sendJson(res, 500, {
+                    const status = err instanceof WorkspacePathDeniedError ? err.statusCode : 500;
+                    sendJson(res, status, {
                         error: { message: err instanceof Error ? err.message : 'Codex startThread failed' },
                     });
                 }
@@ -1030,7 +1207,8 @@ export async function startGatewayServer(initialConfig, options = {}) {
                     });
                 }
                 catch (err) {
-                    sendJson(res, 500, {
+                    const status = err instanceof WorkspacePathDeniedError ? err.statusCode : 500;
+                    sendJson(res, status, {
                         error: { message: err instanceof Error ? err.message : 'Codex resumeThread failed' },
                     });
                 }
@@ -1066,7 +1244,8 @@ export async function startGatewayServer(initialConfig, options = {}) {
                     sendJson(res, 200, turnResult);
                 }
                 catch (err) {
-                    sendJson(res, 500, {
+                    const status = err instanceof WorkspacePathDeniedError ? err.statusCode : 500;
+                    sendJson(res, status, {
                         error: { message: err instanceof Error ? err.message : 'Codex runTurn failed' },
                     });
                 }
@@ -1161,7 +1340,18 @@ export async function startGatewayServer(initialConfig, options = {}) {
         // 1a. GET /v1/account & POST /v1/account/sync (Loopback SSO for NidoOffice / NidoAgent / NidoBox)
         if ((method === 'GET' && pathname === '/v1/account') ||
             (method === 'POST' && pathname === '/v1/account/sync')) {
+            if (isRateLimited(authFailTimestamps, AUTH_FAIL_LIMIT_PER_MIN)) {
+                sendJson(res, 429, {
+                    error: {
+                        type: 'rate_limit_error',
+                        code: 'rate_limited',
+                        message: 'Too many authentication failures. Try again later.',
+                    },
+                }, { 'Retry-After': '60' });
+                return;
+            }
             if (!timingSafeBearerMatch(req.headers.authorization, currentConfig.clientToken)) {
+                recordRateEvent(authFailTimestamps);
                 const totalMs = Math.round(performance.now() - requestStartMs);
                 sendJson(res, 401, {
                     error: {
@@ -1213,7 +1403,18 @@ export async function startGatewayServer(initialConfig, options = {}) {
         }
         // 1b. GET /v1/models (Standard OpenAI-compatible model discovery for unmodified apps)
         if ((method === 'GET' || method === 'HEAD') && pathname === '/v1/models') {
+            if (isRateLimited(authFailTimestamps, AUTH_FAIL_LIMIT_PER_MIN)) {
+                sendJson(res, 429, {
+                    error: {
+                        type: 'rate_limit_error',
+                        code: 'rate_limited',
+                        message: 'Too many authentication failures. Try again later.',
+                    },
+                }, { 'Retry-After': '60' });
+                return;
+            }
             if (!timingSafeBearerMatch(req.headers.authorization, currentConfig.clientToken)) {
+                recordRateEvent(authFailTimestamps);
                 const totalMs = Math.round(performance.now() - requestStartMs);
                 sendJson(res, 401, {
                     error: {
@@ -1357,7 +1558,18 @@ export async function startGatewayServer(initialConfig, options = {}) {
         }
         // 2. POST /v1/chat/completions
         if (method === 'POST' && pathname === '/v1/chat/completions') {
+            if (isRateLimited(authFailTimestamps, AUTH_FAIL_LIMIT_PER_MIN)) {
+                sendJson(res, 429, {
+                    error: {
+                        type: 'rate_limit_error',
+                        code: 'rate_limited',
+                        message: 'Too many authentication failures. Try again later.',
+                    },
+                }, { 'Retry-After': '60' });
+                return;
+            }
             if (!timingSafeBearerMatch(req.headers.authorization, currentConfig.clientToken)) {
+                recordRateEvent(authFailTimestamps);
                 const totalMs = Math.round(performance.now() - requestStartMs);
                 sendJson(res, 401, {
                     error: {
@@ -1534,6 +1746,50 @@ export async function startGatewayServer(initialConfig, options = {}) {
             status: 404,
             totalMs,
         });
+    };
+    const server = http.createServer(handleHttpRequest);
+    let udsServer = null;
+    const rawUdsCandidate = typeof options.udsPath === 'string'
+        ? options.udsPath
+        : (process.platform === 'linux'
+            ? path.join((process.env.XDG_RUNTIME_DIR?.trim() || stateDir), 'nidoai-gateway.sock')
+            : '');
+    const udsCandidate = rawUdsCandidate && Buffer.byteLength(rawUdsCandidate, 'utf8') <= 96
+        ? rawUdsCandidate
+        : '';
+    const startUdsListenerIfEligible = () => new Promise((resUds) => {
+        if (!udsCandidate) {
+            resUds(null);
+            return;
+        }
+        try {
+            fs.mkdirSync(path.dirname(udsCandidate), { recursive: true, mode: 0o700 });
+            if (fs.existsSync(udsCandidate)) {
+                fs.unlinkSync(udsCandidate);
+            }
+            const sockSrv = http.createServer(handleHttpRequest);
+            sockSrv.once('error', () => {
+                resUds(null);
+            });
+            sockSrv.listen(udsCandidate, () => {
+                try {
+                    fs.chmodSync(udsCandidate, 0o600);
+                }
+                catch {
+                    // ignore chmod failure on special filesystems
+                }
+                sockSrv.removeAllListeners('error');
+                sockSrv.on('error', () => {
+                    // ignore transient socket errors
+                });
+                udsServer = sockSrv;
+                activeSocketPath = udsCandidate;
+                resUds(udsCandidate);
+            });
+        }
+        catch {
+            resUds(null);
+        }
     });
     return new Promise((resolve, reject) => {
         server.once('error', reject);
@@ -1545,47 +1801,66 @@ export async function startGatewayServer(initialConfig, options = {}) {
             server.on('error', (err) => {
                 console.error(JSON.stringify({ event: 'server_error', error: err.message, timestamp: new Date().toISOString() }));
             });
-            if (options.writeRuntimeDiscovery) {
-                const primary = currentConfig.backends[currentConfig.primaryBackend];
-                writeRuntimeDiscovery({
-                    baseUrl: `http://127.0.0.1:${actualPort}`,
-                    clientToken: currentConfig.clientToken,
-                    capabilities: {
-                        vision: primary.kind !== 'nido',
-                        streaming: true,
-                        jsonObject: true,
-                        primaryBackend: primary.kind,
-                        primaryConfigured: primary.configured,
-                        primaryReachable: primary.kind === 'local' ? false : primary.configured,
-                        secretStoreMode: currentConfig.secretStoreMode,
-                    },
-                });
-            }
-            resolve({
-                server,
-                host: '127.0.0.1',
-                port: actualPort,
-                close: async () => {
-                    if (codexWorker) {
-                        await codexWorker.stop();
-                        codexWorker = null;
-                    }
-                    if (options.writeRuntimeDiscovery) {
-                        const runtimePath = getRuntimeDiscoveryPath();
-                        const currentDisc = readRuntimeDiscovery();
-                        if (currentDisc && currentDisc.pid === process.pid && fs.existsSync(runtimePath)) {
+            void startUdsListenerIfEligible().then(() => {
+                if (options.writeRuntimeDiscovery) {
+                    const primary = currentConfig.backends[currentConfig.primaryBackend];
+                    writeRuntimeDiscovery({
+                        baseUrl: `http://127.0.0.1:${actualPort}`,
+                        clientToken: currentConfig.clientToken,
+                        ...(activeSocketPath ? { socketPath: activeSocketPath } : {}),
+                        capabilities: {
+                            vision: primary.kind !== 'nido',
+                            streaming: true,
+                            jsonObject: true,
+                            primaryBackend: primary.kind,
+                            primaryConfigured: primary.configured,
+                            primaryReachable: primary.kind === 'local' ? false : primary.configured,
+                            secretStoreMode: currentConfig.secretStoreMode,
+                        },
+                    });
+                }
+                resolve({
+                    server,
+                    udsServer,
+                    socketPath: activeSocketPath,
+                    host: '127.0.0.1',
+                    port: actualPort,
+                    close: async () => {
+                        if (codexWorker) {
+                            await codexWorker.stop();
+                            codexWorker = null;
+                        }
+                        if (udsServer) {
+                            await new Promise((resUdsClose) => {
+                                udsServer.close(() => resUdsClose());
+                            });
+                            udsServer = null;
+                        }
+                        if (activeSocketPath && fs.existsSync(activeSocketPath)) {
                             try {
-                                fs.unlinkSync(runtimePath);
+                                fs.unlinkSync(activeSocketPath);
                             }
                             catch {
-                                // ignore runtime cleanup error on shutdown
+                                // ignore socket cleanup error
                             }
                         }
-                    }
-                    await new Promise((resClose, rejClose) => {
-                        server.close((err) => (err ? rejClose(err) : resClose()));
-                    });
-                },
+                        if (options.writeRuntimeDiscovery) {
+                            const runtimePath = getRuntimeDiscoveryPath();
+                            const currentDisc = readRuntimeDiscovery();
+                            if (currentDisc && currentDisc.pid === process.pid && fs.existsSync(runtimePath)) {
+                                try {
+                                    fs.unlinkSync(runtimePath);
+                                }
+                                catch {
+                                    // ignore runtime cleanup error on shutdown
+                                }
+                            }
+                        }
+                        await new Promise((resClose, rejClose) => {
+                            server.close((err) => (err ? rejClose(err) : resClose()));
+                        });
+                    },
+                });
             });
         });
     });

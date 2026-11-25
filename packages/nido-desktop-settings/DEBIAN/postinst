@@ -116,4 +116,8 @@ if command -v gtk-update-icon-cache >/dev/null 2>&1 && [ -d /usr/share/icons/hic
   gtk-update-icon-cache -f -t /usr/share/icons/hicolor >/dev/null 2>&1 || true
 fi
 
+if [ -d /etc/sysctl.d ] && command -v sysctl >/dev/null 2>&1; then
+  sysctl --system >/dev/null 2>&1 || true
+fi
+
 exit 0

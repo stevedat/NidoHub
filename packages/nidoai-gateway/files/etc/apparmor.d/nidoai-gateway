@@ -1,0 +1,46 @@
+abi <abi/4.0>,
+include <tunables/global>
+
+profile nidoai-gateway /usr/libexec/nidoai/gateway-daemon {
+  include <abstractions/base>
+  include <abstractions/nameservice>
+  include <abstractions/ssl_certs>
+
+  network inet stream,
+  network inet6 stream,
+  network unix stream,
+  network unix dgram,
+
+  /usr/libexec/nidoai/gateway-daemon r,
+  /bin/dash ix,
+  /usr/bin/dash ix,
+  /bin/sh ix,
+  /usr/bin/node ix,
+
+  /usr/lib/nidoai/** r,
+  /etc/ubuntu-nido/** r,
+  /usr/bin/which rix,
+  /bin/which rix,
+  /usr/bin/secret-tool PUx,
+
+  owner @{HOME}/.nidoai/ rw,
+  owner @{HOME}/.nidoai/** rwlk,
+  owner @{HOME}/.config/ubuntu-nido/ rw,
+  owner @{HOME}/.config/ubuntu-nido/** rwk,
+  owner /run/user/[0-9]*/** rwlk,
+  owner /tmp/** rwlk,
+
+  # Deny direct reads of unrelated sensitive user & host files
+  deny @{HOME}/.ssh/** rwkx,
+  deny @{HOME}/.gnupg/** rwkx,
+  deny @{HOME}/.aws/** rwkx,
+  deny @{HOME}/.kube/** rwkx,
+  deny @{HOME}/Documents/** rwkx,
+  deny @{HOME}/Desktop/** rwkx,
+  deny @{HOME}/Downloads/** rwkx,
+  deny @{HOME}/Pictures/** rwkx,
+  deny /etc/shadow rwx,
+  deny /etc/gshadow rwx,
+
+  include if exists <local/nidoai-gateway>
+}

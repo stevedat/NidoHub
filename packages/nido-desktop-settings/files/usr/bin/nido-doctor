@@ -335,6 +335,76 @@ def check_disk_space(target: str = "/") -> CheckResult:
         return CheckResult("Root Disk Space", "WARN", str(exc))
 
 
+def check_package_integrity(root: Path = Path("/")) -> CheckResult:
+    verifier = shutil.which("nido-security-verify")
+    manifests_dir = root / "usr/share/nido-security/manifests"
+    if not manifests_dir.is_dir():
+        return CheckResult("Package Integrity", "INFO", "manifests not present in rootfs")
+    try:
+        import importlib.machinery
+        import importlib.util
+
+        vpath = Path(verifier) if verifier else Path("/usr/bin/nido-security-verify")
+        if not vpath.is_file():
+            return CheckResult("Package Integrity", "WARN", "nido-security-verify missing")
+        loader = importlib.machinery.SourceFileLoader("nido_security_verify", str(vpath))
+        spec = importlib.util.spec_from_loader("nido_security_verify", loader)
+        if spec is None:
+            return CheckResult("Package Integrity", "WARN", "unable to load nido-security-verify")
+        mod = importlib.util.module_from_spec(spec)
+        loader.exec_module(mod)
+        res = mod.verify_manifests(root=root)
+        if res.get("ok"):
+            return CheckResult(
+                "Package Integrity",
+                "PASS",
+                f"{res['filesChecked']} files across {res['manifestsChecked']} manifests (signed={res['signedManifests']})",
+            )
+        errs = res.get("errors") or ["tamper detected"]
+        return CheckResult("Package Integrity", "FAIL", str(errs[0]))
+    except Exception as exc:
+        return CheckResult("Package Integrity", "WARN", f"verify error: {exc}")
+
+
+def check_security_hardening(root: Path = Path("/"), home_dir: Path | None = None) -> CheckResult:
+    notes: list[str] = []
+    warns: list[str] = []
+    sysctl_cfg = root / "etc/sysctl.d/90-nidoos-hardening.conf"
+    if sysctl_cfg.is_file():
+        notes.append("sysctl=installed")
+    else:
+        warns.append("missing 90-nidoos-hardening.conf")
+
+    ptrace_p = root / "proc/sys/kernel/yama/ptrace_scope"
+    if ptrace_p.is_file():
+        val = ptrace_p.read_text(encoding="utf-8", errors="replace").strip()
+        if val.isdigit() and int(val) >= 2:
+            notes.append(f"ptrace={val}")
+        else:
+            warns.append(f"ptrace_scope={val} (<2)")
+
+    aa_prof = root / "sys/kernel/security/apparmor/profiles"
+    if aa_prof.is_file():
+        try:
+            txt = aa_prof.read_text(encoding="utf-8", errors="replace")
+            loaded = sum(1 for p in ("nido-pkg-helper", "nidoai-gateway", "nidooffice") if p in txt)
+            notes.append(f"apparmor={loaded}/3")
+        except OSError:
+            pass
+
+    home = home_dir or _resolve_desktop_user_home()
+    ai_dir = home / ".nidoai"
+    if ai_dir.is_dir():
+        mode = ai_dir.stat().st_mode & 0o777
+        if (mode & 0o077) != 0:
+            return CheckResult("Security Hardening", "FAIL", f"~/.nidoai mode {oct(mode)} too open (must be 0700)")
+        notes.append("nidoai=0700")
+
+    if warns:
+        return CheckResult("Security Hardening", "WARN", "; ".join(warns + notes))
+    return CheckResult("Security Hardening", "PASS", ", ".join(notes) or "baseline ok")
+
+
 def collect_checks(include_apt_update: bool = False, check_online: bool = False) -> tuple[list[CheckResult], dict[str, str]]:
     results: list[CheckResult] = []
     summary: dict[str, str] = {}
@@ -556,6 +626,8 @@ def collect_checks(include_apt_update: bool = False, check_online: bool = False)
         results.append(check_gateway_and_sso())
     results.append(check_nidooffice_runtime())
     results.append(check_disk_space("/"))
+    results.append(check_package_integrity())
+    results.append(check_security_hardening())
 
     return results, summary
 
@@ -619,6 +691,17 @@ def run_self_test() -> int:
         # Disk space check
         disk_res = check_disk_space(str(root))
         assert disk_res.status in ("PASS", "WARN", "FAIL") and "GiB free" in disk_res.detail
+
+        # Security hardening & package integrity check
+        sec_root = root / "sec-root"
+        (sec_root / "etc/sysctl.d").mkdir(parents=True)
+        (sec_root / "etc/sysctl.d/90-nidoos-hardening.conf").write_text("kernel.yama.ptrace_scope = 2\n", encoding="utf-8")
+        sec_home = sec_root / "home/user"
+        (sec_home / ".nidoai").mkdir(parents=True)
+        (sec_home / ".nidoai").chmod(0o700)
+        assert check_security_hardening(root=sec_root, home_dir=sec_home).status == "PASS"
+        (sec_home / ".nidoai").chmod(0o755)
+        assert check_security_hardening(root=sec_root, home_dir=sec_home).status == "FAIL"
 
         # Gateway & SSO check (AI OFF -> PASS; signed-in + live loopback Gateway -> PASS; unreachable -> WARN)
         home_off = root / "home-off"

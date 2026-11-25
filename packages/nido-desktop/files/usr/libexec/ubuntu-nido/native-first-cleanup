@@ -39,6 +39,10 @@ if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files systemd-tim
   systemctl restart systemd-timesyncd.service >/dev/null 2>&1 || true
 fi
 
+if [ -x /usr/libexec/ubuntu-nido/configure-firewall ]; then
+  /usr/libexec/ubuntu-nido/configure-firewall >/dev/null 2>&1 || true
+fi
+
 if ! command -v snap >/dev/null 2>&1; then
   mkdir -p "$STAMP_DIR"
   date -u +"%Y-%m-%dT%H:%M:%SZ" > "$STAMP_FILE"
