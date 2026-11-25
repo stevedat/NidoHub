@@ -43,6 +43,7 @@ from app_store import (  # noqa: E402
     SOURCE_LABELS,
     NidoAppStore,
     OperationHandle,
+    has_populated_apt_lists,
 )
 from markdown_render import (  # noqa: E402
     parse_inline_spans,
@@ -346,12 +347,16 @@ def run_self_test(app_mod: Any) -> int:
                 ]
             }
 
+        def mock_apt_prober(pkg_name: str, _source: str) -> bool | None:
+            return pkg_name in {"nido-hub", "vlc"}
+
         store_arm64 = NidoAppStore(
             catalog_path=cat_v2,
             vendors_path=vendors_test,
             host_arch="arm64",
             url_fetcher=mock_fetcher,
             json_poster=mock_flathub_search,
+            apt_candidate_prober=mock_apt_prober,
         )
         # Pre-probe / offline load immediately hides known x86_64-only apps on arm64
         instant_arm64 = store_arm64.load_catalog_entries(include_arch_probe=False)
@@ -365,6 +370,44 @@ def run_self_test(app_mod: Any) -> int:
         )
         chrome_entry = next(r for r in ranked if r["id"] == "chrome")
         assert chrome_entry["archSupported"] is True, "Chrome arm64 must be dynamically detected as supported"
+        # Empty / unsynced local APT lists (e.g. fresh install before `apt update`) must NOT hide ubuntu-apt apps
+        empty_lists = root / "empty-apt-lists"
+        empty_lists.mkdir()
+        assert has_populated_apt_lists("ubuntu-apt", empty_lists) is False
+        assert has_populated_apt_lists("nido-apt", empty_lists) is False
+        pop_lists = root / "populated-apt-lists"
+        pop_lists.mkdir()
+        (pop_lists / "ports.ubuntu.com_ubuntu-ports_dists_resolute_universe_binary-arm64_Packages").write_text(
+            "Package: vlc\n", encoding="utf-8"
+        )
+        (pop_lists / "ubuntu-nido-apt.pages.dev_dists_resolute_main_binary-arm64_Packages").write_text(
+            "Package: nido-hub\n", encoding="utf-8"
+        )
+        assert has_populated_apt_lists("ubuntu-apt", pop_lists) is True
+        assert has_populated_apt_lists("nido-apt", pop_lists) is True
+        store_unsynced = NidoAppStore(
+            catalog_path=cat_v2,
+            vendors_path=vendors_test,
+            host_arch="arm64",
+            url_fetcher=mock_fetcher,
+            json_poster=mock_flathub_search,
+            apt_lists_dir=empty_lists,
+        )
+        unsynced_ids = [r["id"] for r in store_unsynced.load_catalog_entries(include_arch_probe=True)]
+        assert "vlc" in unsynced_ids and "core" in unsynced_ids, (
+            f"Fresh install without populated APT lists must never hide ubuntu-apt/nido-apt apps: {unsynced_ids}"
+        )
+        store_missing_pkg = NidoAppStore(
+            catalog_path=cat_v2,
+            vendors_path=vendors_test,
+            host_arch="arm64",
+            url_fetcher=mock_fetcher,
+            json_poster=mock_flathub_search,
+            apt_candidate_prober=lambda pkg, _src: pkg != "vlc",
+        )
+        assert "vlc" not in [r["id"] for r in store_missing_pkg.load_catalog_entries(include_arch_probe=True)], (
+            "Genuinely unavailable APT package in synced cache must be hidden"
+        )
         # Raw diagnostic view still marks x86_64-only app as archSupported=False
         raw_arm64 = store_arm64.load_catalog_entries(include_arch_probe=True, hide_unsupported=False)
         spotify_raw = next(r for r in raw_arm64 if r["id"] == "spotify")
@@ -383,6 +426,7 @@ def run_self_test(app_mod: Any) -> int:
             host_arch="amd64",
             url_fetcher=mock_fetcher,
             json_poster=mock_flathub_search,
+            apt_candidate_prober=mock_apt_prober,
         )
         ranked_amd64 = store_amd64.load_catalog_entries(include_arch_probe=True)
         assert "spotify" in [r["id"] for r in ranked_amd64], "amd64 must display x86_64 apps"
@@ -396,6 +440,7 @@ def run_self_test(app_mod: Any) -> int:
                 if "com.spotify.Client" in u
                 else mock_fetcher(u, _t)
             ),
+            apt_candidate_prober=mock_apt_prober,
         )
         assert "spotify" in [r["id"] for r in store_future.load_catalog_entries(include_arch_probe=True)]
 

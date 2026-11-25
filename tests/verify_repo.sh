@@ -183,6 +183,7 @@ for fname in expected:
                 "./usr/local/share/applications/yelp.desktop",
                 "./usr/local/share/applications/org.gnome.Yelp.desktop",
                 "./usr/lib/systemd/system/nido-installer-fonts.service",
+                "./usr/bin/nido-doctor",
                 "./usr/libexec/ubuntu-nido/bind-installer-fonts",
                 "./usr/libexec/ubuntu-nido/ensure-vietnamese-ime",
                 "./usr/libexec/ubuntu-nido/nidobox-tray",
@@ -1379,10 +1380,14 @@ subprocess.run(["bash", str(bind_fonts_script), "--self-test"], check=True)
 
 tray_script = root / "packages/nido-desktop-settings/files/usr/libexec/ubuntu-nido/nidobox-tray"
 subprocess.run([sys.executable, str(tray_script), "--self-test"], check=True)
+doctor_script = root / "packages/nido-desktop-settings/files/usr/bin/nido-doctor"
+subprocess.run([sys.executable, str(doctor_script), "--self-test"], check=True)
 
 # Verify nido-welcome suppresses NidoHub & nidoagent cold-start during Live ISO and stamps installed skills sync
 gw_unit_txt = (root / "packages/nidoai-gateway/files/usr/lib/systemd/user/nidoai-gateway.service").read_text(encoding="utf-8")
 assert "ConditionPathExists=%h/.config/ubuntu-nido/ai-policy.json" in gw_unit_txt, "nidoai-gateway.service must wait for ai-policy.json"
+cleanup_unit_txt = (root / "packages/nido-desktop/files/usr/lib/systemd/system/nido-native-first-cleanup.service").read_text(encoding="utf-8")
+assert "Type=simple" in cleanup_unit_txt, "nido-native-first-cleanup.service must use Type=simple so first boot is non-blocking"
 cleanup_txt = (root / "packages/nido-desktop/files/usr/libexec/ubuntu-nido/native-first-cleanup").read_text(encoding="utf-8")
 assert "disabled-extensions=['ding@rastersoft.com']" in cleanup_txt, "native-first-cleanup must disable ding@rastersoft.com on installed systems"
 

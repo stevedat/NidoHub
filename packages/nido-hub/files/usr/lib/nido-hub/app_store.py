@@ -65,6 +65,36 @@ FLATPAK_PCT_RE = re.compile(r"(\d{1,3})%")
 ProgressCallback = Callable[[int, str, bool], None]
 UrlFetcher = Callable[[str, float], bytes]
 JsonPoster = Callable[[str, dict[str, Any], float], dict[str, Any]]
+AptCandidateProber = Callable[[str, str], bool | None]
+
+
+def has_populated_apt_lists(
+    source: str,
+    lists_dir: Path = Path("/var/lib/apt/lists"),
+) -> bool:
+    """Return True only when local APT index lists for the given source are populated."""
+    if not lists_dir.is_dir():
+        return False
+    try:
+        entries = list(lists_dir.iterdir())
+    except OSError:
+        return False
+    pkg_files: list[str] = []
+    for p in entries:
+        if "_Packages" not in p.name:
+            continue
+        try:
+            if p.is_file() and p.stat().st_size > 0:
+                pkg_files.append(p.name)
+        except OSError:
+            continue
+    if not pkg_files:
+        return False
+    if source == "ubuntu-apt":
+        return any("_universe_" in name for name in pkg_files)
+    if source == "nido-apt":
+        return any("ubuntu-nido" in name for name in pkg_files)
+    return True
 
 
 def default_url_fetcher(url: str, timeout: float = 6.0) -> bytes:
@@ -224,6 +254,8 @@ class NidoAppStore:
         host_arch: str | None = None,
         url_fetcher: UrlFetcher | None = None,
         json_poster: JsonPoster | None = None,
+        apt_candidate_prober: AptCandidateProber | None = None,
+        apt_lists_dir: Path | None = None,
     ) -> None:
         self.catalog_path = catalog_path
         self.vendors_path = vendors_path or Path(
@@ -237,6 +269,8 @@ class NidoAppStore:
         self.codename = detect_ubuntu_codename()
         self.url_fetcher = url_fetcher or default_url_fetcher
         self.json_poster = json_poster or default_json_poster
+        self.apt_candidate_prober = apt_candidate_prober
+        self.apt_lists_dir = apt_lists_dir or Path("/var/lib/apt/lists")
         self._arch_cache: dict[str, tuple[float, bool | None, str]] = {}
         self._cache_ttl_sec = 300.0
 
@@ -274,7 +308,11 @@ class NidoAppStore:
         )
         return res.returncode == 0
 
-    def probe_apt_candidate_available(self, pkg_name: str) -> bool | None:
+    def probe_apt_candidate_available(
+        self, pkg_name: str, source: str = "ubuntu-apt"
+    ) -> bool | None:
+        if self.apt_candidate_prober is not None:
+            return self.apt_candidate_prober(pkg_name, source)
         apt_cache = shutil.which("apt-cache")
         if not apt_cache:
             return None
@@ -284,13 +322,15 @@ class NidoAppStore:
             capture_output=True,
             text=True,
         )
-        if res.returncode != 0:
-            return False
-        for line in res.stdout.splitlines():
-            s = line.strip()
-            if s.startswith("Candidate:"):
-                cand = s.split(":", 1)[1].strip()
-                return bool(cand and cand != "(none)")
+        if res.returncode == 0:
+            for line in res.stdout.splitlines():
+                s = line.strip()
+                if s.startswith("Candidate:"):
+                    cand = s.split(":", 1)[1].strip()
+                    if cand and cand != "(none)":
+                        return True
+        if not has_populated_apt_lists(source, self.apt_lists_dir):
+            return None
         return False
 
     def probe_vendor_arch_support(self, vendor_id: str) -> tuple[bool | None, str]:
@@ -387,11 +427,13 @@ class NidoAppStore:
         elif source in ("ubuntu-apt", "nido-apt"):
             pkgs = item.get("packages", [])
             if pkgs:
-                avail = self.probe_apt_candidate_available(str(pkgs[0]))
+                avail = self.probe_apt_candidate_available(str(pkgs[0]), source=source)
                 if avail is True:
                     live_ok, live_note = True, f"Có sẵn gói .deb native cho {self.host_arch}"
                 elif avail is False:
                     live_ok, live_note = False, f"Không tìm thấy gói .deb trên APT cho {self.host_arch}"
+                else:
+                    live_ok, live_note = None, f"Chưa đồng bộ chỉ mục APT cục bộ (kiến trúc: {self.host_arch})"
 
         if live_ok is not None:
             return live_ok, live_note

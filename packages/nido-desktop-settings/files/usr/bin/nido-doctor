@@ -1,0 +1,324 @@
+#!/usr/bin/env python3
+"""NidoOS System Health & Configuration Doctor (`nido-doctor`)."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Any
+
+
+@dataclass
+class CheckResult:
+    name: str
+    status: str  # PASS | WARN | FAIL | INFO
+    detail: str
+
+
+def _run(cmd: list[str], timeout: float = 15.0) -> tuple[int, str, str]:
+    try:
+        proc = subprocess.run(
+            cmd,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        return proc.returncode, (proc.stdout or "").strip(), (proc.stderr or "").strip()
+    except FileNotFoundError:
+        return 127, "", f"command not found: {cmd[0]}"
+    except subprocess.TimeoutExpired:
+        return 124, "", f"timeout after {timeout}s"
+
+
+def detect_live_session(root: Path = Path("/")) -> bool:
+    if (root / "run/casper-md5check.json").exists() or (root / "cdrom/.disk/info").exists():
+        return True
+    cmdline = root / "proc/cmdline"
+    if cmdline.is_file():
+        try:
+            if "boot=casper" in cmdline.read_text(encoding="utf-8", errors="replace").split():
+                return True
+        except OSError:
+            pass
+    return False
+
+
+def _has_user_bus() -> bool:
+    return bool(os.environ.get("DBUS_SESSION_BUS_ADDRESS") or os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+
+
+def collect_checks(include_apt_update: bool = False) -> tuple[list[CheckResult], dict[str, str]]:
+    results: list[CheckResult] = []
+    summary: dict[str, str] = {}
+    is_live = detect_live_session()
+
+    # 1. OS Identity
+    osrel_path = Path("/etc/os-release")
+    osrel = osrel_path.read_text(encoding="utf-8", errors="replace") if osrel_path.is_file() else ""
+    _, arch, _ = _run(["dpkg", "--print-architecture"])
+    built_p = Path("/etc/ubuntu-nido-customized")
+    built = built_p.read_text(encoding="utf-8", errors="replace").strip() if built_p.is_file() else "missing"
+    mode_lbl = "live-iso" if is_live else "installed"
+    results.append(
+        CheckResult(
+            "OS Identity",
+            "PASS" if 'NAME="NidoOS"' in osrel else "FAIL",
+            f"arch={arch or 'unknown'}, mode={mode_lbl}, built={built}",
+        )
+    )
+
+    # 2. RAM / ZRAM / EarlyOOM
+    _, zout, _ = _run(["zramctl", "--noheadings"])
+    _, eoom, _ = _run(["systemctl", "is-active", "earlyoom"])
+    zram_ok = bool(zout)
+    results.append(
+        CheckResult(
+            "ZRAM & EarlyOOM",
+            "PASS" if (zram_ok and eoom == "active") else "WARN",
+            f"zram={'on' if zram_ok else 'off'}, earlyoom={eoom or 'unknown'}",
+        )
+    )
+
+    # 3. APT & PackageKit Hygiene
+    forbidden = [
+        Path("/etc/apt/apt.conf.d/20packagekit"),
+        Path("/usr/share/dbus-1/system-services/org.freedesktop.PackageKit.service"),
+    ]
+    if not is_live:
+        forbidden.append(Path("/etc/apt/sources.list.d/cdrom.sources"))
+    lingering = [str(p) for p in forbidden if p.exists()]
+    src_dir = Path("/etc/apt/sources.list.d")
+    sources = sorted(p.name for p in src_dir.iterdir() if p.is_file()) if src_dir.is_dir() else []
+    results.append(
+        CheckResult(
+            "APT & PackageKit",
+            "PASS" if not lingering else "FAIL",
+            f"clean ({', '.join(sources)})" if not lingering else f"unexpected: {', '.join(lingering)}",
+        )
+    )
+
+    # 4. Vietnamese Typography
+    _, f_sans, _ = _run(["fc-match", "-f", "%{family}", ":charset=1ec7"])
+    _, f_mono_e, _ = _run(["fc-match", "-f", "%{family}", "Ubuntu Mono:charset=1ec3"])
+    _, f_mono_o, _ = _run(["fc-match", "-f", "%{family}", "Ubuntu Mono:charset=1ecd"])
+    sans_ok = f_sans in ("Be Vietnam Pro", "Noto Sans")
+    mono_ok = f_mono_e in ("Liberation Mono", "Noto Mono") and f_mono_o in ("Liberation Mono", "Noto Mono")
+    results.append(
+        CheckResult(
+            "Vietnamese Fonts",
+            "PASS" if (sans_ok and mono_ok) else "FAIL",
+            f"sans={f_sans or 'none'}, mono={f_mono_e or 'none'}/{f_mono_o or 'none'}",
+        )
+    )
+
+    # 5. Sen Viet IME & GNOME Desktop Settings
+    if _has_user_bus() and shutil.which("gsettings"):
+        _, ime, _ = _run(["gsettings", "get", "org.gnome.desktop.input-sources", "sources"])
+        results.append(
+            CheckResult(
+                "Sen Viet IME",
+                "PASS" if ("vielotus" in ime and "vielotus-vni" in ime) else "FAIL",
+                ime or "(empty)",
+            )
+        )
+        _, acc, _ = _run(["gsettings", "get", "org.gnome.desktop.interface", "accent-color"])
+        _, dock, _ = _run(["gsettings", "get", "org.gnome.shell.extensions.dash-to-dock", "dock-position"])
+        results.append(
+            CheckResult(
+                "GNOME Theme & Dock",
+                "PASS" if ("teal" in acc and "BOTTOM" in dock) else "WARN",
+                f"accent={acc}, dock={dock}",
+            )
+        )
+    else:
+        results.append(CheckResult("Sen Viet IME", "INFO", "skipped (headless / no GNOME session bus)"))
+        results.append(CheckResult("GNOME Theme & Dock", "INFO", "skipped (headless / no GNOME session bus)"))
+
+    # 6. NidoHub & Arch Filtering
+    self_test_mod = Path("/usr/lib/nido-hub/self_test.py")
+    rc_st, _, err_st = _run(["nido-hub", "--self-test"], timeout=30.0)
+    catalog_note = ""
+    catalog_ok = True
+    try:
+        sys.path.insert(0, "/usr/lib/nido-hub")
+        from app_store import NidoAppStore  # type: ignore
+
+        st = NidoAppStore(Path("/etc/nido-hub/catalog.json"))
+        vis = {x["id"] for x in st.load_catalog_entries(include_arch_probe=False)}
+        raw = {x["id"] for x in st.load_catalog_entries(include_arch_probe=False, hide_unsupported=False)}
+        hidden = sorted(raw - vis)
+        if st.host_arch == "arm64":
+            catalog_ok = {"discord-flatpak", "spotify-flatpak", "blender-flatpak"} <= set(hidden)
+        catalog_note = f"visible={len(vis)}/{len(raw)}, hidden={hidden}"
+    except Exception as exc:
+        catalog_ok = False
+        catalog_note = f"catalog error: {exc}"
+    hub_ok = self_test_mod.is_file() and rc_st == 0 and catalog_ok
+    hub_detail = f"self-test={'ok' if rc_st == 0 else f'rc={rc_st}'}, {catalog_note}"
+    if rc_st != 0 and err_st:
+        hub_detail += f" ({err_st.splitlines()[-1]})"
+    results.append(CheckResult("NidoHub & Arch Filter", "PASS" if hub_ok else "FAIL", hub_detail))
+
+    # 7. Core Stack Binaries & Unwanted Snaps
+    required_bins = ["nidoai", "nidoagent", "nido-hub", "nidobox", "nidooffice-desktop", "geary", "himalaya"]
+    missing_bins = [b for b in required_bins if not shutil.which(b)]
+    results.append(
+        CheckResult(
+            "Core Stack Binaries",
+            "PASS" if not missing_bins else "FAIL",
+            f"all {len(required_bins)} present" if not missing_bins else f"missing: {', '.join(missing_bins)}",
+        )
+    )
+
+    if not is_live and shutil.which("snap"):
+        rc_sn, sn_out, _ = _run(["snap", "list"])
+        if rc_sn == 0:
+            installed_snaps = {ln.split()[0] for ln in sn_out.splitlines()[1:] if ln.strip()}
+            unwanted = sorted(
+                installed_snaps & {"snap-store", "thunderbird", "firefox", "desktop-security-center"}
+            )
+            results.append(
+                CheckResult(
+                    "Snap Bloat Cleanup",
+                    "PASS" if not unwanted else "WARN",
+                    f"clean ({len(installed_snaps)} base snaps)" if not unwanted else f"present: {', '.join(unwanted)}",
+                )
+            )
+
+    # 8. Systemd Failed Units
+    _, fail_sys, _ = _run(["systemctl", "--failed", "--no-legend"])
+    fail_usr = ""
+    if _has_user_bus():
+        _, fail_usr, _ = _run(["systemctl", "--user", "--failed", "--no-legend"])
+    failed_ok = not fail_sys and not fail_usr
+    results.append(
+        CheckResult(
+            "Systemd Failed Units",
+            "PASS" if failed_ok else "WARN",
+            "0 failed" if failed_ok else f"sys={fail_sys or '0'} | usr={fail_usr or '0'}",
+        )
+    )
+
+    # 9. Optional live `apt-get update` check
+    if include_apt_update:
+        if os.geteuid() != 0:
+            results.append(CheckResult("Live APT Update", "WARN", "re-run with: sudo nido-doctor --apt"))
+        else:
+            rc_apt, out_apt, err_apt = _run(
+                ["apt-get", "-o", "APT::Update::Error-Mode=any", "update"], timeout=90.0
+            )
+            combined = f"{out_apt}\n{err_apt}"
+            bad_sig = any(tok in combined for tok in ("NO_PUBKEY", "is not signed", "UnitMasked"))
+            results.append(
+                CheckResult(
+                    "Live APT Update",
+                    "PASS" if (rc_apt == 0 and not bad_sig) else "FAIL",
+                    "exit 0 (0 signature/UnitMasked errors)"
+                    if (rc_apt == 0 and not bad_sig)
+                    else f"rc={rc_apt}: {combined.splitlines()[-1] if combined.strip() else 'failed'}",
+                )
+            )
+
+    # Extra host summary (Boot, Memory, GPU)
+    _, boot_out, _ = _run(["systemd-analyze"])
+    if boot_out:
+        summary["boot"] = boot_out.splitlines()[0]
+    _, free_out, _ = _run(["free", "-h"])
+    if free_out:
+        lines = free_out.splitlines()
+        if len(lines) >= 2:
+            summary["memory"] = " | ".join(ln.strip() for ln in lines[1:3])
+    gpu_info: list[str] = []
+    for uev in sorted(Path("/sys/class/drm").glob("card*/device/uevent")):
+        try:
+            kv = dict(
+                ln.split("=", 1)
+                for ln in uev.read_text(encoding="utf-8", errors="replace").splitlines()
+                if "=" in ln
+            )
+            if kv.get("DRIVER"):
+                gpu_info.append(f"{kv['DRIVER']} ({kv.get('PCI_ID', 'n/a')})")
+        except OSError:
+            continue
+    if gpu_info:
+        summary["gpu"] = ", ".join(gpu_info)
+
+    return results, summary
+
+
+def format_report(results: list[CheckResult], summary: dict[str, str], as_json: bool = False) -> str:
+    failed = sum(1 for r in results if r.status == "FAIL")
+    warned = sum(1 for r in results if r.status == "WARN")
+    passed = sum(1 for r in results if r.status == "PASS")
+    if as_json:
+        return json.dumps(
+            {
+                "ok": failed == 0,
+                "counts": {"pass": passed, "warn": warned, "fail": failed},
+                "checks": [asdict(r) for r in results],
+                "summary": summary,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    lines = ["=== NidoOS System Doctor ==="]
+    for r in results:
+        lines.append(f"[{r.status:<4}] {r.name:<22} | {r.detail}")
+    if summary:
+        lines.append("--- Host Summary ---")
+        for k in ("boot", "memory", "gpu"):
+            if k in summary:
+                lines.append(f"  {k:<7}: {summary[k]}")
+    lines.append(f"Result: {passed} PASS, {warned} WARN, {failed} FAIL")
+    return "\n".join(lines)
+
+
+def run_self_test() -> int:
+    with tempfile.TemporaryDirectory(prefix="nido-doctor-test-") as td:
+        root = Path(td)
+        assert detect_live_session(root) is False
+        (root / "run").mkdir(parents=True)
+        (root / "run/casper-md5check.json").write_text("{}", encoding="utf-8")
+        assert detect_live_session(root) is True
+
+    sample = [
+        CheckResult("OS Identity", "PASS", "arch=arm64"),
+        CheckResult("APT & PackageKit", "PASS", "clean"),
+    ]
+    txt = format_report(sample, {"gpu": "vmwgfx (15AD:0406)"}, as_json=False)
+    assert "[PASS] OS Identity" in txt and "2 PASS, 0 WARN, 0 FAIL" in txt
+    payload: dict[str, Any] = json.loads(format_report(sample, {"gpu": "vmwgfx"}, as_json=True))
+    assert payload["ok"] is True and payload["counts"]["pass"] == 2
+    fail_payload: dict[str, Any] = json.loads(
+        format_report([CheckResult("X", "FAIL", "broken")], {}, as_json=True)
+    )
+    assert fail_payload["ok"] is False and fail_payload["counts"]["fail"] == 1
+    print("nido-doctor self-test passed.")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Verify NidoOS system configuration and runtime health.")
+    parser.add_argument("--json", action="store_true", help="Print structured JSON output.")
+    parser.add_argument("--apt", action="store_true", help="Also run live apt-get update check (requires sudo).")
+    parser.add_argument("--self-test", action="store_true", help="Run offline unit self-test and exit.")
+    args = parser.parse_args(argv)
+
+    if args.self_test:
+        return run_self_test()
+
+    results, summary = collect_checks(include_apt_update=args.apt)
+    print(format_report(results, summary, as_json=args.json))
+    return 1 if any(r.status == "FAIL" for r in results) else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

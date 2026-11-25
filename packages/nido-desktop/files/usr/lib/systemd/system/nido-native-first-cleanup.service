@@ -7,9 +7,11 @@ ConditionPathExists=!/cdrom/.disk/info
 ConditionPathExists=!/var/lib/ubuntu-nido/native-first-cleaned
 
 [Service]
-Type=oneshot
+Type=simple
 ExecStart=/usr/libexec/ubuntu-nido/native-first-cleanup
-RemainAfterExit=yes
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
 
 [Install]
 WantedBy=multi-user.target

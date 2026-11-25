@@ -19,6 +19,18 @@ if [ -f "$STAMP_FILE" ] && [ "${1:-}" != "--force" ]; then
   exit 0
 fi
 
+# Apply fast installed-system desktop perf tweaks immediately (<100ms) before slow snap removal
+# Disable Desktop Icons NG (ding@rastersoft.com, ~100 MB gjs RAM) on installed systems
+# (Live ISO keeps ding enabled for the "Cài đặt NidoOS" desktop icon; users can still re-enable it.)
+mkdir -p /etc/dconf/db/local.d
+cat > /etc/dconf/db/local.d/10-nido-installed-perf <<'DCONF_PERF'
+[org/gnome/shell]
+disabled-extensions=['ding@rastersoft.com']
+DCONF_PERF
+if command -v dconf >/dev/null 2>&1; then
+  dconf compile /etc/dconf/db/local /etc/dconf/db/local.d >/dev/null 2>&1 || dconf update >/dev/null 2>&1 || true
+fi
+
 if ! command -v snap >/dev/null 2>&1; then
   mkdir -p "$STAMP_DIR"
   date -u +"%Y-%m-%dT%H:%M:%SZ" > "$STAMP_FILE"
@@ -53,17 +65,6 @@ fi
 USER_SNAPS="$(snap list 2>/dev/null | awk 'NR>1 && $1 !~ /^(bare|core[0-9]*|snapd|gnome-|gtk-common-themes|mesa-|firmware-updater|prompting-client)$/ {print $1}')"
 if [ -z "$USER_SNAPS" ] && command -v systemctl >/dev/null 2>&1; then
   systemctl disable --now snapd.service snapd.seeded.service >/dev/null 2>&1 || true
-fi
-
-# 4. Disable Desktop Icons NG (ding@rastersoft.com, ~100 MB gjs RAM) on installed systems
-# (Live ISO keeps ding enabled for the "Cài đặt NidoOS" desktop icon; users can still re-enable it.)
-mkdir -p /etc/dconf/db/local.d
-cat > /etc/dconf/db/local.d/10-nido-installed-perf <<'DCONF_PERF'
-[org/gnome/shell]
-disabled-extensions=['ding@rastersoft.com']
-DCONF_PERF
-if command -v dconf >/dev/null 2>&1; then
-  dconf compile /etc/dconf/db/local /etc/dconf/db/local.d >/dev/null 2>&1 || dconf update >/dev/null 2>&1 || true
 fi
 
 if command -v update-desktop-database >/dev/null 2>&1; then

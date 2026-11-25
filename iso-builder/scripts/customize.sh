@@ -397,6 +397,8 @@ check_vi(\"/usr/share/fonts/truetype/noto/NotoMono-Regular.ttf\")"
     test -x /usr/bin/nidoai
     test -x /usr/bin/nidoagent
     test -x /usr/bin/nido-hub
+    test -x /usr/bin/nido-doctor
+    /usr/bin/nido-doctor --self-test >/dev/null
     test -x /usr/bin/nidooffice
     test -x /usr/bin/nidooffice-desktop
     test -x /usr/bin/pkcs11-helper
