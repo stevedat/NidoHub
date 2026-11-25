@@ -1162,6 +1162,83 @@ finally:
     srv.shutdown()
     srv.server_close()
 
+# Verify install-runtime.sh prefers native .deb over stale .AppImage and auto-refreshes on SHA-256 mismatch (INC-010)
+import hashlib as _hashlib, io as _io, tarfile as _tarfile
+deb_stage = sandbox / "mock-office-deb-stage"
+(deb_stage / "opt/NidoOffice/resources").mkdir(parents=True, exist_ok=True)
+(deb_stage / "opt/NidoOffice/nidooffice").write_text("#!/bin/sh\necho nidooffice-deb\n", encoding="utf-8")
+(deb_stage / "opt/NidoOffice/nidooffice").chmod(0o755)
+(deb_stage / "opt/NidoOffice/resources/app.asar").write_bytes(b"mock-asar-with-nidoos_gateway-sso")
+deb_tar_buf = _io.BytesIO()
+with _tarfile.open(fileobj=deb_tar_buf, mode="w:gz") as tf:
+    tf.add(deb_stage / "opt", arcname="./opt")
+deb_data = deb_tar_buf.getvalue()
+def _ar_entry(name: str, data: bytes) -> bytes:
+    hdr = f"{name:<16}{'0':<12}{'0':<6}{'0':<6}{'100644':<8}{len(data):<10}`\n".encode("ascii")
+    return hdr + data + (b"\n" if len(data) % 2 else b"")
+mock_deb_bytes = b"!<arch>\n" + _ar_entry("debian-binary", b"2.0\n") + _ar_entry("data.tar.gz", deb_data)
+mock_deb_sha = _hashlib.sha256(mock_deb_bytes).hexdigest()
+mock_appimg_bytes = b"stale-appimage-without-sso"
+mock_appimg_sha = _hashlib.sha256(mock_appimg_bytes).hexdigest()
+mock_sums = (
+    f"{mock_appimg_sha}  NidoOffice-linux-arm64.AppImage\n"
+    f"{mock_deb_sha}  NidoOffice-linux-arm64.deb\n"
+).encode("utf-8")
+dl_counts = {"deb": 0, "appimage": 0}
+
+class _MockDebReleaseHandler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path.endswith("SHA256SUMS.txt"):
+            payload = mock_sums
+        elif self.path.endswith("NidoOffice-linux-arm64.deb"):
+            dl_counts["deb"] += 1
+            payload = mock_deb_bytes
+        elif self.path.endswith("NidoOffice-linux-arm64.AppImage"):
+            dl_counts["appimage"] += 1
+            payload = mock_appimg_bytes
+        else:
+            self.send_response(404)
+            self.end_headers()
+            return
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+    def log_message(self, *args):
+        pass
+
+deb_srv = http.server.HTTPServer(("127.0.0.1", 0), _MockDebReleaseHandler)
+deb_srv_port = deb_srv.server_address[1]
+threading.Thread(target=deb_srv.serve_forever, daemon=True).start()
+try:
+    rt_dir = sandbox / "opt-nidooffice-deb-test"
+    (rt_dir / "resources").mkdir(parents=True, exist_ok=True)
+    # Seed legacy AppImage install with matching version 0.13.1 but missing .installed-sha256
+    (rt_dir / "nidooffice").write_text("#!/bin/sh\necho legacy\n", encoding="utf-8")
+    (rt_dir / "nidooffice").chmod(0o755)
+    (rt_dir / "resources/app.asar").write_bytes(b"legacy-without-sso")
+    (rt_dir / ".installed-version").write_text("0.13.1\n", encoding="utf-8")
+    rt_env = dict(env)
+    rt_env["NIDOOFFICE_INSTALL_DIR"] = str(rt_dir)
+    rt_env["NIDOOFFICE_ARCH"] = "arm64"
+    rt_env["NIDOOFFICE_VERSION"] = "0.13.1"
+    rt_env["NIDOOFFICE_RELEASE_BASE_URL"] = f"http://127.0.0.1:{deb_srv_port}"
+    rt_env["NIDOOFFICE_SKIP_SYSTEM_INTEGRATION"] = "1"
+    installer = str(sandbox / "rootfs/usr/lib/nidooffice-desktop/install-runtime.sh")
+
+    # 1st run: detects missing .installed-sha256, prefers .deb over .AppImage, extracts SSO runtime
+    subprocess.run(["bash", installer], env=rt_env, check=True, capture_output=True, text=True)
+    assert dl_counts["deb"] == 1 and dl_counts["appimage"] == 0, f"Expected .deb preferred over AppImage: {dl_counts}"
+    assert b"nidoos_gateway" in (rt_dir / "resources/app.asar").read_bytes()
+    assert (rt_dir / ".installed-sha256").read_text(encoding="utf-8").strip() == mock_deb_sha
+
+    # 2nd run: matching version + matching SHA-256 -> idempotent (0 downloads)
+    subprocess.run(["bash", installer], env=rt_env, check=True, capture_output=True, text=True)
+    assert dl_counts["deb"] == 1, f"Expected idempotent skip on matching SHA-256: {dl_counts}"
+finally:
+    deb_srv.shutdown()
+    deb_srv.server_close()
+
 print("Verified nido-hub --self-test, nidooffice DOCX/XLSX round-trip, desktop CLI delegation, and auto-latest updater.")
 
 # Verify packaged pkcs11-helper (for NidoOffice USB Token / SmartCard PKCS#11 signing)

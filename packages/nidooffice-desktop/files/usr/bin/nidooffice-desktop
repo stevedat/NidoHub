@@ -5,6 +5,10 @@ RUNTIME_INSTALLER="${NIDOOFFICE_RUNTIME_INSTALLER:-/usr/lib/nidooffice-desktop/i
 
 case "${1:-}" in
   --version|-V)
+    if [ -f /opt/NidoOffice/.installed-version ]; then
+      printf 'NidoOffice Desktop %s\n' "$(cat /opt/NidoOffice/.installed-version)"
+      exit 0
+    fi
     if [ -f /opt/NidoOffice/.nidooffice-version ]; then
       printf 'NidoOffice Desktop %s\n' "$(cat /opt/NidoOffice/.nidooffice-version)"
       exit 0

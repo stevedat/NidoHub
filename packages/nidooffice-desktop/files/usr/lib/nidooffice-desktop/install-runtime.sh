@@ -71,6 +71,35 @@ read_installed_version() {
   fi
 }
 
+read_installed_sha256() {
+  if [ -f "${NIDOOFFICE_INSTALL_DIR}/.installed-sha256" ]; then
+    tr -d '[:space:]' < "${NIDOOFFICE_INSTALL_DIR}/.installed-sha256"
+  fi
+}
+
+select_asset_from_sums() {
+  local sums_file="$1"
+  local cand sha
+  shift
+  for cand in "$@"; do
+    sha="$(awk -v target="$cand" '
+      $1 ~ /^[0-9a-fA-F]{64}$/ {
+        f = $2
+        sub(/^\*/, "", f)
+        if (f == target) {
+          print tolower($1)
+          exit
+        }
+      }
+    ' "$sums_file" 2>/dev/null || true)"
+    if [ -n "$sha" ]; then
+      printf '%s %s\n' "$cand" "$sha"
+      return 0
+    fi
+  done
+  return 1
+}
+
 parse_yaml_version() {
   awk '/^[[:space:]]*version:[[:space:]]*/ {
     val = $0
@@ -120,10 +149,12 @@ resolve_latest_version() {
 ARCH="$(detect_arch)"
 case "$ARCH" in
   amd64)
+    DEB_NAME="NidoOffice-linux-x64.deb"
     APPIMAGE_NAME="NidoOffice-linux-x64.AppImage"
     LATEST_YML="latest-linux.yml"
     ;;
   arm64)
+    DEB_NAME="NidoOffice-linux-arm64.deb"
     APPIMAGE_NAME="NidoOffice-linux-arm64.AppImage"
     LATEST_YML="latest-linux-arm64.yml"
     ;;
@@ -134,6 +165,7 @@ case "$ARCH" in
 esac
 
 INSTALLED_VERSION="$(read_installed_version)"
+INSTALLED_SHA256="$(read_installed_sha256)"
 REQ_VERSION="${NIDOOFFICE_VERSION#v}"
 RESOLVED_ONLINE=1
 
@@ -159,10 +191,42 @@ if ! is_valid_version "$TARGET_VERSION"; then
   exit 1
 fi
 
+if [ -n "${NIDOOFFICE_RELEASE_BASE_URL:-}" ]; then
+  BASE_URL="${NIDOOFFICE_RELEASE_BASE_URL%/}"
+else
+  BASE_URL="https://github.com/${NIDOOFFICE_REPO}/releases/download/v${TARGET_VERSION}"
+fi
+
+if [ "$ARCH" = "amd64" ]; then
+  ASSET_CANDIDATES=(
+    "$DEB_NAME"
+    "nidooffice_${TARGET_VERSION}_amd64.deb"
+    "$APPIMAGE_NAME"
+    "NidoOffice-${TARGET_VERSION}.AppImage"
+  )
+else
+  ASSET_CANDIDATES=(
+    "$DEB_NAME"
+    "nidooffice_${TARGET_VERSION}_arm64.deb"
+    "$APPIMAGE_NAME"
+    "NidoOffice-${TARGET_VERSION}-arm64.AppImage"
+  )
+fi
+
 if [ "$CHECK_ONLY" -eq 1 ]; then
   UPDATE_AVAIL="true"
   if [ -n "$INSTALLED_VERSION" ] && [ "$INSTALLED_VERSION" = "$TARGET_VERSION" ]; then
     UPDATE_AVAIL="false"
+    CHECK_SUMS="$(mktemp "${TMPDIR:-/tmp}/nidooffice-check-sums.XXXXXX")"
+    if curl -fsSL --connect-timeout 8 --max-time 15 "${BASE_URL}/SHA256SUMS.txt" -o "$CHECK_SUMS" 2>/dev/null; then
+      if ASSET_LINE="$(select_asset_from_sums "$CHECK_SUMS" "${ASSET_CANDIDATES[@]}")"; then
+        TARGET_SHA256="${ASSET_LINE#* }"
+        if [ -z "$INSTALLED_SHA256" ] || [ "$INSTALLED_SHA256" != "$TARGET_SHA256" ]; then
+          UPDATE_AVAIL="true"
+        fi
+      fi
+    fi
+    rm -f "$CHECK_SUMS"
   fi
   printf 'installed=%s\nlatest=%s\narch=%s\nresolved_online=%s\nupdate_available=%s\n' \
     "${INSTALLED_VERSION:-none}" "$TARGET_VERSION" "$ARCH" "$RESOLVED_ONLINE" "$UPDATE_AVAIL"
@@ -176,74 +240,156 @@ if [ -n "$INSTALLED_VERSION" ] && \
   HAVE_RUNTIME=1
 fi
 
+TMP_PARENT="/var/tmp"
+[ -d "$TMP_PARENT" ] || TMP_PARENT="${TMPDIR:-/tmp}"
+WORK_TMP="$(mktemp -d "${TMP_PARENT}/nidooffice-install.XXXXXX")"
+cleanup_tmp() {
+  rm -rf "$WORK_TMP"
+}
+trap cleanup_tmp EXIT
+
+DL_DIR="${WORK_TMP}/dl"
+EXTRACT_DIR="${WORK_TMP}/extract"
+mkdir -p "$DL_DIR" "$EXTRACT_DIR"
+
+NEED_DOWNLOAD=0
+SELECTED_ASSET=""
+TARGET_SHA256=""
+
 if [ "$FORCE" -eq 1 ] || [ "$HAVE_RUNTIME" -eq 0 ]; then
-  if [ -n "${NIDOOFFICE_RELEASE_BASE_URL:-}" ]; then
-    BASE_URL="${NIDOOFFICE_RELEASE_BASE_URL%/}"
-  else
-    BASE_URL="https://github.com/${NIDOOFFICE_REPO}/releases/download/v${TARGET_VERSION}"
-  fi
+  NEED_DOWNLOAD=1
+fi
 
-  TMP_PARENT="/var/tmp"
-  [ -d "$TMP_PARENT" ] || TMP_PARENT="${TMPDIR:-/tmp}"
-  WORK_TMP="$(mktemp -d "${TMP_PARENT}/nidooffice-install.XXXXXX")"
-  cleanup_tmp() {
-    rm -rf "$WORK_TMP"
-  }
-  trap cleanup_tmp EXIT
-
-  DL_DIR="${WORK_TMP}/dl"
-  EXTRACT_DIR="${WORK_TMP}/extract"
-  mkdir -p "$DL_DIR" "$EXTRACT_DIR"
-
+if [ "$NEED_DOWNLOAD" -eq 1 ]; then
   echo "[Ubuntu-Nido] Downloading NidoOffice Desktop v${TARGET_VERSION} metadata (${BASE_URL})..."
   curl -fsSL --retry 3 --retry-delay 2 "${BASE_URL}/SHA256SUMS.txt" -o "${DL_DIR}/SHA256SUMS.txt"
-
-  # Prefer evergreen asset name, fall back to versioned AppImage asset if listed in SHA256SUMS.txt
-  SELECTED_ASSET="$APPIMAGE_NAME"
-  if ! grep -Eq "^[0-9a-fA-F]{64}[[:space:]]+\*?${SELECTED_ASSET}\$" "${DL_DIR}/SHA256SUMS.txt"; then
-    if [ "$ARCH" = "amd64" ]; then
-      ALT_ASSET="NidoOffice-${TARGET_VERSION}.AppImage"
-    else
-      ALT_ASSET="NidoOffice-${TARGET_VERSION}-arm64.AppImage"
-    fi
-    if grep -Eq "^[0-9a-fA-F]{64}[[:space:]]+\*?${ALT_ASSET}\$" "${DL_DIR}/SHA256SUMS.txt"; then
-      SELECTED_ASSET="$ALT_ASSET"
-    else
-      echo "ERROR: Neither ${APPIMAGE_NAME} nor ${ALT_ASSET} found in SHA256SUMS.txt for v${TARGET_VERSION}" >&2
-      exit 1
+  if ASSET_LINE="$(select_asset_from_sums "${DL_DIR}/SHA256SUMS.txt" "${ASSET_CANDIDATES[@]}")"; then
+    SELECTED_ASSET="${ASSET_LINE%% *}"
+    TARGET_SHA256="${ASSET_LINE#* }"
+  else
+    echo "ERROR: None of (${ASSET_CANDIDATES[*]}) found in SHA256SUMS.txt for v${TARGET_VERSION}" >&2
+    exit 1
+  fi
+elif curl -fsSL --connect-timeout 10 --max-time 20 "${BASE_URL}/SHA256SUMS.txt" -o "${DL_DIR}/SHA256SUMS.txt" 2>/dev/null; then
+  if ASSET_LINE="$(select_asset_from_sums "${DL_DIR}/SHA256SUMS.txt" "${ASSET_CANDIDATES[@]}")"; then
+    SELECTED_ASSET="${ASSET_LINE%% *}"
+    TARGET_SHA256="${ASSET_LINE#* }"
+    if [ -z "$INSTALLED_SHA256" ] || [ "$INSTALLED_SHA256" != "$TARGET_SHA256" ]; then
+      echo "[Ubuntu-Nido] Refreshing NidoOffice Desktop v${TARGET_VERSION} runtime (${SELECTED_ASSET}, updated checksum)..."
+      NEED_DOWNLOAD=1
     fi
   fi
+else
+  echo "[Ubuntu-Nido] WARN: Could not reach ${BASE_URL}/SHA256SUMS.txt; keeping installed NidoOffice v${INSTALLED_VERSION}." >&2
+fi
 
+if [ "$NEED_DOWNLOAD" -eq 1 ]; then
   echo "[Ubuntu-Nido] Downloading NidoOffice Desktop v${TARGET_VERSION} (${SELECTED_ASSET})..."
   curl -fsSL --retry 3 --retry-delay 2 "${BASE_URL}/${SELECTED_ASSET}" -o "${DL_DIR}/${SELECTED_ASSET}"
   (
     cd "$DL_DIR"
-    grep -E "^[0-9a-fA-F]{64}[[:space:]]+\*?${SELECTED_ASSET}\$" SHA256SUMS.txt | sha256sum -c -
+    VERIFY_CMD=(sha256sum -c -)
+    if ! command -v sha256sum >/dev/null 2>&1; then
+      VERIFY_CMD=(shasum -a 256 -c -)
+    fi
+    awk -v target="$SELECTED_ASSET" '
+      $1 ~ /^[0-9a-fA-F]{64}$/ {
+        f = $2
+        sub(/^\*/, "", f)
+        if (f == target) {
+          print tolower($1) "  " target
+          exit
+        }
+      }
+    ' SHA256SUMS.txt | "${VERIFY_CMD[@]}"
   )
 
-  chmod +x "${DL_DIR}/${SELECTED_ASSET}"
-  echo "[Ubuntu-Nido] Extracting ${SELECTED_ASSET} into ${NIDOOFFICE_INSTALL_DIR}..."
-  SQFS_OFFSET="$(python3 - "${DL_DIR}/${SELECTED_ASSET}" <<'PY'
+  APP_SRC_DIR=""
+  case "$SELECTED_ASSET" in
+    *.deb)
+      echo "[Ubuntu-Nido] Extracting native DEB ${SELECTED_ASSET} into ${NIDOOFFICE_INSTALL_DIR}..."
+      mkdir -p "${EXTRACT_DIR}/deb-root"
+      if command -v dpkg-deb >/dev/null 2>&1; then
+        dpkg-deb -x "${DL_DIR}/${SELECTED_ASSET}" "${EXTRACT_DIR}/deb-root"
+      else
+        python3 - "${DL_DIR}/${SELECTED_ASSET}" "${EXTRACT_DIR}/deb-root" <<'PY'
+import gzip, io, lzma, subprocess, sys, tarfile
+from pathlib import Path
+
+raw = Path(sys.argv[1]).read_bytes()
+dest = Path(sys.argv[2])
+assert raw.startswith(b"!<arch>\n"), "Invalid deb ar archive"
+pos = 8
+data_tar = None
+while pos + 60 <= len(raw):
+    hdr = raw[pos : pos + 60]
+    pos += 60
+    name = hdr[:16].decode("ascii").strip().rstrip("/")
+    size = int(hdr[48:58].decode("ascii").strip())
+    payload = raw[pos : pos + size]
+    pos += size + (size % 2)
+    if name.startswith("data.tar"):
+        if name.endswith(".xz"):
+            data_tar = lzma.decompress(payload)
+        elif name.endswith(".gz"):
+            data_tar = gzip.decompress(payload)
+        elif name.endswith(".zst"):
+            data_tar = subprocess.run(["zstd", "-dc"], input=payload, check=True, capture_output=True).stdout
+        else:
+            data_tar = payload
+        break
+assert data_tar is not None, "Missing data.tar in deb"
+with tarfile.open(fileobj=io.BytesIO(data_tar), mode="r:") as tf:
+    if sys.version_info >= (3, 12):
+        tf.extractall(dest, filter="tar")
+    else:
+        tf.extractall(dest)
+PY
+      fi
+      if [ -d "${EXTRACT_DIR}/deb-root/opt/NidoOffice" ]; then
+        APP_SRC_DIR="${EXTRACT_DIR}/deb-root/opt/NidoOffice"
+      elif [ -d "${EXTRACT_DIR}/deb-root/opt/GenOffice" ]; then
+        APP_SRC_DIR="${EXTRACT_DIR}/deb-root/opt/GenOffice"
+      else
+        echo "ERROR: Expected /opt/NidoOffice inside ${SELECTED_ASSET}" >&2
+        exit 1
+      fi
+      if [ -d "${EXTRACT_DIR}/deb-root/usr/share/icons/hicolor" ]; then
+        mkdir -p "${APP_SRC_DIR}/usr/share/icons/hicolor"
+        cp -a "${EXTRACT_DIR}/deb-root/usr/share/icons/hicolor/"* "${APP_SRC_DIR}/usr/share/icons/hicolor/"
+      fi
+      ;;
+    *)
+      chmod +x "${DL_DIR}/${SELECTED_ASSET}"
+      echo "[Ubuntu-Nido] Extracting ${SELECTED_ASSET} into ${NIDOOFFICE_INSTALL_DIR}..."
+      SQFS_OFFSET="$(python3 - "${DL_DIR}/${SELECTED_ASSET}" <<'PY'
 import sys
 data = open(sys.argv[1], "rb").read(4 * 1024 * 1024)
 print(data.rfind(b"hsqs"))
 PY
 )"
-  if [ "$SQFS_OFFSET" -gt 0 ] 2>/dev/null && command -v unsquashfs >/dev/null 2>&1; then
-    unsquashfs -o "$SQFS_OFFSET" -d "${EXTRACT_DIR}/squashfs-root" "${DL_DIR}/${SELECTED_ASSET}" >/dev/null
-  fi
-  if [ ! -d "${EXTRACT_DIR}/squashfs-root" ]; then
-    (cd "$EXTRACT_DIR" && "${DL_DIR}/${SELECTED_ASSET}" --appimage-extract >/dev/null 2>&1)
-  fi
-  test -d "${EXTRACT_DIR}/squashfs-root"
+      if [ "$SQFS_OFFSET" -gt 0 ] 2>/dev/null && command -v unsquashfs >/dev/null 2>&1; then
+        unsquashfs -o "$SQFS_OFFSET" -d "${EXTRACT_DIR}/squashfs-root" "${DL_DIR}/${SELECTED_ASSET}" >/dev/null
+      fi
+      if [ ! -d "${EXTRACT_DIR}/squashfs-root" ]; then
+        (cd "$EXTRACT_DIR" && "${DL_DIR}/${SELECTED_ASSET}" --appimage-extract >/dev/null 2>&1)
+      fi
+      APP_SRC_DIR="${EXTRACT_DIR}/squashfs-root"
+      ;;
+  esac
+  test -d "$APP_SRC_DIR"
 
   mkdir -p "$(dirname "$NIDOOFFICE_INSTALL_DIR")"
-  rm -rf "$NIDOOFFICE_INSTALL_DIR" /opt/GenOffice
-  mv "${EXTRACT_DIR}/squashfs-root" "$NIDOOFFICE_INSTALL_DIR"
+  rm -rf "$NIDOOFFICE_INSTALL_DIR"
+  if [ "$NIDOOFFICE_INSTALL_DIR" = "/opt/NidoOffice" ]; then
+    rm -rf /opt/GenOffice
+  fi
+  mv "$APP_SRC_DIR" "$NIDOOFFICE_INSTALL_DIR"
   if [ "$NIDOOFFICE_INSTALL_DIR" = "/opt/NidoOffice" ]; then
     ln -sfn /opt/NidoOffice /opt/GenOffice
   fi
   printf '%s\n' "$TARGET_VERSION" > "${NIDOOFFICE_INSTALL_DIR}/.installed-version"
+  printf '%s\n' "$TARGET_SHA256" > "${NIDOOFFICE_INSTALL_DIR}/.installed-sha256"
 fi
 
 chmod -R a+rX "$NIDOOFFICE_INSTALL_DIR"
@@ -256,6 +402,11 @@ else
   NIDOOFFICE_BIN="${NIDOOFFICE_INSTALL_DIR}/genoffice"
 fi
 test -x "$NIDOOFFICE_BIN"
+
+if [ "${NIDOOFFICE_SKIP_SYSTEM_INTEGRATION:-0}" = "1" ]; then
+  echo "[Ubuntu-Nido] NidoOffice Desktop v${TARGET_VERSION} ready at ${NIDOOFFICE_INSTALL_DIR}."
+  exit 0
+fi
 
 if [ -f "${NIDOOFFICE_INSTALL_DIR}/chrome-sandbox" ]; then
   chown root:root "${NIDOOFFICE_INSTALL_DIR}/chrome-sandbox"

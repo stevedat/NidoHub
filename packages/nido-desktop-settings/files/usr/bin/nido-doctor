@@ -285,6 +285,22 @@ def check_gateway_and_sso(
     return CheckResult("NidoAI Gateway & SSO", "PASS", f"online (primary={primary_kind}, nido-sso=signed-out)")
 
 
+def _asar_contains_marker(asar_path: Path, marker: bytes) -> bool:
+    try:
+        overlap = len(marker)
+        prev = b""
+        with asar_path.open("rb") as fh:
+            while True:
+                chunk = fh.read(1024 * 1024)
+                if not chunk:
+                    return False
+                if marker in (prev + chunk):
+                    return True
+                prev = chunk[-overlap:]
+    except OSError:
+        return False
+
+
 def check_nidooffice_runtime(install_dir: Path = Path("/opt/NidoOffice")) -> CheckResult:
     bin_path = install_dir / "nidooffice"
     if not (bin_path.is_file() and os.access(bin_path, os.X_OK)):
@@ -293,7 +309,16 @@ def check_nidooffice_runtime(install_dir: Path = Path("/opt/NidoOffice")) -> Che
         return CheckResult("NidoOffice Runtime", "WARN", f"runtime not installed at {install_dir}")
     ver_file = install_dir / ".installed-version"
     ver = ver_file.read_text(encoding="utf-8", errors="replace").strip() if ver_file.is_file() else "unknown"
-    return CheckResult("NidoOffice Runtime", "PASS", f"v{ver} ({install_dir}; Linux Gateway SSO ready)")
+    asar_path = install_dir / "resources" / "app.asar"
+    if asar_path.is_file():
+        if _asar_contains_marker(asar_path, b"nidoos_gateway"):
+            return CheckResult("NidoOffice Runtime", "PASS", f"v{ver} ({install_dir}; Linux Gateway SSO verified)")
+        return CheckResult(
+            "NidoOffice Runtime",
+            "WARN",
+            f"v{ver} ({install_dir}; legacy build missing Gateway SSO — run: sudo nidooffice-desktop --update)",
+        )
+    return CheckResult("NidoOffice Runtime", "PASS", f"v{ver} ({install_dir})")
 
 
 def check_disk_space(target: str = "/") -> CheckResult:
@@ -576,16 +601,20 @@ def run_self_test() -> int:
         assert parse_http_clock_drift("Wed, 25 Nov 2026 11:00:00 GMT", now_utc=ref_now) == 3600.0
         assert parse_http_clock_drift("not-a-date", now_utc=ref_now) is None
 
-        # NidoOffice runtime check
+        # NidoOffice runtime check (missing -> WARN; legacy asar without nidoos_gateway -> WARN; SSO asar -> PASS)
         assert check_nidooffice_runtime(root / "missing-office").status == "WARN"
         fake_office = root / "opt-office"
-        fake_office.mkdir()
+        (fake_office / "resources").mkdir(parents=True)
         (fake_office / ".installed-version").write_text("0.13.1\n", encoding="utf-8")
         fake_bin = fake_office / "nidooffice"
         fake_bin.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
         fake_bin.chmod(0o755)
+        (fake_office / "resources/app.asar").write_bytes(b"legacy-office-bundle-without-sso")
+        legacy_res = check_nidooffice_runtime(fake_office)
+        assert legacy_res.status == "WARN" and "legacy build" in legacy_res.detail, legacy_res
+        (fake_office / "resources/app.asar").write_bytes(b"bundle...nidoos_gateway...fetchUbuntuNidoGatewayAccount")
         office_res = check_nidooffice_runtime(fake_office)
-        assert office_res.status == "PASS" and "0.13.1" in office_res.detail
+        assert office_res.status == "PASS" and "0.13.1" in office_res.detail and "SSO verified" in office_res.detail, office_res
 
         # Disk space check
         disk_res = check_disk_space(str(root))
