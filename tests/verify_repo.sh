@@ -175,6 +175,8 @@ for fname in expected:
                 "./etc/dconf/db/local.d/00-ubuntu-nido-settings",
                 "./etc/dconf/db/gdm.d/01-nidoos-logo",
                 "./etc/sysctl.d/90-nidoos-hardening.conf",
+                "./etc/modules-load.d/nido-uinput.conf",
+                "./etc/udev/rules.d/70-nido-uinput.rules",
                 "./etc/ufw/applications.d/nidoos",
                 "./usr/share/glib-2.0/schemas/90_nidoos-input-sources.gschema.override",
                 "./etc/fonts/conf.d/52-ubuntu-nido-vietnamese.conf",
@@ -214,6 +216,11 @@ for fname in expected:
                 assert req_cfg in names, f"{fname}: missing {req_cfg}"
             wl_txt = tf.extractfile("./usr/share/desktop-provision/whitelabel.yaml").read().decode("utf-8")
             assert 'app-name: "NidoOS"' in wl_txt, f"{fname}: whitelabel.yaml missing app-name: \"NidoOS\""
+            uinput_rule = tf.extractfile("./etc/udev/rules.d/70-nido-uinput.rules").read().decode("utf-8")
+            uinput_active = "\n".join(ln for ln in uinput_rule.splitlines() if ln.strip() and not ln.lstrip().startswith("#"))
+            assert 'TAG+="uaccess"' in uinput_active and "0666" not in uinput_active, f"{fname}: uinput rule must use uaccess (not 0666)"
+            ufw_app = tf.extractfile("./etc/ufw/applications.d/nidoos").read().decode("utf-8")
+            assert "[NidoKVM]" in ufw_app and "54322/tcp" in ufw_app, f"{fname}: ufw profile missing NidoKVM 54322/tcp"
         elif fname == "nido-hub_0.2.0_all.deb":
             for req_hub in (
                 "./usr/lib/nido-hub/agent_accounts.py",
@@ -253,7 +260,7 @@ for fname in expected:
                 ctrl_tar = ctrl_raw
             with tarfile.open(fileobj=io.BytesIO(ctrl_tar), mode="r:") as ctf:
                 ctrl_txt = ctf.extractfile("./control").read().decode("utf-8")
-                for dep in ("nido-desktop-settings", "nido-hub", "nidoagent-cli", "nidoai-gateway", "nidooffice-cli", "nidooffice-desktop", "vielotus (>= 2.0.8)", "nidobox (>= 1.4.7)", "geary", "showtime | totem"):
+                for dep in ("nido-desktop-settings", "nido-hub", "nidoagent-cli", "nidoai-gateway", "nidooffice-cli", "nidooffice-desktop", "vielotus (>= 2.0.8)", "nidobox (>= 1.5.0)", "wl-clipboard", "xclip", "geary", "showtime | totem"):
                     assert dep in ctrl_txt, f"{fname}: missing dependency {dep}"
             for req_st in (
                 "./usr/libexec/ubuntu-nido/showtime-launch",
@@ -301,7 +308,7 @@ for suite in ("resolute", "noble"):
             base = v.split("-", 1)[0].split("+", 1)[0]
             return tuple(int(x) for x in base.split(".") if x.isdigit())
 
-        for v_pkg, min_ver in (("nidobox", (1, 4, 7)), ("vielotus", (2, 0, 8))):
+        for v_pkg, min_ver in (("nidobox", (1, 5, 0)), ("vielotus", (2, 0, 8))):
             vendor_debs = sorted((repo.parent / "packages" / "vendor").glob(f"{v_pkg}_*_{arch}.deb"))
             if not vendor_debs:
                 continue
@@ -2064,7 +2071,7 @@ with tempfile.TemporaryDirectory() as td:
         "Package: dracut\nStatus: install ok installed\nVersion: 110-11\n\n"
         "Package: dracut-core\nStatus: install ok installed\nVersion: 110-11\n\n"
         "Package: vielotus\nStatus: install ok installed\nVersion: 2.0.8\n\n"
-        "Package: nidobox\nStatus: install ok installed\nVersion: 1.4.7\n\n"
+        "Package: nidobox\nStatus: install ok installed\nVersion: 1.5.0\n\n"
         "Package: nido-hub\nStatus: install ok installed\nVersion: 0.1.0\n",
         encoding="utf-8",
     )

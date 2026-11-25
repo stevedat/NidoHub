@@ -3,8 +3,9 @@ name: ubuntu-nido-box
 description: >-
   Use Ubuntu-Nido system utilities via NidoBox headless CLI (--json) and GUI:
   offline/Agent OCR with PII detection, batch image conversion/resize,
-  Vietnamese/CJK-safe archive inspect/extract/create, NidoDrop LAN QR sharing,
-  Capture Studio, and read-only external/NTFS drive inspection.
+  Vietnamese/CJK-safe archive inspect/extract/create, NidoDrop LAN QR sharing
+  with Live View & Touch-back, NidoKVM cross-device LAN mouse/keyboard/clipboard
+  sharing, Capture Studio, and read-only external/NTFS drive inspection.
 ---
 
 # Ubuntu-Nido Utilities (`nidobox`)
@@ -74,14 +75,18 @@ nidobox archive extract --dest /path/to/output --json /path/to/archive.zip
 nidobox archive create --out /path/to/bundle.zip --format zip --json /path/dir_or_file
 ```
 
-### 4. NidoDrop LAN Station Status & Control
+### 4. NidoDrop LAN Station, Live View & NidoKVM
 
-Check whether a local NidoDrop QR station is running or stop it headlessly:
+Check whether a local NidoDrop QR station (TCP `54321`) is running or stop it headlessly:
 
 ```bash
 nidobox drop status --json
 nidobox drop stop --json
 ```
+
+In the desktop GUI (`nidobox`), the NidoDrop tab also provides:
+- **Live View & Touch-back:** stage an image or cast the screen to LAN mobile/tablet browsers with optional remote touch/trackpad & Vietnamese Unicode keyboard input (powered by `/dev/uinput` with automatic `systemd-logind` `uaccess` ACL + `wl-clipboard`/`xclip`).
+- **NidoKVM (TCP `54322`, RFC1918 LAN-only via UFW):** share mouse, keyboard, and 2-way clipboard across macOS, Windows, and Linux machines on the same LAN. Client mode works immediately via `/dev/uinput`; Host mode requires adding the user to the `input` group (`sudo usermod -aG input "$USER"` + re-login) to read `/dev/input/event*`.
 
 ### 5. External & NTFS Drives (Read-Only)
 

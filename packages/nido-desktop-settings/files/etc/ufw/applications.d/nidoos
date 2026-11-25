@@ -3,6 +3,11 @@ title=NidoDrop LAN File & Clipboard Station
 description=Local Wi-Fi / LAN file sharing via QR & PIN in NidoBox
 ports=54321/tcp
 
+[NidoKVM]
+title=NidoKVM LAN Mouse, Keyboard & Clipboard Sharing
+description=Cross-device LAN mouse, keyboard, and clipboard sharing in NidoBox
+ports=54322/tcp
+
 [NidoOS-mDNS]
 title=NidoOS mDNS / Printer & LAN Discovery
 description=Multicast DNS discovery for CUPS printers and local devices

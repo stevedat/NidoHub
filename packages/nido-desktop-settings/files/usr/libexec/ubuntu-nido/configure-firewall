@@ -3,15 +3,17 @@ set -euo pipefail
 
 DRY_RUN=0
 FORCE=0
+ENSURE_RULES=0
 SELF_TEST=0
 
 for arg in "$@"; do
   case "$arg" in
     --dry-run) DRY_RUN=1 ;;
     --force) FORCE=1 ;;
+    --ensure-rules) ENSURE_RULES=1 ;;
     --self-test) SELF_TEST=1 ;;
     --help|-h)
-      echo "Usage: configure-firewall [--dry-run] [--force] [--self-test]"
+      echo "Usage: configure-firewall [--dry-run] [--force] [--ensure-rules] [--self-test]"
       exit 0
       ;;
     *)
@@ -28,9 +30,17 @@ run_self_test() {
   grep -Fq "ufw default allow outgoing" <<< "$out"
   grep -Fq "224.0.0.251 port 5353" <<< "$out"
   grep -Fq "192.168.0.0/16 to any port 54321 proto tcp" <<< "$out"
+  grep -Fq "192.168.0.0/16 to any port 54322 proto tcp" <<< "$out"
   grep -Fq "ufw --force enable" <<< "$out"
-  if grep -Eq "allow in from (0\.0\.0\.0/0|any) to any port 54321" <<< "$out"; then
-    echo "ERROR: NidoDrop rule must be restricted to RFC1918/link-local LAN subnets" >&2
+  if grep -Eq "allow in from (0\.0\.0\.0/0|any) to any port (54321|54322)" <<< "$out"; then
+    echo "ERROR: NidoDrop/NidoKVM rules must be restricted to RFC1918/link-local LAN subnets" >&2
+    exit 1
+  fi
+  local ensure_out
+  ensure_out="$("$0" --dry-run --ensure-rules)"
+  grep -Fq "192.168.0.0/16 to any port 54322 proto tcp" <<< "$ensure_out"
+  if grep -Fq "ufw --force enable" <<< "$ensure_out"; then
+    echo "ERROR: --ensure-rules must not re-run default policy or force-enable" >&2
     exit 1
   fi
   echo "configure-firewall self-test passed."
@@ -66,17 +76,29 @@ if [ "$DRY_RUN" -eq 0 ]; then
     echo "[NidoOS] ufw not installed; skipping firewall setup." >&2
     exit 0
   fi
-  if [ "$FORCE" -eq 0 ] && ufw status 2>/dev/null | grep -q '^Status: active'; then
+  if [ "$ENSURE_RULES" -eq 1 ]; then
+    if ! ufw status 2>/dev/null | grep -q '^Status: active'; then
+      exit 0
+    fi
+  elif [ "$FORCE" -eq 0 ] && ufw status 2>/dev/null | grep -q '^Status: active'; then
     exit 0
   fi
 fi
 
-run_ufw default deny incoming
-run_ufw default allow outgoing
+if [ "$ENSURE_RULES" -eq 0 ]; then
+  run_ufw default deny incoming
+  run_ufw default allow outgoing
+fi
 run_ufw allow in proto udp to 224.0.0.251 port 5353 comment 'NidoOS mDNS'
 run_ufw allow in proto udp to ff02::fb port 5353 comment 'NidoOS mDNS IPv6'
 run_ufw allow in from 10.0.0.0/8 to any port 54321 proto tcp comment 'NidoDrop LAN'
 run_ufw allow in from 172.16.0.0/12 to any port 54321 proto tcp comment 'NidoDrop LAN'
 run_ufw allow in from 192.168.0.0/16 to any port 54321 proto tcp comment 'NidoDrop LAN'
 run_ufw allow in from fe80::/10 to any port 54321 proto tcp comment 'NidoDrop LAN IPv6'
-run_ufw --force enable
+run_ufw allow in from 10.0.0.0/8 to any port 54322 proto tcp comment 'NidoKVM LAN'
+run_ufw allow in from 172.16.0.0/12 to any port 54322 proto tcp comment 'NidoKVM LAN'
+run_ufw allow in from 192.168.0.0/16 to any port 54322 proto tcp comment 'NidoKVM LAN'
+run_ufw allow in from fe80::/10 to any port 54322 proto tcp comment 'NidoKVM LAN IPv6'
+if [ "$ENSURE_RULES" -eq 0 ]; then
+  run_ufw --force enable
+fi

@@ -475,7 +475,7 @@ check_vi(\"/usr/share/fonts/truetype/noto/NotoMono-Regular.ttf\")"
     dpkg -s vielotus >/dev/null 2>&1
     dpkg --compare-versions "$(dpkg-query -W -f="\${Version}" vielotus)" ge "2.0.8"
     dpkg -s nidobox >/dev/null 2>&1
-    dpkg --compare-versions "$(dpkg-query -W -f="\${Version}" nidobox)" ge "1.4.7"
+    dpkg --compare-versions "$(dpkg-query -W -f="\${Version}" nidobox)" ge "1.5.0"
     dpkg -s showtime >/dev/null 2>&1 || dpkg -s totem >/dev/null 2>&1
     ! dpkg -s fcitx5 >/dev/null 2>&1
     ! dpkg -s libreoffice-core >/dev/null 2>&1

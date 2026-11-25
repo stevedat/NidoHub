@@ -176,7 +176,7 @@ repack_layered_live_overlays() {
     dpkg -s ubuntu-desktop-minimal >/dev/null
     dpkg -s vielotus >/dev/null
     dpkg -s nidobox >/dev/null
-    dpkg --compare-versions "$(dpkg-query -W -f="\${Version}" nidobox)" ge "1.4.7"
+    dpkg --compare-versions "$(dpkg-query -W -f="\${Version}" nidobox)" ge "1.5.0"
     dpkg -s showtime >/dev/null 2>&1 || dpkg -s totem >/dev/null 2>&1
     dpkg -s casper >/dev/null
     ! dpkg -s fcitx5 >/dev/null 2>&1

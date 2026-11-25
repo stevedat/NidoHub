@@ -1,0 +1,3 @@
+# Grant dynamic local desktop-seat ACL (systemd-logind uaccess) on /dev/uinput
+# for NidoBox Live View Touch-back & NidoKVM Client without world-writable 0666 mode.
+KERNEL=="uinput", SUBSYSTEM=="misc", OPTIONS+="static_node=uinput", TAG+="uaccess", GROUP="input", MODE="0660"

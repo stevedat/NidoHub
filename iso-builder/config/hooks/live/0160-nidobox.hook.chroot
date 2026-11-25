@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Hook 0160: Install first-party NidoBox (v1.4.7+) utility suite from signed APT repository
+# Hook 0160: Install first-party NidoBox (v1.5.0+) utility suite from signed APT repository
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 
 APT_LOCK_TIMEOUT="${APT_LOCK_TIMEOUT:-600}"
 APT_GET=(apt-get -o "DPkg::Lock::Timeout=${APT_LOCK_TIMEOUT}")
-MIN_NIDOBOX_VERSION="1.4.7"
+MIN_NIDOBOX_VERSION="1.5.0"
 ARCH="$(dpkg --print-architecture)"
 
 INSTALLED_VER=""

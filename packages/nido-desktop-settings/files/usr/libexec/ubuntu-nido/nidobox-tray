@@ -279,9 +279,102 @@ def probe_nidodrop_state(
         return (False, "")
 
 
-def resolve_tray_icon_name(drop_running: bool, active_icon_path: Path | None = None) -> str:
-    """Return active symbolic icon (with emerald dot) when NidoDrop LAN is sharing."""
-    if drop_running:
+def probe_nidokvm_state(
+    runtime_dir: Path | None = None,
+    uid: int | None = None,
+    timeout: float = 0.15,
+) -> tuple[bool, str, str]:
+    """Query active NidoKVM LAN daemon quickly without spawning a subprocess."""
+    if runtime_dir is not None:
+        base = runtime_dir
+    else:
+        xdg_rt = os.environ.get("XDG_RUNTIME_DIR")
+        if xdg_rt:
+            base = Path(xdg_rt)
+        else:
+            import tempfile
+
+            base = Path(tempfile.gettempdir())
+    real_uid = os.getuid() if uid is None else uid
+    state_file = base / f"nidobox-kvm-{real_uid}.json"
+    if not state_file.is_file():
+        return (False, "", "")
+    import json
+    import socket
+
+    try:
+        st = json.loads(state_file.read_text(encoding="utf-8"))
+        port = int(st.get("controlPort", 0))
+    except Exception:
+        return (False, "", "")
+    if port <= 0:
+        return (False, "", "")
+
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=timeout) as sock:
+            sock.settimeout(timeout)
+            sock.sendall(b'{"cmd":"snapshot"}\n')
+            line = sock.makefile("r", encoding="utf-8").readline()
+        if not line:
+            return (False, "", "")
+        resp = json.loads(line)
+        if not resp.get("ok"):
+            return (False, "", "")
+        snap = resp.get("snapshot") or {}
+        role = str(snap.get("role") or "off").strip().lower()
+        if not bool(snap.get("isRunning", False)) or role == "off":
+            return (False, "", "")
+        peer = str(snap.get("peerName") or "").strip().replace("_", " ")
+        return (True, role, peer)
+    except Exception:
+        return (False, "", "")
+
+
+def stop_nidokvm(
+    runtime_dir: Path | None = None,
+    uid: int | None = None,
+    timeout: float = 1.5,
+) -> bool:
+    """Stop active NidoKVM daemon over its loopback control socket."""
+    if runtime_dir is not None:
+        base = runtime_dir
+    else:
+        xdg_rt = os.environ.get("XDG_RUNTIME_DIR")
+        if xdg_rt:
+            base = Path(xdg_rt)
+        else:
+            import tempfile
+
+            base = Path(tempfile.gettempdir())
+    real_uid = os.getuid() if uid is None else uid
+    state_file = base / f"nidobox-kvm-{real_uid}.json"
+    if not state_file.is_file():
+        return False
+    import json
+    import socket
+
+    try:
+        st = json.loads(state_file.read_text(encoding="utf-8"))
+        port = int(st.get("controlPort", 0))
+    except Exception:
+        return False
+    if port <= 0:
+        return False
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=timeout) as sock:
+            sock.settimeout(timeout)
+            sock.sendall(b'{"cmd":"stop"}\n')
+            line = sock.makefile("r", encoding="utf-8").readline()
+        if not line:
+            return False
+        return bool(json.loads(line).get("ok"))
+    except Exception:
+        return False
+
+
+def resolve_tray_icon_name(active: bool, active_icon_path: Path | None = None) -> str:
+    """Return active symbolic icon (with emerald dot) when NidoDrop LAN or NidoKVM is active."""
+    if active:
         target = active_icon_path if active_icon_path is not None else ACTIVE_ICON_SVG
         if target.is_file():
             return ICON_NAME_ACTIVE
@@ -323,7 +416,13 @@ def _copy_text_to_clipboard(text: str) -> bool:
     return False
 
 
-def build_menu_items(drop_running: bool, drop_url: str = "") -> list[dict[str, Any]]:
+def build_menu_items(
+    drop_running: bool,
+    drop_url: str = "",
+    kvm_running: bool = False,
+    kvm_role: str = "",
+    kvm_peer: str = "",
+) -> list[dict[str, Any]]:
     """Return ordered flat menu specification for com.canonical.dbusmenu."""
     share_label = (
         "Đang chia sẻ LAN — Mở mã QR"
@@ -372,6 +471,22 @@ def build_menu_items(drop_running: bool, drop_url: str = "") -> list[dict[str, A
                 "visible": True,
                 "enabled": True,
                 "action": "stop_drop",
+            }
+        )
+    if kvm_running:
+        clean_peer = (kvm_peer or "").strip().replace("_", " ")
+        role_lbl = "Dừng NidoKVM (Host)" if kvm_role == "host" else "Ngắt kết nối NidoKVM"
+        if clean_peer:
+            role_lbl = f"{role_lbl} · {clean_peer}"
+        items.append(
+            {
+                "id": 5,
+                "type": "standard",
+                "label": role_lbl,
+                "icon-name": "input-mouse-symbolic",
+                "visible": True,
+                "enabled": True,
+                "action": "stop_kvm",
             }
         )
     items.extend(
@@ -508,6 +623,9 @@ def run_tray() -> int:
         "revision": 1,
         "drop_running": False,
         "drop_url": "",
+        "kvm_running": False,
+        "kvm_role": "",
+        "kvm_peer": "",
         "items": build_menu_items(False, ""),
         "activation_token": "",
         "sni_reg_id": 0,
@@ -553,14 +671,25 @@ def run_tray() -> int:
 
     def _refresh_items() -> bool:
         running, url = probe_nidodrop_state()
-        prev_running = bool(state["drop_running"])
-        changed = (running != prev_running) or (url != state["drop_url"])
+        kvm_running, kvm_role, kvm_peer = probe_nidokvm_state()
+        prev_active = bool(state["drop_running"] or state["kvm_running"])
+        now_active = bool(running or kvm_running)
+        changed = (
+            (running != bool(state["drop_running"]))
+            or (url != state["drop_url"])
+            or (kvm_running != bool(state["kvm_running"]))
+            or (kvm_role != state["kvm_role"])
+            or (kvm_peer != state["kvm_peer"])
+        )
         if changed:
             state["drop_running"] = running
             state["drop_url"] = url
-            state["items"] = build_menu_items(running, url)
+            state["kvm_running"] = kvm_running
+            state["kvm_role"] = kvm_role
+            state["kvm_peer"] = kvm_peer
+            state["items"] = build_menu_items(running, url, kvm_running, kvm_role, kvm_peer)
             state["revision"] += 1
-            if running != prev_running:
+            if now_active != prev_active:
                 _emit_icon_updated()
         return changed
 
@@ -683,6 +812,34 @@ def run_tray() -> int:
 
                 threading.Thread(target=worker, daemon=True).start()
             return True
+        if action == "stop_kvm":
+            import shutil
+            import subprocess
+            import threading
+
+            def kvm_worker() -> None:
+                ok_stop = stop_nidokvm()
+
+                def after_kvm_stop() -> bool:
+                    if _refresh_items():
+                        _emit_layout_updated()
+                    if ok_stop and shutil.which("notify-send"):
+                        try:
+                            subprocess.Popen(
+                                ["notify-send", "-i", "nidobox-symbolic", "NidoBox", "Đã dừng chia sẻ chuột & phím NidoKVM."],
+                                stdin=subprocess.DEVNULL,
+                                stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL,
+                                start_new_session=True,
+                            )
+                        except Exception:
+                            pass
+                    return False
+
+                GLib.idle_add(after_kvm_stop)
+
+            threading.Thread(target=kvm_worker, daemon=True).start()
+            return True
         if action == "quit":
             loop.quit()
             return True
@@ -706,7 +863,7 @@ def run_tray() -> int:
         if prop == "ItemIsMenu":
             return GLib.Variant("b", True)
         if prop == "IconName":
-            return GLib.Variant("s", resolve_tray_icon_name(bool(state["drop_running"])))
+            return GLib.Variant("s", resolve_tray_icon_name(bool(state["drop_running"] or state["kvm_running"])))
         if prop == "IconPixmap":
             return GLib.Variant("a(iiay)", [(22, 22, _get_icon_pixmap())])
         if prop in ("OverlayIconName", "AttentionIconName", "AttentionMovieName"):
@@ -714,7 +871,7 @@ def run_tray() -> int:
         if prop in ("OverlayIconPixmap", "AttentionIconPixmap"):
             return GLib.Variant("a(iiay)", [])
         if prop == "ToolTip":
-            cur_icon = resolve_tray_icon_name(bool(state["drop_running"]))
+            cur_icon = resolve_tray_icon_name(bool(state["drop_running"] or state["kvm_running"]))
             return GLib.Variant(
                 "(sa(iiay)ss)",
                 (cur_icon, [], "NidoBox", "Chụp màn hình OCR & tiện ích NidoOS"),
@@ -1001,6 +1158,40 @@ def run_self_test() -> int:
         finally:
             t.join(timeout=2.0)
             srv.close()
+
+        # Verify NidoKVM probe, menu integration, and stop control
+        assert probe_nidokvm_state(runtime_dir=rdir, uid=1000) == (False, "", "")
+        kvm_srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        kvm_srv.bind(("127.0.0.1", 0))
+        kvm_srv.listen(2)
+        kvm_port = kvm_srv.getsockname()[1]
+
+        def serve_kvm() -> None:
+            for _ in range(2):
+                conn, _ = kvm_srv.accept()
+                with conn:
+                    req = conn.recv(256).decode("utf-8", errors="replace")
+                    if '"stop"' in req:
+                        payload = json.dumps({"ok": True, "snapshot": {"role": "off", "isRunning": False}})
+                    else:
+                        payload = json.dumps(
+                            {"ok": True, "snapshot": {"role": "host", "isRunning": True, "peerName": "MacBook_Pro"}}
+                        )
+                    conn.sendall((payload + "\n").encode("utf-8"))
+
+        kt = threading.Thread(target=serve_kvm, daemon=True)
+        kt.start()
+        (rdir / "nidobox-kvm-1000.json").write_text(json.dumps({"controlPort": kvm_port}), encoding="utf-8")
+        try:
+            k_run, k_role, k_peer = probe_nidokvm_state(runtime_dir=rdir, uid=1000, timeout=1.0)
+            assert (k_run, k_role, k_peer) == (True, "host", "MacBook Pro"), (k_run, k_role, k_peer)
+            kvm_items = build_menu_items(False, "", k_run, k_role, k_peer)
+            assert [it["id"] for it in kvm_items] == [1, 2, 5, 10, 11, 12, 20, 21]
+            assert any(it["id"] == 5 and "MacBook Pro" in it["label"] and "_" not in it["label"] for it in kvm_items)
+            assert stop_nidokvm(runtime_dir=rdir, uid=1000, timeout=1.0) is True
+        finally:
+            kt.join(timeout=2.0)
+            kvm_srv.close()
 
     print("nidobox-tray self-test passed.")
     return 0
