@@ -106,11 +106,16 @@ fi
 dpkg -s vielotus >/dev/null
 grep -q "<name>vielotus</name>" /usr/share/ibus/component/vielotus.xml
 grep -q "<name>vielotus-vni</name>" /usr/share/ibus/component/vielotus.xml
-if ! dpkg -s nido-ime-bridge >/dev/null 2>&1; then
+if [ -d /tmp/nido-ime-debs ] && compgen -G '/tmp/nido-ime-debs/nido-ime-bridge_*.deb' >/dev/null; then
+  echo "[Ubuntu-Nido] Installing locally built NidoOS zero-underline Sen Viet bridge (nido-ime-bridge)..."
+  "${APT_GET[@]}" install -y --no-install-recommends /tmp/nido-ime-debs/nido-ime-bridge_*.deb
+  rm -rf /tmp/nido-ime-debs
+elif ! dpkg -s nido-ime-bridge >/dev/null 2>&1; then
   echo "[Ubuntu-Nido] Installing NidoOS zero-underline Sen Viet bridge (nido-ime-bridge)..."
   "${APT_GET[@]}" update -qq || true
   "${APT_GET[@]}" install -y --no-install-recommends nido-ime-bridge
 fi
+rm -rf /tmp/nido-ime-debs
 dpkg -s nido-ime-bridge >/dev/null
 test -x /usr/lib/ibus/nido-ibus-vielotus
 grep -q "<name>nido-vielotus</name>" /usr/share/ibus/component/nido-vielotus.xml

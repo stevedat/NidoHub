@@ -286,10 +286,19 @@ step_customize() {
     ok "Selected $native_used Stage 2 native (${TARGET_ARCH}) package(s) for ISO."
   fi
   if [ -d "$pkg_vendor" ]; then
+    mkdir -p "$WORK_DIR/squashfs/tmp/nido-ime-debs"
     for deb in "$pkg_vendor"/*_"${TARGET_ARCH}".deb "$pkg_vendor"/*_all.deb; do
       if [ -f "$deb" ]; then
-        cp "$deb" "$WORK_DIR/squashfs/tmp/nido-debs/"
-        deb_count=$((deb_count + 1))
+        case "$(basename "$deb")" in
+          nido-ime-bridge_*.deb)
+            # Installed by hook 0150 right after upstream `vielotus` is present
+            cp "$deb" "$WORK_DIR/squashfs/tmp/nido-ime-debs/"
+            ;;
+          *)
+            cp "$deb" "$WORK_DIR/squashfs/tmp/nido-debs/"
+            deb_count=$((deb_count + 1))
+            ;;
+        esac
       fi
     done
   fi

@@ -1059,10 +1059,14 @@ def run_tray() -> int:
 
 def run_self_test() -> int:
     """Run headless validation of D-Bus schemas, menu structure, pixmap, and NidoDrop probe."""
-    # Verify heavy stdlib modules remain unloaded on startup (keeps resident tray RSS minimal)
+    # Verify heavy stdlib modules remain unloaded on startup (keeps resident tray RSS minimal).
+    # Note: `threading` and `math` may be pre-imported by Python 3.12 stdlib (`typing`/`pathlib`)
+    # or Ubuntu sitecustomize hooks, so verify they are not bound at top-level in our module namespace.
     if __name__ == "__main__":
-        for deferred_mod in ("xml.etree.ElementTree", "socket", "subprocess", "threading", "tempfile", "shutil", "json", "math"):
+        for deferred_mod in ("xml.etree.ElementTree", "socket", "subprocess", "tempfile", "shutil", "json"):
             assert deferred_mod not in sys.modules, f"{deferred_mod} should be lazily imported in nidobox-tray"
+        for top_mod in ("threading", "math", "socket", "subprocess", "tempfile", "shutil", "json"):
+            assert top_mod not in globals(), f"{top_mod} should not be imported at top-level in nidobox-tray"
 
     import json
     import socket
