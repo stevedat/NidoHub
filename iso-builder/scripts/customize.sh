@@ -378,6 +378,7 @@ check_vi(\"/usr/share/fonts/truetype/noto/NotoMono-Regular.ttf\")"
     test ! -e /etc/xdg/autostart/org.gnome.Evolution-alarm-notify.desktop
     test ! -e /etc/xdg/autostart/snap-userd-autostart.desktop
     test ! -e /etc/apt/apt.conf.d/20packagekit
+    test ! -e /etc/apt/apt.conf.d/20packagekit.nido-disabled
     test ! -e /usr/share/dbus-1/system-services/org.freedesktop.PackageKit.service
     test -L /etc/systemd/system/packagekit.service
     test -L /etc/systemd/user/localsearch-3.service
@@ -399,6 +400,8 @@ check_vi(\"/usr/share/fonts/truetype/noto/NotoMono-Regular.ttf\")"
     test -x /usr/bin/nido-hub
     test -x /usr/bin/nido-doctor
     /usr/bin/nido-doctor --self-test >/dev/null
+    test -x /usr/lib/systemd/user-environment-generators/60-nido-vm-gsk
+    /usr/lib/systemd/user-environment-generators/60-nido-vm-gsk --self-test >/dev/null
     test -x /usr/bin/nidooffice
     test -x /usr/bin/nidooffice-desktop
     test -x /usr/bin/pkcs11-helper

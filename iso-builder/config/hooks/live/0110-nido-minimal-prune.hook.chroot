@@ -102,7 +102,6 @@ fi
 for divert_path in \
   /usr/share/dbus-1/system-services/com.canonical.UbuntuAdvantage.service \
   /usr/share/dbus-1/system-services/org.freedesktop.PackageKit.service \
-  /etc/apt/apt.conf.d/20packagekit \
   /etc/xdg/autostart/gnome-initial-setup-first-login.desktop \
   /etc/xdg/autostart/gnome-initial-setup-copy-worker.desktop \
   /etc/xdg/autostart/update-notifier.desktop \
@@ -119,6 +118,25 @@ for divert_path in \
     rm -f "$divert_path"
   fi
 done
+
+# Divert 20packagekit outside /etc/apt/apt.conf.d/ to prevent APT invalid-extension Notice warnings
+mkdir -p /var/lib/ubuntu-nido/disabled
+if dpkg-divert --list /etc/apt/apt.conf.d/20packagekit 2>/dev/null | grep -q '/etc/apt/apt.conf.d/20packagekit.nido-disabled'; then
+  dpkg-divert --local --rename --remove /etc/apt/apt.conf.d/20packagekit >/dev/null 2>&1 || true
+fi
+rm -f /etc/apt/apt.conf.d/20packagekit.nido-disabled
+if ! dpkg-divert --list /etc/apt/apt.conf.d/20packagekit 2>/dev/null | grep -q '/var/lib/ubuntu-nido/disabled/20packagekit'; then
+  if [ -e /etc/apt/apt.conf.d/20packagekit ]; then
+    dpkg-divert --local --rename \
+      --divert /var/lib/ubuntu-nido/disabled/20packagekit \
+      --add /etc/apt/apt.conf.d/20packagekit >/dev/null 2>&1 || true
+  else
+    dpkg-divert --local --no-rename \
+      --divert /var/lib/ubuntu-nido/disabled/20packagekit \
+      --add /etc/apt/apt.conf.d/20packagekit >/dev/null 2>&1 || true
+  fi
+fi
+rm -f /etc/apt/apt.conf.d/20packagekit
 
 mkdir -p /etc/systemd/system /etc/systemd/user
 for sys_unit in \

@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+# Systemd user-environment-generator: select GTK4 Cairo renderer on VMs using
+# virtual/software GPUs (vmwgfx, virtio_gpu, vboxvideo, qxl, bochs, simpledrm)
+# to avoid ~250-400 MB/process Mesa Vulkan/LLVM overhead per GTK4 app.
+# Bare-metal GPUs and GPU-passthrough VMs keep hardware Vulkan/GL untouched.
+set -euo pipefail
+
+detect_vm_type() {
+  if [ "${NIDO_VM_VIRT_TYPE+set}" = "set" ]; then
+    printf '%s\n' "$NIDO_VM_VIRT_TYPE"
+    return 0
+  fi
+  if command -v systemd-detect-virt >/dev/null 2>&1; then
+    systemd-detect-virt --vm 2>/dev/null || true
+  fi
+}
+
+should_use_cairo() {
+  # Respect explicit user override
+  if [ -n "${GSK_RENDERER:-}" ]; then
+    return 1
+  fi
+
+  local vm_type
+  vm_type="$(detect_vm_type)"
+  if [ -z "$vm_type" ] || [ "$vm_type" = "none" ]; then
+    return 1
+  fi
+
+  local drm_dir="${NIDO_DRM_SYSFS:-/sys/class/drm}"
+  local found_virtual=0
+  local found_any=0
+  local uev drv
+  shopt -s nullglob
+  for uev in "${drm_dir}"/card*/device/uevent; do
+    [ -f "$uev" ] || continue
+    drv="$(awk -F= '$1 == "DRIVER" { print $2; exit }' "$uev" 2>/dev/null || true)"
+    [ -n "$drv" ] || continue
+    found_any=1
+    case "$drv" in
+      i915|xe|amdgpu|radeon|nvidia|nouveau|apple|asahi|msm|panfrost|panthor|etnaviv|vc4|v3d)
+        shopt -u nullglob
+        return 1
+        ;;
+      vmwgfx|virtio_gpu|virtio-pci|vboxvideo|qxl|bochs-drm|bochs|cirrus|simpledrm|hyperv_drm|vkms)
+        found_virtual=1
+        ;;
+    esac
+  done
+  shopt -u nullglob
+
+  if [ "$found_virtual" -eq 1 ] || [ "$found_any" -eq 0 ]; then
+    return 0
+  fi
+  return 1
+}
+
+run_self_test() {
+  local tmp_dir out
+  tmp_dir="$(mktemp -d /tmp/nido-vm-gsk-test.XXXXXX)"
+  trap 'rm -rf "${tmp_dir:-}"' RETURN
+
+  # 1. VMware vmwgfx VM -> GSK_RENDERER=cairo
+  mkdir -p "$tmp_dir/vm/card0/device"
+  printf 'DRIVER=vmwgfx\nPCI_ID=15AD:0406\n' > "$tmp_dir/vm/card0/device/uevent"
+  out="$(GSK_RENDERER="" NIDO_VM_VIRT_TYPE="vmware" NIDO_DRM_SYSFS="$tmp_dir/vm" bash "$0")"
+  [ "$out" = "GSK_RENDERER=cairo" ] || { echo "Expected GSK_RENDERER=cairo on vmwgfx, got: $out" >&2; return 1; }
+
+  # 2. Bare-metal host -> empty output
+  out="$(GSK_RENDERER="" NIDO_VM_VIRT_TYPE="none" NIDO_DRM_SYSFS="$tmp_dir/vm" bash "$0")"
+  [ -z "$out" ] || { echo "Expected empty output on bare metal, got: $out" >&2; return 1; }
+
+  # 3. VM with hardware GPU passthrough (amdgpu) -> empty output
+  mkdir -p "$tmp_dir/pt/card0/device" "$tmp_dir/pt/card1/device"
+  printf 'DRIVER=vmwgfx\n' > "$tmp_dir/pt/card0/device/uevent"
+  printf 'DRIVER=amdgpu\n' > "$tmp_dir/pt/card1/device/uevent"
+  out="$(GSK_RENDERER="" NIDO_VM_VIRT_TYPE="kvm" NIDO_DRM_SYSFS="$tmp_dir/pt" bash "$0")"
+  [ -z "$out" ] || { echo "Expected empty output with GPU passthrough, got: $out" >&2; return 1; }
+
+  # 4. Explicit user override -> empty output
+  out="$(GSK_RENDERER="ngl" NIDO_VM_VIRT_TYPE="vmware" NIDO_DRM_SYSFS="$tmp_dir/vm" bash "$0")"
+  [ -z "$out" ] || { echo "Expected user GSK_RENDERER override to be respected, got: $out" >&2; return 1; }
+
+  echo "60-nido-vm-gsk self-test passed."
+}
+
+if [ "${1:-}" = "--self-test" ]; then
+  run_self_test
+  exit 0
+fi
+
+if should_use_cairo; then
+  printf 'GSK_RENDERER=cairo\n'
+fi

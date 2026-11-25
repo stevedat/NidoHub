@@ -184,6 +184,7 @@ for fname in expected:
                 "./usr/local/share/applications/org.gnome.Yelp.desktop",
                 "./usr/lib/systemd/system/nido-installer-fonts.service",
                 "./usr/bin/nido-doctor",
+                "./usr/lib/systemd/user-environment-generators/60-nido-vm-gsk",
                 "./usr/libexec/ubuntu-nido/bind-installer-fonts",
                 "./usr/libexec/ubuntu-nido/ensure-vietnamese-ime",
                 "./usr/libexec/ubuntu-nido/nidobox-tray",
@@ -1382,6 +1383,8 @@ tray_script = root / "packages/nido-desktop-settings/files/usr/libexec/ubuntu-ni
 subprocess.run([sys.executable, str(tray_script), "--self-test"], check=True)
 doctor_script = root / "packages/nido-desktop-settings/files/usr/bin/nido-doctor"
 subprocess.run([sys.executable, str(doctor_script), "--self-test"], check=True)
+vm_gsk_script = root / "packages/nido-desktop-settings/files/usr/lib/systemd/user-environment-generators/60-nido-vm-gsk"
+subprocess.run(["bash", str(vm_gsk_script), "--self-test"], check=True)
 
 # Verify nido-welcome suppresses NidoHub & nidoagent cold-start during Live ISO and stamps installed skills sync
 gw_unit_txt = (root / "packages/nidoai-gateway/files/usr/lib/systemd/user/nidoai-gateway.service").read_text(encoding="utf-8")

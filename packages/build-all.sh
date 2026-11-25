@@ -108,6 +108,7 @@ chmod 755 \
   "${SCRIPT_DIR}/nido-desktop-settings/files/etc/skel/.local/share/nautilus/scripts/Giao-cho-NidoAgent" \
   "${SCRIPT_DIR}/nido-desktop-settings/files/etc/skel/.local/share/nautilus/scripts/Gui-qua-NidoDrop-LAN" \
   "${SCRIPT_DIR}/nido-desktop-settings/files/usr/bin/nido-doctor" \
+  "${SCRIPT_DIR}/nido-desktop-settings/files/usr/lib/systemd/user-environment-generators/60-nido-vm-gsk" \
   "${SCRIPT_DIR}/nido-desktop-settings/files/etc/skel/.local/share/nautilus/scripts/Giai-nen-Chuan-Tieng-Viet" \
   "${SCRIPT_DIR}/nido-hub/DEBIAN/postinst" \
   "${SCRIPT_DIR}/nido-hub/files/usr/bin/nido-hub" \

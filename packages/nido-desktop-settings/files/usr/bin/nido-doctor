@@ -90,6 +90,7 @@ def collect_checks(include_apt_update: bool = False) -> tuple[list[CheckResult],
     # 3. APT & PackageKit Hygiene
     forbidden = [
         Path("/etc/apt/apt.conf.d/20packagekit"),
+        Path("/etc/apt/apt.conf.d/20packagekit.nido-disabled"),
         Path("/usr/share/dbus-1/system-services/org.freedesktop.PackageKit.service"),
     ]
     if not is_live:
@@ -250,6 +251,24 @@ def collect_checks(include_apt_update: bool = False) -> tuple[list[CheckResult],
             continue
     if gpu_info:
         summary["gpu"] = ", ".join(gpu_info)
+
+    # 10. VM GTK4 Renderer check (informational/PASS on VMs with virtual GPU)
+    _, vm_type, _ = _run(["systemd-detect-virt", "--vm"])
+    if vm_type and vm_type != "none":
+        gen_path = Path("/usr/lib/systemd/user-environment-generators/60-nido-vm-gsk")
+        gsk_val = os.environ.get("GSK_RENDERER", "")
+        if gsk_val == "cairo":
+            results.append(CheckResult("VM GTK4 Renderer", "PASS", f"GSK_RENDERER=cairo active ({vm_type})"))
+        elif gen_path.is_file() and os.access(gen_path, os.X_OK):
+            results.append(
+                CheckResult(
+                    "VM GTK4 Renderer",
+                    "INFO",
+                    f"generator ready ({vm_type}); re-login/reboot to activate GSK_RENDERER=cairo",
+                )
+            )
+        else:
+            results.append(CheckResult("VM GTK4 Renderer", "WARN", f"GSK_RENDERER unset on {vm_type} VM"))
 
     return results, summary
 
