@@ -77,8 +77,8 @@ show-trash=false
 show-volumes=false
 
 [org/gnome/desktop/input-sources]
-sources=[('ibus', 'vielotus'), ('ibus', 'vielotus-vni'), ('xkb', 'us')]
-mru-sources=[('ibus', 'vielotus'), ('xkb', 'us'), ('ibus', 'vielotus-vni')]
+sources=[('ibus', 'nido-vielotus'), ('ibus', 'nido-vielotus-vni'), ('xkb', 'us')]
+mru-sources=[('ibus', 'nido-vielotus'), ('xkb', 'us'), ('ibus', 'nido-vielotus-vni')]
 per-window=false
 show-all-sources=true
 

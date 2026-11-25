@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    NidoOS Sen Việt Zero-Underline IBus Component
+    Dynamically binds libVieLotusCAPI.so.0 from upstream vielotus without modifying it.
+-->
+<component>
+    <name>org.nidoos.IBus.VieLotus</name>
+    <description>NidoOS Sen Việt Zero-Underline Input Method</description>
+    <version>0.2.0</version>
+    <author>Nido Holdings</author>
+    <homepage>https://nido-holdings.com</homepage>
+    <license>MIT</license>
+    <exec>/usr/lib/ibus/nido-ibus-vielotus --ibus</exec>
+    <textdomain>nido-ime-bridge</textdomain>
+    <observed-paths>
+        <path>/usr/lib/ibus/nido-ibus-vielotus</path>
+        <path>/usr/lib/libVieLotusCAPI.so.0</path>
+    </observed-paths>
+    <engines>
+        <engine>
+            <name>nido-vielotus</name>
+            <longname>Sen Việt - Telex (NidoOS)</longname>
+            <description>Bộ gõ tiếng Việt Sen Việt không gạch chân toàn hệ thống (Telex)</description>
+            <language>vi</language>
+            <license>MIT</license>
+            <author>Nido Holdings</author>
+            <icon>vielotus</icon>
+            <layout>us</layout>
+            <rank>100</rank>
+            <symbol>🇻🇳 tex</symbol>
+            <setup>/usr/bin/vielotus-settings</setup>
+        </engine>
+        <engine>
+            <name>nido-vielotus-vni</name>
+            <longname>Sen Việt - VNI (NidoOS)</longname>
+            <description>Bộ gõ tiếng Việt Sen Việt không gạch chân toàn hệ thống (VNI)</description>
+            <language>vi</language>
+            <license>MIT</license>
+            <author>Nido Holdings</author>
+            <icon>vielotus</icon>
+            <layout>us</layout>
+            <rank>99</rank>
+            <symbol>🇻🇳 vni</symbol>
+            <setup>/usr/bin/vielotus-settings</setup>
+        </engine>
+    </engines>
+</component>

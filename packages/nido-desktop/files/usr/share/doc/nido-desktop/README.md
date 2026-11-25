@@ -9,6 +9,6 @@ Included packages:
 - `nido-desktop-settings`: GNOME minimal branding, dconf defaults, and welcome autostart
 - `nidooffice-cli`: NidoOffice CLI & OOXML engine
 - `nidooffice-desktop`: NidoOffice Desktop AI Office Suite (`/opt/NidoOffice`, auto-resolves latest verified GitHub Release; `nidooffice-desktop --check-update` / `--update`)
-- `vielotus`: Sen Viet Vietnamese input over native GNOME IBus (`Super+Space`)
+- `vielotus` + `nido-ime-bridge`: Sen Viet Vietnamese input with NidoOS zero-underline IBus bridge over native GNOME IBus (`Super+Space`)
 - `nidobox`: Native GTK4/Rust utility suite v1.5.0+ (NidoDrop LAN + Live View & Touch-back, NidoKVM cross-device mouse/keyboard/clipboard, Capture Studio + OCR, Batch Image, Archive, NTFS repair)
 - `showtime | totem`: Native GNOME Video Player (`showtime` on Ubuntu 26.04, `totem` fallback on 24.04)

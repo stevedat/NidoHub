@@ -32,11 +32,13 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable, Iterator
 
-TELEX_SOURCE = ("ibus", "vielotus")
-VNI_SOURCE = ("ibus", "vielotus-vni")
+TELEX_SOURCE = ("ibus", "nido-vielotus")
+VNI_SOURCE = ("ibus", "nido-vielotus-vni")
+LEGACY_TELEX_SOURCE = ("ibus", "vielotus")
+LEGACY_VNI_SOURCE = ("ibus", "vielotus-vni")
 US_SOURCE = ("xkb", "us")
 IBus_SYSTEMD_UNIT = "org.freedesktop.IBus.session.GNOME.service"
-MARKER_VALUE = "v3:vielotus-telex-default\n"
+MARKER_VALUE = "v4:nido-vielotus-zero-underline\n"
 
 DEFAULT_VIELOTUS_CONF = (
     "INPUT_METHOD=telex\n"
@@ -75,11 +77,22 @@ def format_gsettings_sources(sources: list[tuple[str, str]]) -> str:
 
 def build_target_input_sources(
     existing: list[tuple[str, str]],
+    telex_source: tuple[str, str] = TELEX_SOURCE,
+    vni_source: tuple[str, str] = VNI_SOURCE,
 ) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
     """Return ``(sources, mru_sources)`` with Sen Viet Telex default + VNI + English US."""
+    managed = {
+        TELEX_SOURCE,
+        VNI_SOURCE,
+        LEGACY_TELEX_SOURCE,
+        LEGACY_VNI_SOURCE,
+        telex_source,
+        vni_source,
+        US_SOURCE,
+    }
     extras: list[tuple[str, str]] = []
     for src in existing:
-        if src in (TELEX_SOURCE, VNI_SOURCE, US_SOURCE):
+        if src in managed:
             continue
         # Subiquity writes legacy ('xkb', 'vn') (1=ă, 2=â number-row layout) when user selects
         # Vietnamese keyboard during install; replace it with clean ('xkb', 'us') + Sen Viet.
@@ -88,8 +101,8 @@ def build_target_input_sources(
         if src not in extras:
             extras.append(src)
 
-    sources = [TELEX_SOURCE, VNI_SOURCE, US_SOURCE, *extras]
-    mru_sources = [TELEX_SOURCE, US_SOURCE, VNI_SOURCE, *extras]
+    sources = [telex_source, vni_source, US_SOURCE, *extras]
+    mru_sources = [telex_source, US_SOURCE, vni_source, *extras]
     return sources, mru_sources
 
 
@@ -97,22 +110,27 @@ def is_telex_active_default(
     sources: list[tuple[str, str]],
     mru_sources: list[tuple[str, str]],
     active_engine: str | None = None,
+    telex_source: tuple[str, str] = TELEX_SOURCE,
+    vni_source: tuple[str, str] = VNI_SOURCE,
 ) -> bool:
     """Return True when Sen Viet Telex is first in sources/MRU and actively bound."""
-    if len(sources) < 2 or sources[0] != TELEX_SOURCE:
+    if len(sources) < 2 or sources[0] != telex_source:
         return False
-    if VNI_SOURCE not in sources or ("xkb", "vn") in sources:
+    if vni_source not in sources or ("xkb", "vn") in sources:
         return False
-    if mru_sources and mru_sources[0] != TELEX_SOURCE:
+    if mru_sources and mru_sources[0] != telex_source:
         return False
-    if active_engine is not None and active_engine != "vielotus":
+    if active_engine is not None and active_engine != telex_source[1]:
         return False
     return True
 
 
-def needs_live_installer_restore(sources: list[tuple[str, str]]) -> bool:
+def needs_live_installer_restore(
+    sources: list[tuple[str, str]],
+    telex_source: tuple[str, str] = TELEX_SOURCE,
+) -> bool:
     """Return True when the Live installer wiped Sen Viet or wrote legacy ``('xkb', 'vn')``."""
-    return TELEX_SOURCE not in sources or ("xkb", "vn") in sources
+    return telex_source not in sources or ("xkb", "vn") in sources
 
 
 def parse_gsettings_monitor_line(line: str) -> list[tuple[str, str]] | None:
@@ -304,15 +322,35 @@ def _live_guard_lock():
     return _named_lock(f"nido-ime-live-guard-{os.getuid()}.lock", blocking=False)
 
 
-def _ibus_has_both(ibus_bin: str, home_dir: Path, env: dict[str, str]) -> bool:
+def _ibus_detect_engine_pair(
+    ibus_bin: str,
+    home_dir: Path,
+    env: dict[str, str],
+) -> tuple[tuple[str, str], tuple[str, str]] | None:
     cur_env = discover_ibus_env(home_dir, env)
     if "IBUS_ADDRESS" not in cur_env:
-        return False
+        return None
     res = _run([ibus_bin, "list-engine"], cur_env, timeout=4.0)
     if res.returncode != 0:
-        return False
+        return None
     engines = {ln.strip().split()[0].rstrip(":") for ln in res.stdout.splitlines() if ln.strip()}
-    return "vielotus" in engines and "vielotus-vni" in engines
+    if TELEX_SOURCE[1] in engines and VNI_SOURCE[1] in engines:
+        return TELEX_SOURCE, VNI_SOURCE
+    if LEGACY_TELEX_SOURCE[1] in engines and LEGACY_VNI_SOURCE[1] in engines:
+        return LEGACY_TELEX_SOURCE, LEGACY_VNI_SOURCE
+    return None
+
+
+def _ibus_has_both(ibus_bin: str, home_dir: Path, env: dict[str, str]) -> bool:
+    return _ibus_detect_engine_pair(ibus_bin, home_dir, env) is not None
+
+
+def _preferred_default_pair() -> tuple[tuple[str, str], tuple[str, str]]:
+    if Path("/usr/share/ibus/component/nido-vielotus.xml").is_file() or Path(
+        "/usr/lib/ibus/nido-ibus-vielotus"
+    ).is_file():
+        return TELEX_SOURCE, VNI_SOURCE
+    return LEGACY_TELEX_SOURCE, LEGACY_VNI_SOURCE
 
 
 def get_active_ibus_engine(ibus_bin: str | None, home_dir: Path, env: dict[str, str]) -> str:
@@ -419,6 +457,8 @@ def _apply_and_verify_telex(
     ibus_visible: bool,
     force: bool = False,
     max_attempts: int = 3,
+    telex_source: tuple[str, str] = TELEX_SOURCE,
+    vni_source: tuple[str, str] = VNI_SOURCE,
 ) -> tuple[bool, list[tuple[str, str]], list[tuple[str, str]], str]:
     """Bind Sen Viet Telex as the active GNOME input source and verify live activation."""
     ok_src, cur_sources = _get_gsettings_list(gsettings, "sources", env)
@@ -435,8 +475,10 @@ def _apply_and_verify_telex(
         cur_sources,
         cur_mru,
         active_engine if (ibus_visible and ibus_bin) else None,
+        telex_source=telex_source,
+        vni_source=vni_source,
     ):
-        _, target_mru = build_target_input_sources(cur_sources)
+        _, target_mru = build_target_input_sources(cur_sources, telex_source=telex_source, vni_source=vni_source)
         if not cur_mru:
             _run(
                 [gsettings, "set", "org.gnome.desktop.input-sources", "mru-sources", format_gsettings_sources(target_mru)],
@@ -452,13 +494,15 @@ def _apply_and_verify_telex(
 
     for attempt in range(1, max(1, max_attempts) + 1):
         _, existing = _get_gsettings_list(gsettings, "sources", env)
-        target_sources, target_mru = build_target_input_sources(existing)
+        target_sources, target_mru = build_target_input_sources(
+            existing, telex_source=telex_source, vni_source=vni_source
+        )
         sources_str = format_gsettings_sources(target_sources)
         mru_str = format_gsettings_sources(target_mru)
 
         # Bounce via 1-element [('xkb', 'us')] so GNOME Shell's InputSourceManager._updateMruSources()
         # sees _mruSources.length === 1 and resets _mruSources to target_sources, activating index 0
-        # (('ibus', 'vielotus') -> '🇻🇳 tex') directly via IBusManager.setEngine('vielotus').
+        # directly via IBusManager.setEngine(telex_source[1]).
         _run(
             [gsettings, "set", "org.gnome.desktop.input-sources", "sources", format_gsettings_sources([US_SOURCE])],
             env,
@@ -471,7 +515,7 @@ def _apply_and_verify_telex(
         _run([gsettings, "set", "org.gnome.desktop.input-sources", "mru-sources", mru_str], env, timeout=4.0)
         _run([gsettings, "set", "org.gnome.desktop.input-sources", "current", "uint32 0"], env, timeout=4.0)
 
-        # Wait up to 2.0s for GNOME Shell IBusManager to finish binding 'vielotus' natively
+        # Wait up to 2.0s for GNOME Shell IBusManager to finish binding the engine natively
         poll_deadline = time.monotonic() + 2.0
         verified = False
         while True:
@@ -482,6 +526,8 @@ def _apply_and_verify_telex(
                 final_sources,
                 final_mru,
                 final_engine if (ibus_visible and ibus_bin) else None,
+                telex_source=telex_source,
+                vni_source=vni_source,
             ):
                 verified = True
                 break
@@ -499,16 +545,18 @@ def _apply_and_verify_telex(
                 final_sources,
                 final_mru,
                 final_engine if (ibus_visible and ibus_bin) else None,
+                telex_source=telex_source,
+                vni_source=vni_source,
             ):
                 return True, final_sources, final_mru, final_engine
 
         if attempt < max_attempts:
             time.sleep(1.0)
 
-    # Last-resort engine switch if GNOME Shell didn't report 'vielotus' within retries
-    if ibus_bin and ibus_visible and final_engine != "vielotus":
+    # Last-resort engine switch if GNOME Shell didn't report target engine within retries
+    if ibus_bin and ibus_visible and final_engine != telex_source[1]:
         live_env = discover_ibus_env(home_dir, env)
-        _run([ibus_bin, "engine", "vielotus"], live_env, timeout=4.0)
+        _run([ibus_bin, "engine", telex_source[1]], live_env, timeout=4.0)
         final_engine = get_active_ibus_engine(ibus_bin, home_dir, env)
 
     return False, final_sources, final_mru, final_engine
@@ -596,15 +644,21 @@ def watch_live_session_sources(
             with _single_instance_lock(blocking=True) as acquired:
                 if not acquired:
                     return
+                pair = _ibus_detect_engine_pair(ibus_bin, home_dir, env) if ibus_bin else None
+                telex_src, vni_src = pair or _preferred_default_pair()
                 ok_src, latest_sources = _get_gsettings_list(gsettings, "sources", env)
-                if not ok_src or not needs_live_installer_restore(latest_sources):
+                if not ok_src or not needs_live_installer_restore(latest_sources, telex_source=telex_src):
                     return
-                ibus_vis = bool(ibus_bin and _ibus_has_both(ibus_bin, home_dir, env))
+                ibus_vis = pair is not None
                 reloaded = False
                 if not ibus_vis:
                     ibus_vis, reloaded = refresh_ibus_registry_if_needed(
                         home_dir, env, wait_seconds=4.0
                     )
+                    if ibus_vis and ibus_bin:
+                        pair = _ibus_detect_engine_pair(ibus_bin, home_dir, env)
+                        if pair:
+                            telex_src, vni_src = pair
                 verified, final_sources, final_mru, final_engine = _apply_and_verify_telex(
                     gsettings,
                     ibus_bin,
@@ -613,6 +667,8 @@ def watch_live_session_sources(
                     ibus_visible=ibus_vis,
                     force=True,
                     max_attempts=2,
+                    telex_source=telex_src,
+                    vni_source=vni_src,
                 )
                 ignore_until = time.monotonic() + 1.5
                 _write_diag_log(
@@ -638,7 +694,8 @@ def watch_live_session_sources(
                 if time.monotonic() < ignore_until:
                     continue
                 observed = parse_gsettings_monitor_line(line)
-                if observed is None or not needs_live_installer_restore(observed):
+                pref_telex, _ = _preferred_default_pair()
+                if observed is None or not needs_live_installer_restore(observed, telex_source=pref_telex):
                     continue
                 # Coalesce back-to-back Subiquity + Flutter gsettings writes
                 time.sleep(0.35)
@@ -690,6 +747,10 @@ def sync_gnome_input_sources(
         ibus_visible, was_reloaded = refresh_ibus_registry_if_needed(
             home_dir, env, wait_seconds=wait_seconds
         )
+        detected_pair = (
+            _ibus_detect_engine_pair(ibus_bin, home_dir, env) if (ibus_visible and ibus_bin) else None
+        )
+        telex_src, vni_src = detected_pair or _preferred_default_pair()
 
         verified, final_sources, final_mru, active_engine = _apply_and_verify_telex(
             gsettings,
@@ -699,6 +760,8 @@ def sync_gnome_input_sources(
             ibus_visible=ibus_visible,
             force=force,
             max_attempts=3,
+            telex_source=telex_src,
+            vni_source=vni_src,
         )
 
         marker_written = False
@@ -709,7 +772,7 @@ def sync_gnome_input_sources(
                 marker.write_text(MARKER_VALUE, encoding="utf-8")
                 marker_written = True
             synced_ok = True
-        elif TELEX_SOURCE in final_sources and VNI_SOURCE in final_sources:
+        elif telex_src in final_sources and vni_src in final_sources:
             _mark_vielotus_onboarded(home_dir)
 
         _write_diag_log(
@@ -732,35 +795,51 @@ def sync_gnome_input_sources(
 
 
 def run_self_test() -> int:
-    # 1. Subiquity default English install -> adds Telex + VNI ahead of US
+    # 1. Subiquity default English install -> adds NidoOS zero-underline Telex + VNI ahead of US
     s1, m1 = build_target_input_sources([("xkb", "us")])
-    assert s1 == [("ibus", "vielotus"), ("ibus", "vielotus-vni"), ("xkb", "us")], s1
-    assert m1 == [("ibus", "vielotus"), ("xkb", "us"), ("ibus", "vielotus-vni")], m1
+    assert s1 == [("ibus", "nido-vielotus"), ("ibus", "nido-vielotus-vni"), ("xkb", "us")], s1
+    assert m1 == [("ibus", "nido-vielotus"), ("xkb", "us"), ("ibus", "nido-vielotus-vni")], m1
 
     # 2. Subiquity Vietnamese keyboard selection -> replaces awkward ('xkb', 'vn') with clean US + Telex + VNI
     s2, _ = build_target_input_sources([("xkb", "vn")])
-    assert s2 == [("ibus", "vielotus"), ("ibus", "vielotus-vni"), ("xkb", "us")], s2
+    assert s2 == [("ibus", "nido-vielotus"), ("ibus", "nido-vielotus-vni"), ("xkb", "us")], s2
 
     # 3. Empty / unset sources -> still sets Telex + VNI + US
     s3, _ = build_target_input_sources(parse_gsettings_sources("@a(ss) []"))
-    assert s3 == [("ibus", "vielotus"), ("ibus", "vielotus-vni"), ("xkb", "us")], s3
+    assert s3 == [("ibus", "nido-vielotus"), ("ibus", "nido-vielotus-vni"), ("xkb", "us")], s3
 
-    # 4. Preserves additional user keyboards (e.g. Japanese/French) while placing Telex + VNI first
-    s4, _ = build_target_input_sources([("xkb", "us"), ("xkb", "jp"), ("ibus", "vielotus")])
-    assert s4 == [("ibus", "vielotus"), ("ibus", "vielotus-vni"), ("xkb", "us"), ("xkb", "jp")], s4
+    # 4. Migrates legacy ('ibus', 'vielotus') while preserving extra user keyboards (e.g. Japanese)
+    s4, _ = build_target_input_sources(
+        [("xkb", "us"), ("xkb", "jp"), ("ibus", "vielotus"), ("ibus", "vielotus-vni")]
+    )
+    assert s4 == [("ibus", "nido-vielotus"), ("ibus", "nido-vielotus-vni"), ("xkb", "us"), ("xkb", "jp")], s4
+
+    # 4b. Legacy fallback mode (when nido-ime-bridge is absent)
+    s_leg, m_leg = build_target_input_sources(
+        [("xkb", "us")], telex_source=LEGACY_TELEX_SOURCE, vni_source=LEGACY_VNI_SOURCE
+    )
+    assert s_leg == [("ibus", "vielotus"), ("ibus", "vielotus-vni"), ("xkb", "us")], s_leg
+    assert is_telex_active_default(
+        s_leg, m_leg, "vielotus", telex_source=LEGACY_TELEX_SOURCE, vni_source=LEGACY_VNI_SOURCE
+    ) is True
 
     # 5. Formatting round-trip
     formatted = format_gsettings_sources(s4)
     assert parse_gsettings_sources(formatted) == s4, formatted
 
     # 6. Telex default verification (sources + MRU + active IBus engine)
-    assert is_telex_active_default(s1, m1, "vielotus") is True
-    assert is_telex_active_default(s1, [], "vielotus") is True
-    assert is_telex_active_default(s1, [("xkb", "us"), ("ibus", "vielotus")], "vielotus") is False
+    assert is_telex_active_default(s1, m1, "nido-vielotus") is True
+    assert is_telex_active_default(s1, [], "nido-vielotus") is True
+    assert is_telex_active_default(s1, [("xkb", "us"), ("ibus", "nido-vielotus")], "nido-vielotus") is False
     assert is_telex_active_default(s1, m1, "xkb:us::eng") is False
-    assert is_telex_active_default([("xkb", "us"), ("ibus", "vielotus"), ("ibus", "vielotus-vni")], m1, "vielotus") is False
-    assert is_telex_active_default([("ibus", "vielotus"), ("xkb", "us")], m1, "vielotus") is False
-    assert is_telex_active_default([("ibus", "vielotus"), ("ibus", "vielotus-vni"), ("xkb", "vn")], m1, "vielotus") is False
+    assert is_telex_active_default(s1, m1, "vielotus") is False
+    assert is_telex_active_default(
+        [("xkb", "us"), ("ibus", "nido-vielotus"), ("ibus", "nido-vielotus-vni")], m1, "nido-vielotus"
+    ) is False
+    assert is_telex_active_default([("ibus", "nido-vielotus"), ("xkb", "us")], m1, "nido-vielotus") is False
+    assert is_telex_active_default(
+        [("ibus", "nido-vielotus"), ("ibus", "nido-vielotus-vni"), ("xkb", "vn")], m1, "nido-vielotus"
+    ) is False
 
     # 7. Live installer clobber detection & monitor line parsing
     assert is_live_session({"NIDO_TEST_LIVE_SESSION": "1"}) is True
@@ -768,7 +847,7 @@ def run_self_test() -> int:
     assert needs_live_installer_restore([("xkb", "us")]) is True
     assert needs_live_installer_restore([("xkb", "vn")]) is True
     assert needs_live_installer_restore([]) is True
-    assert needs_live_installer_restore([("ibus", "vielotus"), ("xkb", "vn")]) is True
+    assert needs_live_installer_restore([("ibus", "nido-vielotus"), ("xkb", "vn")]) is True
     assert needs_live_installer_restore(s1) is False
     assert needs_live_installer_restore(s4) is False
     assert parse_gsettings_monitor_line("sources: [('xkb', 'us')]") == [("xkb", "us")]

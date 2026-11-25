@@ -1,0 +1,18 @@
+Package: nido-ime-bridge
+Version: 0.2.0
+Section: utils
+Priority: optional
+Architecture: @ARCH@
+Depends: libc6 (>= 2.38), libglib2.0-0t64 | libglib2.0-0, libibus-1.0-5 (>= 1.5.25), vielotus (>= 2.0.8)
+Recommends: ibus
+Maintainer: Nido Holdings <support@nido-holdings.com>
+Homepage: https://nido-holdings.com
+Description: NidoOS zero-underline IBus bridge for Sen Viet (VieLotusIM)
+ Native IBus engine for NidoOS that dynamically loads libVieLotusCAPI.so.0
+ from upstream vielotus and commits Vietnamese diacritics directly without
+ ever activating IBus/Wayland preedit underlines.
+ .
+ Uses atomic surrounding-text replacement where verified, and an ordered
+ zero-race Backspace + commit pipeline (IBus forward-key or /dev/uinput)
+ on Chromium/Electron, Firefox, and terminal applications while preserving
+ full compatibility with upstream vielotus-settings and APT upgrades.

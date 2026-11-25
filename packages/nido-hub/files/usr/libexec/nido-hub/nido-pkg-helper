@@ -69,6 +69,7 @@ PROTECTED_PACKAGES = frozenset(
         "nido-desktop",
         "nido-desktop-settings",
         "nido-hub",
+        "nido-ime-bridge",
         "nidoagent-cli",
         "nidoai-gateway",
         "pipewire",

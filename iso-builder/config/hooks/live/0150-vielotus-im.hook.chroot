@@ -106,4 +106,17 @@ fi
 dpkg -s vielotus >/dev/null
 grep -q "<name>vielotus</name>" /usr/share/ibus/component/vielotus.xml
 grep -q "<name>vielotus-vni</name>" /usr/share/ibus/component/vielotus.xml
-echo "[Ubuntu-Nido] Sen Viet (VieLotusIM Telex + VNI over native IBus) hook completed."
+if ! dpkg -s nido-ime-bridge >/dev/null 2>&1; then
+  echo "[Ubuntu-Nido] Installing NidoOS zero-underline Sen Viet bridge (nido-ime-bridge)..."
+  "${APT_GET[@]}" update -qq || true
+  "${APT_GET[@]}" install -y --no-install-recommends nido-ime-bridge
+fi
+dpkg -s nido-ime-bridge >/dev/null
+test -x /usr/lib/ibus/nido-ibus-vielotus
+grep -q "<name>nido-vielotus</name>" /usr/share/ibus/component/nido-vielotus.xml
+grep -q "<name>nido-vielotus-vni</name>" /usr/share/ibus/component/nido-vielotus.xml
+/usr/lib/ibus/nido-ibus-vielotus --self-test
+if command -v ibus >/dev/null 2>&1; then
+  ibus write-cache --system >/dev/null 2>&1 || true
+fi
+echo "[Ubuntu-Nido] Sen Viet (VieLotusIM + NidoOS zero-underline IBus bridge) hook completed."

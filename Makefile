@@ -1,4 +1,4 @@
-.PHONY: help assets packages apt-repo dev-apt dev-apt-deploy release-apt release-apt-deploy release-apt-native release-apt-native-deploy check security-audit native-packages native-packages-amd64 native-packages-arm64 iso iso-arm64 iso-arm64-fast docker-iso clean
+.PHONY: help assets packages ime-bridge apt-repo dev-apt dev-apt-deploy release-apt release-apt-deploy release-apt-native release-apt-native-deploy check security-audit native-packages native-packages-amd64 native-packages-arm64 iso iso-arm64 iso-arm64-fast docker-iso clean
 
 UBUNTU_VERSION     ?= 26.04
 NIDO_VERSION       ?= 0.2.0
@@ -12,6 +12,7 @@ help:
 	@echo "  make check              Run full static analysis, packaging, APT repo, and runtime smoke tests"
 	@echo "  make assets             Generate NidoOS branding PNG assets (watermark, GRUB splash, wallpaper, logo)"
 	@echo "  make packages           Build NidoOS .deb packages into packages/dist/"
+	@echo "  make ime-bridge         Build amd64/arm64 nido-ime-bridge (zero-underline Sen Viet) .debs into packages/vendor/"
 	@echo "  make apt-repo           Build static APT repository into apt-repo/"
 	@echo "  make dev-apt            Build & GPG-sign dev packages (+dev...) in apt-repo/ for fast UTM apt upgrade"
 	@echo "  make dev-apt-deploy     Build, sign, and deploy dev apt-repo/ to $(APT_PAGES_PROJECT) via wrangler"
@@ -33,6 +34,9 @@ assets:
 
 packages: assets
 	bash packages/build-all.sh
+
+ime-bridge:
+	APT_GPG_KEY="$(APT_GPG_KEY)" bash scripts/build_ime_bridge.sh --arch all --out-dir packages/vendor
 
 apt-repo: packages
 	python3 scripts/build_apt_repo.py --dist-dir packages/dist --vendor-dir packages/vendor --out-dir apt-repo

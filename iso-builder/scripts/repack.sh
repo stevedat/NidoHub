@@ -175,6 +175,9 @@ repack_layered_live_overlays() {
     dpkg -s nidooffice-desktop >/dev/null
     dpkg -s ubuntu-desktop-minimal >/dev/null
     dpkg -s vielotus >/dev/null
+    dpkg -s nido-ime-bridge >/dev/null
+    test -x /usr/lib/ibus/nido-ibus-vielotus
+    /usr/lib/ibus/nido-ibus-vielotus --self-test >/dev/null
     dpkg -s nidobox >/dev/null
     dpkg --compare-versions "$(dpkg-query -W -f="\${Version}" nidobox)" ge "1.5.0"
     dpkg -s showtime >/dev/null 2>&1 || dpkg -s totem >/dev/null 2>&1

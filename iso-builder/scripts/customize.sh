@@ -474,6 +474,9 @@ check_vi(\"/usr/share/fonts/truetype/noto/NotoMono-Regular.ttf\")"
     dpkg -s firefox >/dev/null 2>&1
     dpkg -s vielotus >/dev/null 2>&1
     dpkg --compare-versions "$(dpkg-query -W -f="\${Version}" vielotus)" ge "2.0.8"
+    dpkg -s nido-ime-bridge >/dev/null 2>&1
+    test -x /usr/lib/ibus/nido-ibus-vielotus
+    /usr/lib/ibus/nido-ibus-vielotus --self-test >/dev/null
     dpkg -s nidobox >/dev/null 2>&1
     dpkg --compare-versions "$(dpkg-query -W -f="\${Version}" nidobox)" ge "1.5.0"
     dpkg -s showtime >/dev/null 2>&1 || dpkg -s totem >/dev/null 2>&1

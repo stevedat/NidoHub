@@ -405,9 +405,12 @@ function collectCapabilities() {
     input: {
       ibus: Boolean(whichBinary('ibus')),
       vielotus:
+        fs.existsSync('/usr/lib/ibus/nido-ibus-vielotus') ||
+        fs.existsSync('/usr/lib/ibus/ibus-engine-vielotus') ||
         fs.existsSync('/usr/libexec/ibus-engine-vielotus') ||
         fs.existsSync('/usr/lib/ibus-vielotus') ||
         Boolean(whichBinary('vielotus-setup')),
+      vielotusZeroUnderline: fs.existsSync('/usr/lib/ibus/nido-ibus-vielotus'),
     },
     email: {
       geary: Boolean(whichBinary('geary')),

@@ -35,8 +35,11 @@ SHELL_SCRIPTS=(
   "${ROOT_DIR}/packages/nidooffice-desktop/files/usr/lib/nidooffice-desktop/install-runtime.sh"
   "${ROOT_DIR}/packages/nido-desktop/DEBIAN/postinst"
   "${ROOT_DIR}/packages/nido-desktop/DEBIAN/postrm"
+  "${ROOT_DIR}/packages/nido-ime-bridge/DEBIAN/postinst"
+  "${ROOT_DIR}/packages/nido-ime-bridge/DEBIAN/postrm"
   "${ROOT_DIR}/packages/nido-desktop/files/usr/libexec/ubuntu-nido/showtime-launch"
   "${ROOT_DIR}/packages/nido-desktop/files/usr/libexec/ubuntu-nido/native-first-cleanup"
+  "${ROOT_DIR}/scripts/build_ime_bridge.sh"
   "${ROOT_DIR}/scripts/validate_native_first.sh"
   "${ROOT_DIR}/iso-builder/build.sh"
   "${ROOT_DIR}/iso-builder/scripts/config.sh"
@@ -260,7 +263,7 @@ for fname in expected:
                 ctrl_tar = ctrl_raw
             with tarfile.open(fileobj=io.BytesIO(ctrl_tar), mode="r:") as ctf:
                 ctrl_txt = ctf.extractfile("./control").read().decode("utf-8")
-                for dep in ("nido-desktop-settings", "nido-hub", "nidoagent-cli", "nidoai-gateway", "nidooffice-cli", "nidooffice-desktop", "vielotus (>= 2.0.8)", "nidobox (>= 1.5.0)", "wl-clipboard", "xclip", "geary", "showtime | totem"):
+                for dep in ("nido-desktop-settings", "nido-hub", "nidoagent-cli", "nidoai-gateway", "nidooffice-cli", "nidooffice-desktop", "vielotus (>= 2.0.8)", "nido-ime-bridge (>= 0.2.0)", "nidobox (>= 1.5.0)", "wl-clipboard", "xclip", "geary", "showtime | totem"):
                     assert dep in ctrl_txt, f"{fname}: missing dependency {dep}"
             for req_st in (
                 "./usr/libexec/ubuntu-nido/showtime-launch",
@@ -308,7 +311,7 @@ for suite in ("resolute", "noble"):
             base = v.split("-", 1)[0].split("+", 1)[0]
             return tuple(int(x) for x in base.split(".") if x.isdigit())
 
-        for v_pkg, min_ver in (("nidobox", (1, 5, 0)), ("vielotus", (2, 0, 8))):
+        for v_pkg, min_ver in (("nidobox", (1, 5, 0)), ("vielotus", (2, 0, 8)), ("nido-ime-bridge", (0, 2, 0))):
             vendor_debs = sorted((repo.parent / "packages" / "vendor").glob(f"{v_pkg}_*_{arch}.deb"))
             if not vendor_debs:
                 continue
@@ -1665,8 +1668,8 @@ for token in (
 # 2. Validate dconf defaults, installer white-label/font bind, Live welcome suppression & IME sync
 dconf_txt = (root / "packages/nido-desktop-settings/files/etc/dconf/db/local.d/00-ubuntu-nido-settings").read_text(encoding="utf-8")
 for expected_dconf in (
-    "('ibus', 'vielotus')",
-    "('ibus', 'vielotus-vni')",
+    "('ibus', 'nido-vielotus')",
+    "('ibus', 'nido-vielotus-vni')",
     "monospace-font-name='Noto Mono 10'",
     "accent-color='teal'",
     "gtk-theme='Yaru-prussiangreen-dark'",
@@ -1727,12 +1730,35 @@ subprocess.run([sys.executable, str(ime_script), "--self-test"], check=True)
 gschema_override = (root / "packages/nido-desktop-settings/files/usr/share/glib-2.0/schemas/90_nidoos-input-sources.gschema.override").read_text(encoding="utf-8")
 for expected_gs in (
     "[org.gnome.desktop.input-sources]",
-    "sources=[('ibus', 'vielotus'), ('ibus', 'vielotus-vni'), ('xkb', 'us')]",
-    "mru-sources=[('ibus', 'vielotus'), ('xkb', 'us'), ('ibus', 'vielotus-vni')]",
+    "sources=[('ibus', 'nido-vielotus'), ('ibus', 'nido-vielotus-vni'), ('xkb', 'us')]",
+    "mru-sources=[('ibus', 'nido-vielotus'), ('xkb', 'us'), ('ibus', 'nido-vielotus-vni')]",
     "per-window=false",
     "show-all-sources=true",
 ):
     assert expected_gs in gschema_override, f"Missing expected gschema override line: {expected_gs}"
+
+ime_xml_path = root / "packages/nido-ime-bridge/files/usr/share/ibus/component/nido-vielotus.xml"
+assert ime_xml_path.is_file(), "Missing nido-vielotus.xml IBus component"
+ime_xml_txt = ime_xml_path.read_text(encoding="utf-8")
+ET.fromstring(ime_xml_txt)
+for expected_ime_tok in (
+    "<exec>/usr/lib/ibus/nido-ibus-vielotus --ibus</exec>",
+    "<name>nido-vielotus</name>",
+    "<name>nido-vielotus-vni</name>",
+    "<rank>100</rank>",
+    "<setup>/usr/bin/vielotus-settings</setup>",
+):
+    assert expected_ime_tok in ime_xml_txt, f"Missing {expected_ime_tok!r} in nido-vielotus.xml"
+
+ime_c_src = (root / "packages/nido-ime-bridge/src/nido-ibus-vielotus.c").read_text(encoding="utf-8")
+for forbidden_preedit in (
+    "ibus_engine_update_preedit_text",
+    "ibus_engine_update_preedit_text_with_mode",
+    "ibus_engine_show_preedit_text",
+):
+    assert forbidden_preedit not in ime_c_src, f"Zero-underline bridge must never call {forbidden_preedit}"
+assert "libVieLotusCAPI.so.0" in ime_c_src and "dlopen(" in ime_c_src, "nido-ibus-vielotus must dlopen libVieLotusCAPI.so.0"
+subprocess.run(["bash", str(root / "scripts/build_ime_bridge.sh"), "--dry-run"], check=True)
 
 bind_fonts_script = root / "packages/nido-desktop-settings/files/usr/libexec/ubuntu-nido/bind-installer-fonts"
 subprocess.run(["bash", str(bind_fonts_script), "--self-test"], check=True)

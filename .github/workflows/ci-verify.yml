@@ -21,7 +21,11 @@ jobs:
       - name: Install verification tools
         run: |
           sudo apt-get update
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y shellcheck dpkg-dev
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y shellcheck dpkg-dev gcc make pkg-config libibus-1.0-dev libglib2.0-dev
+
+      - name: Build & verify nido-ime-bridge from source
+        run: |
+          APT_GPG_KEY="" bash scripts/build_ime_bridge.sh --arch amd64 --native --out-dir packages/vendor
 
       - name: Run full verification suite
         run: make check
@@ -47,8 +51,10 @@ jobs:
           apt-cache policy nidobox | grep -q "ubuntu-nido-apt"
           apt-cache policy nidooffice-desktop | grep -q "ubuntu-nido-apt"
           apt-cache policy nido-desktop | grep -q "ubuntu-nido-apt"
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ./packages/dist/nido-desktop_0.2.0_all.deb
-          dpkg --compare-versions "$(dpkg-query -W -f='${Version}' nidobox)" ge "1.4.7"
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ./packages/vendor/nido-ime-bridge_0.2.0_amd64.deb ./packages/dist/nido-desktop_0.2.0_all.deb
+          /usr/lib/ibus/nido-ibus-vielotus --self-test
+          dpkg --compare-versions "$(dpkg-query -W -f='${Version}' nidobox)" ge "1.5.0"
           nidobox --self-test
           dpkg -s nido-desktop >/dev/null
+          dpkg -s nido-ime-bridge >/dev/null
           dpkg -s showtime >/dev/null 2>&1 || dpkg -s totem >/dev/null 2>&1

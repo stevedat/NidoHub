@@ -12,6 +12,7 @@ SETTINGS_STAGE_DIR="${SCRIPT_DIR}/nido-desktop-settings/stage"
 NIDOAI_SRC_DIR="${NIDOAI_SRC_DIR:-}"
 VIELOTUS_BIN_DIR="${VIELOTUS_BIN_DIR:-}"
 NIDOBOX_BIN_DIR="${NIDOBOX_BIN_DIR:-}"
+NIDO_IME_BRIDGE_BIN_DIR="${NIDO_IME_BRIDGE_BIN_DIR:-}"
 DEB_VERSION_SUFFIX="${DEB_VERSION_SUFFIX:-}"
 NIDO_HARDEN_DIST="${NIDO_HARDEN_DIST:-1}"
 APT_GPG_KEY="${APT_GPG_KEY:-AC980631CB8BA9D2602A0990528AF2083F61DC2F}"
@@ -239,6 +240,20 @@ if [[ -n "$NIDOBOX_BIN_DIR" && -d "$NIDOBOX_BIN_DIR" ]]; then
   if [[ "${#nb_debs[@]}" -gt 0 ]]; then
     rm -f "${SCRIPT_DIR}/vendor"/nidobox_*.deb
     for deb in "${nb_debs[@]}"; do
+      cp "$deb" "${SCRIPT_DIR}/vendor/"
+      echo "==> Staged vendor package: $(basename "$deb")"
+    done
+  fi
+fi
+
+if [[ -n "$NIDO_IME_BRIDGE_BIN_DIR" && -d "$NIDO_IME_BRIDGE_BIN_DIR" ]]; then
+  mkdir -p "${SCRIPT_DIR}/vendor"
+  shopt -s nullglob
+  ime_debs=("${NIDO_IME_BRIDGE_BIN_DIR}"/nido-ime-bridge_*.deb)
+  shopt -u nullglob
+  if [[ "${#ime_debs[@]}" -gt 0 ]]; then
+    rm -f "${SCRIPT_DIR}/vendor"/nido-ime-bridge_*.deb
+    for deb in "${ime_debs[@]}"; do
       cp "$deb" "${SCRIPT_DIR}/vendor/"
       echo "==> Staged vendor package: $(basename "$deb")"
     done

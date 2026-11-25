@@ -89,6 +89,8 @@ jobs:
       - name: Build assets, .deb packages (Stage 1 + Stage 2 native on 26.04) & static APT repo
         run: |
           make assets packages
+          echo "==> Building NidoOS zero-underline Sen Viet bridge (nido-ime-bridge) for ${TARGET_ARCH}..."
+          APT_GPG_KEY="" bash scripts/build_ime_bridge.sh --arch "${TARGET_ARCH}" --out-dir packages/vendor
           if [ "${UBUNTU_VERSION}" = "26.04" ]; then
             echo "==> Building Stage 2 native Cython .so + Node 22 SEA ELF for ${TARGET_ARCH}..."
             APT_GPG_KEY="" bash scripts/native-build/build_native_debs.sh --arch "${TARGET_ARCH}"

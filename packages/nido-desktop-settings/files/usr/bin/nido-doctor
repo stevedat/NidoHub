@@ -473,11 +473,14 @@ def collect_checks(include_apt_update: bool = False, check_online: bool = False)
     # 5. Sen Viet IME & GNOME Desktop Settings
     if _has_user_bus() and shutil.which("gsettings"):
         _, ime, _ = _run(["gsettings", "get", "org.gnome.desktop.input-sources", "sources"])
+        has_zero_ul = "nido-vielotus" in ime and "nido-vielotus-vni" in ime
+        has_legacy = "vielotus" in ime and "vielotus-vni" in ime
+        ime_mode = "zero-underline" if has_zero_ul else ("upstream" if has_legacy else "missing")
         results.append(
             CheckResult(
                 "Sen Viet IME",
-                "PASS" if ("vielotus" in ime and "vielotus-vni" in ime) else "FAIL",
-                ime or "(empty)",
+                "PASS" if (has_zero_ul or has_legacy) else "FAIL",
+                f"{ime_mode}: {ime or '(empty)'}",
             )
         )
         _, acc, _ = _run(["gsettings", "get", "org.gnome.desktop.interface", "accent-color"])
