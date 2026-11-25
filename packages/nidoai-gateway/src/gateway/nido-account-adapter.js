@@ -128,10 +128,20 @@ export function formatNidoPlanName(planCode, isPro) {
 export function normalizeQuotaSnapshot(rawQuota) {
     if (!rawQuota || typeof rawQuota !== 'object')
         return null;
-    const quota = Number(rawQuota.aiCreditsQuota ?? 0);
-    const used = Number(rawQuota.aiCreditsUsed ?? 0);
-    const remaining = rawQuota.aiCreditsRemaining !== undefined
+    const quota = Number(rawQuota.aiCreditsQuota ?? rawQuota.limit ?? 0);
+    const hasExplicitRemaining = rawQuota.aiCreditsRemaining !== undefined || rawQuota.remaining !== undefined;
+    const rawRemaining = rawQuota.aiCreditsRemaining !== undefined
         ? Number(rawQuota.aiCreditsRemaining)
+        : (rawQuota.remaining !== undefined ? Number(rawQuota.remaining) : NaN);
+    const used = rawQuota.aiCreditsUsed !== undefined
+        ? Number(rawQuota.aiCreditsUsed)
+        : (rawQuota.used !== undefined
+            ? Number(rawQuota.used)
+            : (hasExplicitRemaining && Number.isFinite(quota) && Number.isFinite(rawRemaining)
+                ? Math.max(0, quota - rawRemaining)
+                : 0));
+    const remaining = hasExplicitRemaining
+        ? rawRemaining
         : Math.max(0, quota - used);
     return {
         aiCreditsQuota: Number.isFinite(quota) ? Math.max(0, Math.floor(quota)) : 0,
@@ -473,6 +483,36 @@ export async function loginNidoAccount({
     };
 }
 
+function removeNidoProviderFromAiPolicy(configDir = resolveNidoConfigDir()) {
+    const policyPath = path.join(configDir, 'ai-policy.json');
+    try {
+        if (!fs.existsSync(policyPath))
+            return;
+        const parsed = JSON.parse(fs.readFileSync(policyPath, 'utf8'));
+        if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.signedInProviders))
+            return;
+        if (!parsed.signedInProviders.includes('nido'))
+            return;
+        const next = {
+            ...parsed,
+            signedInProviders: parsed.signedInProviders.filter((p) => p !== 'nido'),
+            updatedAt: new Date().toISOString(),
+        };
+        const tmpPath = `${policyPath}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`;
+        fs.writeFileSync(tmpPath, `${JSON.stringify(next, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+        fs.chmodSync(tmpPath, 0o600);
+        fs.renameSync(tmpPath, policyPath);
+        try {
+            fs.chmodSync(policyPath, 0o600);
+        }
+        catch {
+            // ignore chmod errors on special filesystems
+        }
+    }
+    catch {
+        // best-effort policy cleanup
+    }
+}
 export async function logoutNidoAccount({
     accessToken,
     providerConfig,
@@ -503,6 +543,7 @@ export async function logoutNidoAccount({
         }, false, secretStoreOptions);
     }
     clearNidoAccountProfile(configDir);
+    removeNidoProviderFromAiPolicy(configDir);
     return { ok: true };
 }
 

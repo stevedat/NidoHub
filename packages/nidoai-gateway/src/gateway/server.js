@@ -1,10 +1,11 @@
 import http from 'node:http';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import path from 'node:path';
 import { CHAT_BACKEND_KINDS, MIN_CLIENT_TOKEN_LENGTH, PKG_VERSION, isChatBackendKind, loadConfig, maskSecret, saveConfigUpdatesToEnvLocal, } from '../config.js';
 import { SUPPORTED_CHAT_COMPLETION_FIELDS, hasMultimodalContent, validateChatCompletionRequest, } from './schema.js';
 import { ANTHROPIC_API_VERSION, executeAnthropicUpstreamCall, } from './anthropic-adapter.js';
-import { NIDO_CURATED_MODELS, executeNidoAccountUpstreamCall, fetchNidoAccountQuota, formatNidoPlanName, isJwtFresh, loginNidoAccount, logoutNidoAccount, readNidoAccountProfile, refreshNidoAccountTokens, resolveNidoAccountProviderConfig, resolveNidoConfigDir, writeNidoAccountProfile, } from './nido-account-adapter.js';
+import { DEFAULT_NIDO_MODEL, NIDO_CURATED_MODELS, executeNidoAccountUpstreamCall, fetchNidoAccountQuota, formatNidoPlanName, getNidoAccountProfilePath, isJwtFresh, loginNidoAccount, logoutNidoAccount, readNidoAccountProfile, refreshNidoAccountTokens, resolveNidoAccountProviderConfig, resolveNidoConfigDir, writeNidoAccountProfile, } from './nido-account-adapter.js';
 import { probeLocalBackendReachability } from './live-probe.js';
 import { renderControlPanelHtml } from './ui-html.js';
 import { runDoctor } from '../doctor/doctor.js';
@@ -57,12 +58,20 @@ function resolveModelForBackend(requestedModel, backend) {
     return strippedModel;
 }
 function selectBackendsForRequest(reqData, config) {
-    const { explicitKind } = parseExplicitProviderPrefix(reqData.model);
+    const { explicitKind, strippedModel } = parseExplicitProviderPrefix(reqData.model);
     // Rule 1: If client explicitly specified a provider prefix (e.g. "gemini/private-model"),
     // pin strictly to that provider and NEVER fail over to another backend.
     if (explicitKind !== null) {
         return {
             candidates: [config.backends[explicitKind]],
+            allowFailover: false,
+        };
+    }
+    // Rule 1b: Route Nido-exclusive model ("nido-llama") directly to the Nido Account backend
+    // when configured, so NidoOffice Companion SSO works even if primaryBackend is gemini/openai/local.
+    if (strippedModel === DEFAULT_NIDO_MODEL && config.backends.nido?.configured) {
+        return {
+            candidates: [config.backends.nido],
             allowFailover: false,
         };
     }
@@ -509,8 +518,49 @@ export async function startGatewayServer(initialConfig, options = {}) {
     const configDir = options.configDir || initialConfig.configDir || resolveNidoConfigDir();
     const useSecretStore = process.env.NIDOAI_SECRET_STORE !== 'file';
     const secretStoreOptions = { env: process.env };
+    const envLocalPath = path.join(stateDir, '.env.local');
+    const accountProfilePath = getNidoAccountProfilePath(configDir);
+    const statMtimeMs = (filePath) => {
+        try {
+            return fs.statSync(filePath).mtimeMs;
+        }
+        catch {
+            return -1;
+        }
+    };
+    let lastEnvMtimeMs = statMtimeMs(envLocalPath);
+    let lastAccountMtimeMs = statMtimeMs(accountProfilePath);
+    let lastKeyringRetryAt = 0;
     const reloadCurrentConfig = () => {
         currentConfig = loadConfig({ cwd: stateDir, useSecretStore });
+        lastEnvMtimeMs = statMtimeMs(envLocalPath);
+        lastAccountMtimeMs = statMtimeMs(accountProfilePath);
+    };
+    const ensureFreshConfig = () => {
+        const envMtime = statMtimeMs(envLocalPath);
+        const acctMtime = statMtimeMs(accountProfilePath);
+        const mtimeChanged = envMtime !== lastEnvMtimeMs || acctMtime !== lastAccountMtimeMs;
+        const now = Date.now();
+        const needKeyringRetry = !mtimeChanged &&
+            acctMtime > 0 &&
+            !currentConfig.backends?.nido?.configured &&
+            now - lastKeyringRetryAt >= 3000;
+        if (!mtimeChanged && !needKeyringRetry) {
+            return;
+        }
+        if (needKeyringRetry) {
+            lastKeyringRetryAt = now;
+        }
+        const prevPrimary = currentConfig.primaryBackend;
+        const prevPrimaryCfg = Boolean(currentConfig.backends?.[prevPrimary]?.configured);
+        const prevNidoCfg = Boolean(currentConfig.backends?.nido?.configured);
+        reloadCurrentConfig();
+        const nextPrimary = currentConfig.primaryBackend;
+        const nextPrimaryCfg = Boolean(currentConfig.backends?.[nextPrimary]?.configured);
+        const nextNidoCfg = Boolean(currentConfig.backends?.nido?.configured);
+        if (prevPrimary !== nextPrimary || prevPrimaryCfg !== nextPrimaryCfg || prevNidoCfg !== nextNidoCfg) {
+            void publishRuntimeDiscoveryNow();
+        }
     };
     const buildSanitizedAccountPayload = () => {
         const profile = readNidoAccountProfile(configDir);
@@ -729,6 +779,7 @@ export async function startGatewayServer(initialConfig, options = {}) {
                 return;
             }
             if (method === 'GET' && pathname === '/api/admin/state') {
+                ensureFreshConfig();
                 const primary = currentConfig.backends[currentConfig.primaryBackend];
                 const localProbe = currentConfig.backends.local.configured
                     ? await probeLocalBackendReachability(currentConfig.backends.local.baseUrl, {
@@ -1050,6 +1101,7 @@ export async function startGatewayServer(initialConfig, options = {}) {
         }
         // 1. GET /healthz
         if ((method === 'GET' || method === 'HEAD') && pathname === '/healthz') {
+            ensureFreshConfig();
             const primary = currentConfig.backends[currentConfig.primaryBackend];
             const localProbe = currentConfig.backends.local.configured && method === 'GET'
                 ? await probeLocalBackendReachability(currentConfig.backends.local.baseUrl, {
@@ -1128,6 +1180,7 @@ export async function startGatewayServer(initialConfig, options = {}) {
                 });
                 return;
             }
+            ensureFreshConfig();
             const wantSync = pathname === '/v1/account/sync' || url.searchParams.get('refresh') === '1';
             let statusCode = 200;
             let bodyPayload;
@@ -1179,6 +1232,7 @@ export async function startGatewayServer(initialConfig, options = {}) {
                 });
                 return;
             }
+            ensureFreshConfig();
             const nowSec = Math.floor(Date.now() / 1000);
             const primary = currentConfig.backends[currentConfig.primaryBackend];
             const localProbe = method === 'GET' && currentConfig.backends.local.configured
@@ -1388,6 +1442,7 @@ export async function startGatewayServer(initialConfig, options = {}) {
                 });
                 return;
             }
+            ensureFreshConfig();
             const wantStream = reqData.stream === true;
             const { candidates, allowFailover } = selectBackendsForRequest(reqData, currentConfig);
             let lastResult = null;

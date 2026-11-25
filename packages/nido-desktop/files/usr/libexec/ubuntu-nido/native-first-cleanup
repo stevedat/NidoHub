@@ -31,6 +31,14 @@ if command -v dconf >/dev/null 2>&1; then
   dconf compile /etc/dconf/db/local /etc/dconf/db/local.d >/dev/null 2>&1 || dconf update >/dev/null 2>&1 || true
 fi
 
+# Ensure NTP clock sync is enabled on first boot (resilient to VMware/UTM RTC clock drift)
+if command -v timedatectl >/dev/null 2>&1; then
+  timedatectl set-ntp true >/dev/null 2>&1 || true
+fi
+if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files systemd-timesyncd.service >/dev/null 2>&1; then
+  systemctl restart systemd-timesyncd.service >/dev/null 2>&1 || true
+fi
+
 if ! command -v snap >/dev/null 2>&1; then
   mkdir -p "$STAMP_DIR"
   date -u +"%Y-%m-%dT%H:%M:%SZ" > "$STAMP_FILE"

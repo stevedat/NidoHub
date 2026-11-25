@@ -2,6 +2,7 @@
 Description=NidoAI Local AI Gateway
 ConditionPathExists=!/snap/ubuntu-desktop-bootstrap
 ConditionPathExists=%h/.config/ubuntu-nido/ai-policy.json
+After=dbus.socket gnome-keyring-daemon.service
 
 [Service]
 Type=simple

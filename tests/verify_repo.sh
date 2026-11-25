@@ -735,13 +735,15 @@ try:
     for tok in (TOK_1, TOK_2, REF_1, REF_2):
         assert tok not in acct_raw, "Raw auth token persisted in account.json!"
 
-    # 2. Loopback SSO GET /v1/account
+    # 2. Loopback SSO GET /v1/account (verify normalized quota & zero leaked tokens)
     _, _, raw_acct = gw_req("/v1/account")
     for tok in (TOK_1, TOK_2, REF_1, REF_2):
         assert tok not in raw_acct, "Raw auth token leaked in /v1/account!"
     acct_res = json.loads(raw_acct)
     assert acct_res["signedIn"] is True
+    assert acct_res["backendConfigured"] is True
     assert acct_res["planCode"] == "companion_pro"
+    assert acct_res["quota"]["aiCreditsQuota"] == 50 and acct_res["quota"]["aiCreditsRemaining"] == 48, acct_res
 
     # 3. Text chat completion (stream: false)
     _, _, raw_chat = gw_req(
@@ -752,6 +754,17 @@ try:
     chat_res = json.loads(raw_chat)
     content = chat_res["choices"][0]["message"]["content"]
     assert "NidoProxyOK:Xin chao" in content, f"Unexpected chat reply: {chat_res}"
+
+    # 3b. NidoOffice Companion SSO model ("nido-llama") MUST route to nido backend even when primaryBackend=gemini
+    gw_req("/api/admin/config", method="POST", payload={"primaryBackend": "gemini"})
+    _, hdrs_nido_route, raw_nido_route = gw_req(
+        "/v1/chat/completions",
+        method="POST",
+        payload={"model": "nido-llama", "stream": False, "messages": [{"role": "user", "content": "Office SSO route"}]},
+    )
+    assert hdrs_nido_route.get("x-nidoai-backend") == "nido", f"Expected nido-llama routed to nido: {hdrs_nido_route}"
+    assert "NidoProxyOK:Office SSO route" in json.loads(raw_nido_route)["choices"][0]["message"]["content"]
+    gw_req("/api/admin/config", method="POST", payload={"primaryBackend": "nido"})
 
     # 4. Streaming chat completion (stream: true)
     _, sse_hdrs, raw_sse = gw_req(
@@ -803,16 +816,38 @@ try:
         else:
             assert parsed_cli["signedIn"] is True
 
-    # 8. Logout clears session, profile & tokens in .env.local
+    # 8. Logout clears session, profile, tokens in .env.local, and 'nido' in ai-policy.json
+    policy_file = e2e_cfg / "ubuntu-nido/ai-policy.json"
+    policy_file.write_text(
+        json.dumps({"aiEnabled": True, "setupCompleted": True, "signedInProviders": ["nido", "agy"]}) + "\n",
+        encoding="utf-8",
+    )
     code_out, _, _ = gw_req("/api/admin/nido-account/logout", method="POST", payload={})
     assert code_out == 200
     assert state["logout_calls"] >= 1
     _, _, raw_after = gw_req("/v1/account")
     assert json.loads(raw_after)["signedIn"] is False
+    pol_after = json.loads(policy_file.read_text("utf-8"))
+    assert pol_after["signedInProviders"] == ["agy"], f"Expected 'nido' removed from ai-policy.json: {pol_after}"
     env_local = (e2e_nidoai / ".env.local").read_text("utf-8") if (e2e_nidoai / ".env.local").is_file() else ""
     assert "NIDO_ACCOUNT_ACCESS_TOKEN=" not in env_local, "Access token still present in .env.local after logout!"
     assert "NIDO_ACCOUNT_REFRESH_TOKEN=" not in env_local, "Refresh token still present in .env.local after logout!"
-    print("Verified Nido Account SSO, OpenAI JSON/SSE Proxy, auto-refresh, 422 vision guard, and nidoagent account E2E.")
+
+    # 9. Hot-reload without restart: external write to .env.local + account.json (simulating NidoHub)
+    # must be picked up immediately by GET /v1/account so NidoOffice SSO never sees stale unconfigured state.
+    time.sleep(0.05)
+    (e2e_nidoai / ".env.local").write_text(
+        f"NIDOAI_CLIENT_TOKEN={e2e_token}\nNIDOAI_PRIMARY_BACKEND=nido\nNIDO_ACCOUNT_ACCESS_TOKEN={TOK_2}\nNIDO_ACCOUNT_REFRESH_TOKEN={REF_2}\n",
+        encoding="utf-8",
+    )
+    acct_file.write_text(
+        json.dumps({"schemaVersion": 1, "signedIn": True, "userId": "uid-nido-e2e", "email": "hotreload@nido.vn", "planCode": "companion", "isPro": True}) + "\n",
+        encoding="utf-8",
+    )
+    _, _, raw_hot = gw_req("/v1/account")
+    hot_res = json.loads(raw_hot)
+    assert hot_res["signedIn"] is True and hot_res["backendConfigured"] is True and hot_res["email"] == "hotreload@nido.vn", hot_res
+    print("Verified Nido Account SSO, OpenAI JSON/SSE Proxy, auto-refresh, nido-llama routing, hot-reload, 422 vision guard, and nidoagent account E2E.")
 finally:
     gw_proc.terminate()
     try:
@@ -1389,10 +1424,12 @@ subprocess.run(["bash", str(vm_gsk_script), "--self-test"], check=True)
 # Verify nido-welcome suppresses NidoHub & nidoagent cold-start during Live ISO and stamps installed skills sync
 gw_unit_txt = (root / "packages/nidoai-gateway/files/usr/lib/systemd/user/nidoai-gateway.service").read_text(encoding="utf-8")
 assert "ConditionPathExists=%h/.config/ubuntu-nido/ai-policy.json" in gw_unit_txt, "nidoai-gateway.service must wait for ai-policy.json"
+assert "After=dbus.socket gnome-keyring-daemon.service" in gw_unit_txt, "nidoai-gateway.service must order after dbus & gnome-keyring"
 cleanup_unit_txt = (root / "packages/nido-desktop/files/usr/lib/systemd/system/nido-native-first-cleanup.service").read_text(encoding="utf-8")
 assert "Type=simple" in cleanup_unit_txt, "nido-native-first-cleanup.service must use Type=simple so first boot is non-blocking"
 cleanup_txt = (root / "packages/nido-desktop/files/usr/libexec/ubuntu-nido/native-first-cleanup").read_text(encoding="utf-8")
 assert "disabled-extensions=['ding@rastersoft.com']" in cleanup_txt, "native-first-cleanup must disable ding@rastersoft.com on installed systems"
+assert "timedatectl set-ntp true" in cleanup_txt, "native-first-cleanup must enable NTP clock sync on first boot"
 
 welcome_script = root / "packages/nido-desktop-settings/files/usr/local/bin/nido-welcome"
 with tempfile.TemporaryDirectory() as wtmp:

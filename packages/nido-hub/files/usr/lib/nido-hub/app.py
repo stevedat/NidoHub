@@ -319,6 +319,12 @@ class NidoHubBackend:
         if not restart_service or not shutil.which("systemctl"):
             return
         if active:
+            subprocess.run(
+                ["systemctl", "--user", "enable", "nidoai-gateway.service"],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
             res = subprocess.run(
                 ["systemctl", "--user", "restart", "nidoai-gateway.service"],
                 check=False,
@@ -634,6 +640,15 @@ class NidoHubBackend:
     def get_nido_account_status(self, refresh_quota: bool = False) -> dict[str, Any]:
         return self.nido_account.get_status(refresh_quota=refresh_quota)
 
+    def _activate_nido_account_gateway_env(self, set_as_primary: bool = True) -> None:
+        env = self.load_env_file_only()
+        if len(env.get("NIDOAI_CLIENT_TOKEN", "")) < 16:
+            env["NIDOAI_CLIENT_TOKEN"] = f"nidoai_{secrets.token_hex(24)}"
+        env["NIDOAI_ENABLED"] = "1"
+        if set_as_primary:
+            env["NIDOAI_PRIMARY_BACKEND"] = "nido"
+        self._write_env_file(env)
+
     def login_nido_account(
         self,
         email: str,
@@ -643,13 +658,7 @@ class NidoHubBackend:
     ) -> tuple[bool, str, dict[str, Any] | None]:
         ok, msg, profile = self.nido_account.login(email, password, set_as_primary=set_as_primary)
         if ok:
-            env = self.load_env_file_only()
-            if len(env.get("NIDOAI_CLIENT_TOKEN", "")) < 16:
-                env["NIDOAI_CLIENT_TOKEN"] = f"nidoai_{secrets.token_hex(24)}"
-            env.setdefault("NIDOAI_ENABLED", "1")
-            if set_as_primary:
-                env["NIDOAI_PRIMARY_BACKEND"] = "nido"
-            self._write_env_file(env)
+            self._activate_nido_account_gateway_env(set_as_primary=set_as_primary)
             cur = self.load_ai_policy()
             providers = list(cur.get("signedInProviders") or [])
             if "nido" not in providers:
@@ -670,6 +679,7 @@ class NidoHubBackend:
             email, password, full_name=full_name, set_as_primary=set_as_primary
         )
         if ok and detail.get("profile"):
+            self._activate_nido_account_gateway_env(set_as_primary=set_as_primary)
             cur = self.load_ai_policy()
             providers = list(cur.get("signedInProviders") or [])
             if "nido" not in providers:

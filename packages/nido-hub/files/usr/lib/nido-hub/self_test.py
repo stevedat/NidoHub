@@ -756,6 +756,32 @@ def run_self_test(app_mod: Any) -> int:
         assert ok_out and not nido_backend.nido_account.profile_path.is_file()
         assert "NIDO_ACCOUNT_ACCESS_TOKEN" not in nido_keyring_mem
 
+        # Regression test: signing in or auto-signing-up after prior AI OFF (NIDOAI_ENABLED=0)
+        # MUST re-enable NIDOAI_ENABLED=1 and bootstrap NIDOAI_CLIENT_TOKEN so NidoOffice SSO works.
+        nido_backend._write_env_file({"NIDOAI_ENABLED": "0"})
+        ok_relogin, _, _ = nido_backend.login_nido_account("user@nidoholdings.example", "secret123", restart_service=False)
+        assert ok_relogin
+        env_after_relogin = nido_backend.load_env_file_only()
+        assert env_after_relogin.get("NIDOAI_ENABLED") == "1", f"login must flip NIDOAI_ENABLED=0 -> 1: {env_after_relogin}"
+        assert len(env_after_relogin.get("NIDOAI_CLIENT_TOKEN", "")) >= 16
+
+        nido_backend._write_env_file({"NIDOAI_ENABLED": "0"})
+        def mock_nido_http_auto_signup(method: str, url: str, headers: dict[str, str] | None, payload: Any, _to: float):
+            if url.endswith("/auth/v1/signup"):
+                return 200, {
+                    "access_token": fresh_jwt,
+                    "refresh_token": "refresh-tok-signup",
+                    "user": {"id": "u-3", "email": "auto@nidoholdings.example", "user_metadata": {"full_name": "Auto User"}},
+                }, ""
+            return mock_nido_http(method, url, headers, payload, _to)
+        nido_backend.nido_account.http_requester = mock_nido_http_auto_signup
+        ok_autoreg, _, autoreg_info = nido_backend.register_nido_account("auto@nidoholdings.example", "secret123", "Auto User", restart_service=False)
+        assert ok_autoreg and autoreg_info.get("profile") is not None
+        env_after_autoreg = nido_backend.load_env_file_only()
+        assert env_after_autoreg.get("NIDOAI_ENABLED") == "1", f"register must flip NIDOAI_ENABLED=0 -> 1: {env_after_autoreg}"
+        assert len(env_after_autoreg.get("NIDOAI_CLIENT_TOKEN", "")) >= 16
+        nido_backend.logout_nido_account(restart_service=False)
+
         # Verify mandatory AI ON/OFF onboarding gate policy
         gate_on_empty = evaluate_ai_onboarding_gate(
             True,

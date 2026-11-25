@@ -200,16 +200,33 @@ def normalize_quota_snapshot(raw: Any) -> dict[str, Any] | None:
     if not isinstance(raw, dict):
         return None
     try:
-        quota = max(0, int(raw.get("aiCreditsQuota") or 0))
+        raw_q = raw.get("aiCreditsQuota")
+        if raw_q is None:
+            raw_q = raw.get("limit")
+        quota = max(0, int(raw_q or 0))
     except (TypeError, ValueError):
         quota = 0
-    try:
-        used = max(0, int(raw.get("aiCreditsUsed") or 0))
-    except (TypeError, ValueError):
-        used = 0
-    if raw.get("aiCreditsRemaining") is not None:
+    raw_rem = raw.get("aiCreditsRemaining")
+    if raw_rem is None:
+        raw_rem = raw.get("remaining")
+    raw_u = raw.get("aiCreditsUsed")
+    if raw_u is None:
+        raw_u = raw.get("used")
+    if raw_u is not None:
         try:
-            remaining = max(0, int(raw["aiCreditsRemaining"]))
+            used = max(0, int(raw_u))
+        except (TypeError, ValueError):
+            used = 0
+    elif raw_rem is not None:
+        try:
+            used = max(0, quota - max(0, int(raw_rem)))
+        except (TypeError, ValueError):
+            used = 0
+    else:
+        used = 0
+    if raw_rem is not None:
+        try:
+            remaining = max(0, int(raw_rem))
         except (TypeError, ValueError):
             remaining = max(0, quota - used)
     else:

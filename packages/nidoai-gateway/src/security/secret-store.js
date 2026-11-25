@@ -17,6 +17,7 @@ function defaultRunner(command, args, options) {
         input: options?.input,
         timeout: options?.timeoutMs ?? 4000,
         stdio: ['pipe', 'pipe', 'pipe'],
+        ...(options?.env ? { env: options.env } : {}),
     });
     return {
         status: res.status,
@@ -24,6 +25,25 @@ function defaultRunner(command, args, options) {
         stderr: res.stderr ?? '',
         error: res.error,
     };
+}
+function resolveLinuxSecretEnv(env = process.env) {
+    if (env.DBUS_SESSION_BUS_ADDRESS?.trim()) {
+        return env;
+    }
+    // Only probe host /run/user/$UID/bus when using real process.env (keep mocked test envs isolated)
+    if (env !== process.env || typeof process.getuid !== 'function') {
+        return env;
+    }
+    const uid = process.getuid();
+    const busPath = `/run/user/${uid}/bus`;
+    if (fs.existsSync(busPath)) {
+        return {
+            ...env,
+            XDG_RUNTIME_DIR: env.XDG_RUNTIME_DIR?.trim() || `/run/user/${uid}`,
+            DBUS_SESSION_BUS_ADDRESS: `unix:path=${busPath}`,
+        };
+    }
+    return env;
 }
 const _cmdCache = new Map();
 function commandAvailable(cmd, platform, runner, env = process.env) {
@@ -61,11 +81,12 @@ export function detectSecretStoreMode(options = {}) {
             : 'file-0600-fallback';
     }
     if (platform === 'linux') {
-        const hasDbus = Boolean(env.DBUS_SESSION_BUS_ADDRESS?.trim());
+        const effectiveEnv = resolveLinuxSecretEnv(env);
+        const hasDbus = Boolean(effectiveEnv.DBUS_SESSION_BUS_ADDRESS?.trim());
         if (!hasDbus && override !== 'keyring') {
             return 'file-0600-fallback';
         }
-        return commandAvailable('secret-tool', platform, runner, env)
+        return commandAvailable('secret-tool', platform, runner, effectiveEnv)
             ? 'linux-libsecret'
             : 'file-0600-fallback';
     }
@@ -89,6 +110,7 @@ export function readSecretFromStore(key, options = {}) {
     if (mode === 'linux-libsecret') {
         const res = runner('secret-tool', ['lookup', 'service', KEYRING_SERVICE, 'account', key], {
             timeoutMs: 3000,
+            env: resolveLinuxSecretEnv(env),
         });
         if (!res.error && res.status === 0) {
             const val = res.stdout.replace(/\r?\n$/, '');
@@ -143,7 +165,7 @@ export function writeSecretToStore(key, value, options = {}) {
     const homeDir = options.homeDir ?? os.homedir();
     if (mode === 'linux-libsecret') {
         // Pass secret strictly over stdin, never in argv.
-        const res = runner('secret-tool', ['store', `--label=NidoAI ${key}`, 'service', KEYRING_SERVICE, 'account', key], { input: `${trimmed}\n`, timeoutMs: 4000 });
+        const res = runner('secret-tool', ['store', `--label=NidoAI ${key}`, 'service', KEYRING_SERVICE, 'account', key], { input: `${trimmed}\n`, timeoutMs: 4000, env: resolveLinuxSecretEnv(env) });
         return !res.error && res.status === 0;
     }
     if (mode === 'macos-keychain') {
@@ -197,6 +219,7 @@ export function deleteSecretFromStore(key, options = {}) {
     if (mode === 'linux-libsecret') {
         const res = runner('secret-tool', ['clear', 'service', KEYRING_SERVICE, 'account', key], {
             timeoutMs: 3000,
+            env: resolveLinuxSecretEnv(env),
         });
         return !res.error && res.status === 0;
     }

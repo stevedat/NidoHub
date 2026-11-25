@@ -4,12 +4,19 @@
 from __future__ import annotations
 
 import argparse
+import datetime
+import email.utils
+import http.server
 import json
 import os
+import pwd
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+import urllib.error
+import urllib.request
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -55,7 +62,255 @@ def _has_user_bus() -> bool:
     return bool(os.environ.get("DBUS_SESSION_BUS_ADDRESS") or os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
 
 
-def collect_checks(include_apt_update: bool = False) -> tuple[list[CheckResult], dict[str, str]]:
+def _resolve_desktop_user_home() -> Path:
+    if os.geteuid() == 0:
+        sudo_user = (os.environ.get("SUDO_USER") or "").strip()
+        if sudo_user and sudo_user != "root":
+            try:
+                return Path(pwd.getpwnam(sudo_user).pw_dir)
+            except KeyError:
+                pass
+    return Path.home()
+
+
+def parse_http_clock_drift(
+    date_header: str,
+    now_utc: datetime.datetime | None = None,
+) -> float | None:
+    if not date_header or not date_header.strip():
+        return None
+    try:
+        srv_dt = email.utils.parsedate_to_datetime(date_header.strip())
+        if srv_dt.tzinfo is None:
+            srv_dt = srv_dt.replace(tzinfo=datetime.timezone.utc)
+        else:
+            srv_dt = srv_dt.astimezone(datetime.timezone.utc)
+        ref = now_utc or datetime.datetime.now(datetime.timezone.utc)
+        if ref.tzinfo is None:
+            ref = ref.replace(tzinfo=datetime.timezone.utc)
+        return abs((ref - srv_dt).total_seconds())
+    except Exception:
+        return None
+
+
+def check_clock_ntp(
+    check_http_drift: bool = False,
+    http_url: str = "https://ubuntu-nido-apt.pages.dev/dists/resolute/InRelease",
+) -> CheckResult:
+    ntp_on = ""
+    ntp_synced = ""
+    has_timedatectl = bool(shutil.which("timedatectl"))
+    if has_timedatectl:
+        rc, out, _ = _run(["timedatectl", "show", "-p", "NTP", "-p", "NTPSynchronized", "--value"], timeout=5.0)
+        if rc == 0:
+            lines = [ln.strip().lower() for ln in out.splitlines() if ln.strip()]
+            if len(lines) >= 2:
+                ntp_on, ntp_synced = lines[0], lines[1]
+
+    drift_sec: float | None = None
+    if check_http_drift or (has_timedatectl and ntp_synced != "yes"):
+        try:
+            req = urllib.request.Request(http_url, method="HEAD", headers={"User-Agent": "nido-doctor/1.0"})
+            with urllib.request.urlopen(req, timeout=3.0) as resp:
+                drift_sec = parse_http_clock_drift(resp.headers.get("Date", ""))
+        except urllib.error.HTTPError as err:
+            drift_sec = parse_http_clock_drift(err.headers.get("Date", "") if err.headers else "")
+        except Exception:
+            drift_sec = None
+
+    if drift_sec is not None:
+        d_int = int(round(drift_sec))
+        if drift_sec > 300:
+            return CheckResult(
+                "Clock & NTP",
+                "FAIL",
+                f"clock drift ~{d_int}s (>5m; APT/TLS/JWT affected), ntp={ntp_on or '?'}, synced={ntp_synced or '?'}",
+            )
+        if drift_sec > 60:
+            return CheckResult(
+                "Clock & NTP",
+                "WARN",
+                f"clock drift ~{d_int}s, ntp={ntp_on or '?'}, synced={ntp_synced or '?'}",
+            )
+        if has_timedatectl and ntp_on == "no":
+            return CheckResult("Clock & NTP", "WARN", f"ntp=off, http-drift={d_int}s")
+        return CheckResult(
+            "Clock & NTP",
+            "PASS",
+            f"ntp={ntp_on or 'ok'}, synced={ntp_synced or 'ok'}, drift={d_int}s",
+        )
+
+    if has_timedatectl:
+        if ntp_on == "yes" and ntp_synced == "yes":
+            return CheckResult("Clock & NTP", "PASS", "ntp=yes, synced=yes")
+        return CheckResult("Clock & NTP", "WARN", f"ntp={ntp_on or 'unknown'}, synced={ntp_synced or 'unknown'}")
+    return CheckResult("Clock & NTP", "INFO", "timedatectl unavailable")
+
+
+def _parse_simple_env_file(path: Path) -> dict[str, str]:
+    out: dict[str, str] = {}
+    if not path.is_file():
+        return out
+    try:
+        for raw in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            out[k.strip()] = v.strip().strip("'\"")
+    except OSError:
+        pass
+    return out
+
+
+def check_gateway_and_sso(
+    home_dir: Path | None = None,
+    xdg_config: Path | None = None,
+    nidoai_dir: Path | None = None,
+) -> CheckResult:
+    home = home_dir or _resolve_desktop_user_home()
+    cfg_root = xdg_config or (
+        Path(os.environ["XDG_CONFIG_HOME"])
+        if (home_dir is None and os.environ.get("XDG_CONFIG_HOME") and os.geteuid() != 0)
+        else home / ".config"
+    )
+    cfg_dir = cfg_root / "ubuntu-nido"
+    ai_dir = nidoai_dir or (
+        Path(os.environ["NIDOAI_HOME"])
+        if (home_dir is None and os.environ.get("NIDOAI_HOME") and os.geteuid() != 0)
+        else home / ".nidoai"
+    )
+
+    policy_file = cfg_dir / "ai-policy.json"
+    account_file = cfg_dir / "account.json"
+    runtime_file = ai_dir / "runtime.json"
+    env_vars = _parse_simple_env_file(ai_dir / ".env.local")
+
+    ai_enabled: bool | None = None
+    if policy_file.is_file():
+        try:
+            pol = json.loads(policy_file.read_text(encoding="utf-8"))
+            if isinstance(pol, dict) and isinstance(pol.get("aiEnabled"), bool):
+                ai_enabled = pol["aiEnabled"]
+        except (OSError, ValueError):
+            pass
+    env_flag = env_vars.get("NIDOAI_ENABLED", "").strip().lower()
+    if ai_enabled is False or env_flag in ("0", "false", "off", "no"):
+        return CheckResult("NidoAI Gateway & SSO", "PASS", "AI OFF by policy (offline mode)")
+
+    acct_profile: dict[str, Any] = {}
+    if account_file.is_file():
+        try:
+            parsed_acct = json.loads(account_file.read_text(encoding="utf-8"))
+            if isinstance(parsed_acct, dict):
+                acct_profile = parsed_acct
+        except (OSError, ValueError):
+            pass
+    acct_signed_in = bool(acct_profile.get("signedIn") and (acct_profile.get("email") or acct_profile.get("userId")))
+    acct_email = str(acct_profile.get("email") or "").strip()
+
+    runtime_data: dict[str, Any] = {}
+    if runtime_file.is_file():
+        try:
+            parsed_rt = json.loads(runtime_file.read_text(encoding="utf-8"))
+            if isinstance(parsed_rt, dict):
+                runtime_data = parsed_rt
+        except (OSError, ValueError):
+            pass
+
+    if not policy_file.is_file() and not acct_signed_in and not runtime_data:
+        return CheckResult("NidoAI Gateway & SSO", "INFO", "onboarding pending (gateway deferred)")
+
+    base_url = str(runtime_data.get("baseUrl") or "").strip().rstrip("/")
+    if not base_url:
+        port = env_vars.get("NIDOAI_PORT") or "18090"
+        base_url = f"http://127.0.0.1:{port}"
+    client_token = str(runtime_data.get("clientToken") or env_vars.get("NIDOAI_CLIENT_TOKEN") or "").strip()
+
+    health: dict[str, Any] | None = None
+    try:
+        with urllib.request.urlopen(f"{base_url}/healthz", timeout=1.5) as resp:
+            if resp.status == 200:
+                parsed_h = json.loads(resp.read().decode("utf-8"))
+                if isinstance(parsed_h, dict):
+                    health = parsed_h
+    except Exception:
+        health = None
+
+    if health is None:
+        if acct_signed_in:
+            return CheckResult(
+                "NidoAI Gateway & SSO",
+                "WARN",
+                f"account signed in ({acct_email or 'nido'}) but gateway unreachable — NidoOffice SSO degraded",
+            )
+        return CheckResult(
+            "NidoAI Gateway & SSO",
+            "WARN",
+            "gateway not running (start: systemctl --user start nidoai-gateway.service)",
+        )
+
+    primary = health.get("primaryBackend") if isinstance(health.get("primaryBackend"), dict) else {}
+    primary_kind = str(primary.get("kind") or "unknown")
+    gw_acct: dict[str, Any] | None = None
+    if len(client_token) >= 16:
+        try:
+            req = urllib.request.Request(
+                f"{base_url}/v1/account",
+                headers={"Authorization": f"Bearer {client_token}", "Accept": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=1.5) as resp:
+                if resp.status == 200:
+                    parsed_ga = json.loads(resp.read().decode("utf-8"))
+                    if isinstance(parsed_ga, dict):
+                        gw_acct = parsed_ga
+        except Exception:
+            gw_acct = None
+
+    if acct_signed_in or (gw_acct and gw_acct.get("signedIn")):
+        eff_email = str((gw_acct or {}).get("email") or acct_email or "nido")
+        if gw_acct is not None and gw_acct.get("signedIn") and gw_acct.get("backendConfigured"):
+            tok_state = "fresh" if gw_acct.get("tokenFresh") else "auto-refresh"
+            return CheckResult(
+                "NidoAI Gateway & SSO",
+                "PASS",
+                f"online (primary={primary_kind}, sso={eff_email}, token={tok_state})",
+            )
+        return CheckResult(
+            "NidoAI Gateway & SSO",
+            "WARN",
+            f"account signed in ({eff_email}) but gateway nido tokens unconfigured (restart nidoai-gateway)",
+        )
+
+    return CheckResult("NidoAI Gateway & SSO", "PASS", f"online (primary={primary_kind}, nido-sso=signed-out)")
+
+
+def check_nidooffice_runtime(install_dir: Path = Path("/opt/NidoOffice")) -> CheckResult:
+    bin_path = install_dir / "nidooffice"
+    if not (bin_path.is_file() and os.access(bin_path, os.X_OK)):
+        bin_path = install_dir / "genoffice"
+    if not (bin_path.is_file() and os.access(bin_path, os.X_OK)):
+        return CheckResult("NidoOffice Runtime", "WARN", f"runtime not installed at {install_dir}")
+    ver_file = install_dir / ".installed-version"
+    ver = ver_file.read_text(encoding="utf-8", errors="replace").strip() if ver_file.is_file() else "unknown"
+    return CheckResult("NidoOffice Runtime", "PASS", f"v{ver} ({install_dir}; Linux Gateway SSO ready)")
+
+
+def check_disk_space(target: str = "/") -> CheckResult:
+    try:
+        usage = shutil.disk_usage(target)
+        free_gib = usage.free / (1024 ** 3)
+        total_gib = usage.total / (1024 ** 3)
+        if free_gib < 0.5:
+            return CheckResult("Root Disk Space", "FAIL", f"{free_gib:.2f} GiB free / {total_gib:.1f} GiB total")
+        if free_gib < 2.0:
+            return CheckResult("Root Disk Space", "WARN", f"{free_gib:.2f} GiB free / {total_gib:.1f} GiB total (<2 GiB)")
+        return CheckResult("Root Disk Space", "PASS", f"{free_gib:.1f} GiB free / {total_gib:.1f} GiB total")
+    except OSError as exc:
+        return CheckResult("Root Disk Space", "WARN", str(exc))
+
+
+def collect_checks(include_apt_update: bool = False, check_online: bool = False) -> tuple[list[CheckResult], dict[str, str]]:
     results: list[CheckResult] = []
     summary: dict[str, str] = {}
     is_live = detect_live_session()
@@ -270,6 +525,13 @@ def collect_checks(include_apt_update: bool = False) -> tuple[list[CheckResult],
         else:
             results.append(CheckResult("VM GTK4 Renderer", "WARN", f"GSK_RENDERER unset on {vm_type} VM"))
 
+    # 11. Clock / NTP drift, NidoAI Gateway SSO, NidoOffice runtime & root disk space
+    results.append(check_clock_ntp(check_http_drift=include_apt_update or check_online))
+    if not is_live:
+        results.append(check_gateway_and_sso())
+    results.append(check_nidooffice_runtime())
+    results.append(check_disk_space("/"))
+
     return results, summary
 
 
@@ -308,6 +570,90 @@ def run_self_test() -> int:
         (root / "run/casper-md5check.json").write_text("{}", encoding="utf-8")
         assert detect_live_session(root) is True
 
+        # Clock drift parser unit test
+        ref_now = datetime.datetime(2026, 11, 25, 12, 0, 0, tzinfo=datetime.timezone.utc)
+        assert parse_http_clock_drift("Wed, 25 Nov 2026 12:00:05 GMT", now_utc=ref_now) == 5.0
+        assert parse_http_clock_drift("Wed, 25 Nov 2026 11:00:00 GMT", now_utc=ref_now) == 3600.0
+        assert parse_http_clock_drift("not-a-date", now_utc=ref_now) is None
+
+        # NidoOffice runtime check
+        assert check_nidooffice_runtime(root / "missing-office").status == "WARN"
+        fake_office = root / "opt-office"
+        fake_office.mkdir()
+        (fake_office / ".installed-version").write_text("0.13.1\n", encoding="utf-8")
+        fake_bin = fake_office / "nidooffice"
+        fake_bin.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        fake_bin.chmod(0o755)
+        office_res = check_nidooffice_runtime(fake_office)
+        assert office_res.status == "PASS" and "0.13.1" in office_res.detail
+
+        # Disk space check
+        disk_res = check_disk_space(str(root))
+        assert disk_res.status in ("PASS", "WARN", "FAIL") and "GiB free" in disk_res.detail
+
+        # Gateway & SSO check (AI OFF -> PASS; signed-in + live loopback Gateway -> PASS; unreachable -> WARN)
+        home_off = root / "home-off"
+        (home_off / ".config/ubuntu-nido").mkdir(parents=True)
+        (home_off / ".config/ubuntu-nido/ai-policy.json").write_text('{"aiEnabled": false}\n', encoding="utf-8")
+        assert check_gateway_and_sso(home_dir=home_off, xdg_config=home_off / ".config", nidoai_dir=home_off / ".nidoai").status == "PASS"
+
+        secret_tok = "nidoai_doctor_test_secret_token_0123456789"
+
+        class _MockGwHandler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                if self.path == "/healthz":
+                    body = json.dumps({"status": "ok", "primaryBackend": {"kind": "nido", "configured": True}}).encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+                if self.path == "/v1/account" and self.headers.get("Authorization") == f"Bearer {secret_tok}":
+                    body = json.dumps({
+                        "signedIn": True,
+                        "backendConfigured": True,
+                        "tokenFresh": True,
+                        "email": "test@nido.vn",
+                    }).encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+                self.send_response(401)
+                self.end_headers()
+
+            def log_message(self, *args):
+                return
+
+        srv = http.server.HTTPServer(("127.0.0.1", 0), _MockGwHandler)
+        srv_port = srv.server_address[1]
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        try:
+            home_on = root / "home-on"
+            (home_on / ".config/ubuntu-nido").mkdir(parents=True)
+            (home_on / ".nidoai").mkdir(parents=True)
+            (home_on / ".config/ubuntu-nido/ai-policy.json").write_text('{"aiEnabled": true}\n', encoding="utf-8")
+            (home_on / ".config/ubuntu-nido/account.json").write_text(
+                '{"signedIn": true, "email": "test@nido.vn"}\n', encoding="utf-8"
+            )
+            (home_on / ".nidoai/runtime.json").write_text(
+                json.dumps({"baseUrl": f"http://127.0.0.1:{srv_port}", "clientToken": secret_tok}),
+                encoding="utf-8",
+            )
+            gw_ok = check_gateway_and_sso(home_dir=home_on, xdg_config=home_on / ".config", nidoai_dir=home_on / ".nidoai")
+            assert gw_ok.status == "PASS" and "test@nido.vn" in gw_ok.detail, gw_ok
+            assert secret_tok not in gw_ok.detail, "clientToken must NEVER appear in nido-doctor output!"
+        finally:
+            srv.shutdown()
+            srv.server_close()
+
+        # After server stops, signed-in account with unreachable gateway must WARN
+        gw_down = check_gateway_and_sso(home_dir=home_on, xdg_config=home_on / ".config", nidoai_dir=home_on / ".nidoai")
+        assert gw_down.status == "WARN" and "degraded" in gw_down.detail, gw_down
+
     sample = [
         CheckResult("OS Identity", "PASS", "arch=arm64"),
         CheckResult("APT & PackageKit", "PASS", "clean"),
@@ -327,14 +673,15 @@ def run_self_test() -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Verify NidoOS system configuration and runtime health.")
     parser.add_argument("--json", action="store_true", help="Print structured JSON output.")
-    parser.add_argument("--apt", action="store_true", help="Also run live apt-get update check (requires sudo).")
+    parser.add_argument("--apt", action="store_true", help="Also run live apt-get update & HTTP clock drift checks (requires sudo).")
+    parser.add_argument("--online", action="store_true", help="Also probe HTTP clock drift against NidoOS APT endpoint.")
     parser.add_argument("--self-test", action="store_true", help="Run offline unit self-test and exit.")
     args = parser.parse_args(argv)
 
     if args.self_test:
         return run_self_test()
 
-    results, summary = collect_checks(include_apt_update=args.apt)
+    results, summary = collect_checks(include_apt_update=args.apt, check_online=args.online)
     print(format_report(results, summary, as_json=args.json))
     return 1 if any(r.status == "FAIL" for r in results) else 0
 

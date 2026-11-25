@@ -64,6 +64,19 @@ if [ "$(id -u)" -eq 0 ]; then
     fi
   done
   [ "$HAS_NO_SANDBOX" -eq 0 ] && EXTRA_ARGS+=(--no-sandbox)
+else
+  # Wake NidoAI Gateway on-demand for NidoOS Loopback SSO when AI policy is enabled
+  if command -v systemctl >/dev/null 2>&1; then
+    NIDO_CFG_DIR="${XDG_CONFIG_HOME:-${HOME}/.config}/ubuntu-nido"
+    NIDO_AI_DIR="${NIDOAI_HOME:-${HOME}/.nidoai}"
+    if [ -f "${NIDO_CFG_DIR}/ai-policy.json" ] \
+      && ! grep -Eq '"aiEnabled"[[:space:]]*:[[:space:]]*false' "${NIDO_CFG_DIR}/ai-policy.json" 2>/dev/null \
+      && ! grep -Eq '^NIDOAI_ENABLED=(0|false|off|no)$' "${NIDO_AI_DIR}/.env.local" 2>/dev/null; then
+      if ! systemctl --user is-active --quiet nidoai-gateway.service 2>/dev/null; then
+        systemctl --user start --no-block nidoai-gateway.service >/dev/null 2>&1 || true
+      fi
+    fi
+  fi
 fi
 
 exec "$BIN" "${EXTRA_ARGS[@]}" "$@"
