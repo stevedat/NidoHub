@@ -12,14 +12,11 @@ ExecStart=/usr/libexec/nidoai/gateway-daemon
 Restart=on-failure
 RestartSec=3
 
-# Process & Sandbox Hardening (V8 JIT needs writable+executable memory so omit MemoryDenyWriteExecute)
+# Unprivileged user-service hardening (filesystem isolation is enforced via AppArmor nidoai-gateway;
+# omit root-only mount-namespace options and MemoryDenyWriteExecute which conflicts with V8 JIT)
 NoNewPrivileges=yes
-PrivateTmp=yes
-ProtectKernelTunables=yes
-ProtectKernelModules=yes
-ProtectControlGroups=yes
 RestrictSUIDSGID=yes
-RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 RestrictNamespaces=yes
 LockPersonality=yes
 LimitCORE=0

@@ -3,7 +3,9 @@ set -eu
 
 umask 077
 STATE_DIR="${NIDOAI_HOME:-${HOME}/.nidoai}"
-mkdir -p "$STATE_DIR"
+if [ ! -d "$STATE_DIR" ]; then
+  mkdir -p "$STATE_DIR"
+fi
 chmod 700 "$STATE_DIR" 2>/dev/null || true
 cd "$STATE_DIR"
 
