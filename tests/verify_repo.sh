@@ -1743,7 +1743,7 @@ assert "After=dbus.socket gnome-keyring-daemon.service" in gw_unit_txt, "nidoai-
 for bad_user_opt in ("PrivateTmp=", "ProtectKernelTunables=", "ProtectKernelModules=", "ProtectControlGroups="):
     assert bad_user_opt not in gw_unit_txt, f"Unprivileged user unit nidoai-gateway.service must not set root-only {bad_user_opt}"
 gw_aa_txt = (root / "packages/nidoai-gateway/files/etc/apparmor.d/nidoai-gateway").read_text(encoding="utf-8")
-for req_aa in ("/usr/bin/secret-tool ix,", "/usr/bin/mkdir ix,", "/usr/bin/chmod ix,", "unix,", "dbus (send, receive) bus=session,", "network inet dgram,"):
+for req_aa in ("/usr/bin/secret-tool ix,", "/usr/bin/mkdir ix,", "/usr/bin/chmod ix,", "/usr/lib/cargo/bin/coreutils/chmod ix,", "/usr/bin/which* rix,", "@{PROC}/version* r,", "unix,", "dbus (send, receive) bus=session,", "network inet dgram,"):
     assert req_aa in gw_aa_txt, f"nidoai-gateway AppArmor profile missing {req_aa}"
 assert "/usr/bin/secret-tool PUx" not in gw_aa_txt, "PUx fails under NoNewPrivileges=yes; secret-tool must use ix"
 cleanup_unit_txt = (root / "packages/nido-desktop/files/usr/lib/systemd/system/nido-native-first-cleanup.service").read_text(encoding="utf-8")

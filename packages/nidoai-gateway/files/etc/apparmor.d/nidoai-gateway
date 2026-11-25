@@ -26,10 +26,15 @@ profile nidoai-gateway /usr/libexec/nidoai/gateway-daemon {
   /usr/bin/mkdir ix,
   /bin/chmod ix,
   /usr/bin/chmod ix,
+  # Ubuntu 26.04+ Rust uutils-coreutils symlink targets
+  /usr/lib/cargo/bin/coreutils/mkdir ix,
+  /usr/lib/cargo/bin/coreutils/chmod ix,
+  /usr/lib/cargo/bin/coreutils/coreutils ix,
   /usr/bin/node ix,
   /usr/bin/nodejs ix,
-  /usr/bin/which* ix,
-  /bin/which* ix,
+  # which.debianutils is a /bin/sh script and needs read + inherit-exec (rix)
+  /usr/bin/which* rix,
+  /bin/which* rix,
   # Inherit profile (ix) rather than PUx so exec succeeds under NoNewPrivileges=yes
   /usr/bin/secret-tool ix,
 
@@ -40,10 +45,12 @@ profile nidoai-gateway /usr/libexec/nidoai/gateway-daemon {
   /etc/ubuntu-nido/** r,
   /etc/machine-id r,
   /var/lib/dbus/machine-id r,
+  /etc/gcrypt/** r,
   /etc/ssl/** r,
   /etc/ca-certificates/** r,
   @{PROC}/@{pid}/** r,
   @{PROC}/sys/** r,
+  @{PROC}/version* r,
   @{PROC}/meminfo r,
   @{PROC}/cpuinfo r,
   @{PROC}/stat r,
