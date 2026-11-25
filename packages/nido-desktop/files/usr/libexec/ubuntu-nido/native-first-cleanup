@@ -49,9 +49,9 @@ if command -v dconf >/dev/null 2>&1; then
   dconf compile /etc/dconf/db/local /etc/dconf/db/local.d >/dev/null 2>&1 || dconf update >/dev/null 2>&1 || true
 fi
 
-# Pre-compile Python bytecache for NidoHub modules (saves ~100-200ms on first launch)
+# Pre-compile Python bytecache for NidoHub & desktop helper modules (saves ~100-200ms on first launch)
 if command -v python3 >/dev/null 2>&1; then
-  python3 -m compileall -q /usr/lib/nido-hub/ >/dev/null 2>&1 || true
+  python3 -m compileall -q /usr/lib/nido-hub/ /usr/libexec/ubuntu-nido/ >/dev/null 2>&1 || true
 fi
 
 # Ensure NTP clock sync is enabled on first boot (resilient to VMware/UTM RTC clock drift)

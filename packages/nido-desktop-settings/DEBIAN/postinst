@@ -120,4 +120,8 @@ if [ -d /etc/sysctl.d ] && command -v sysctl >/dev/null 2>&1; then
   sysctl --system >/dev/null 2>&1 || true
 fi
 
+if [ "${1:-}" = "configure" ] && command -v python3 >/dev/null 2>&1 && [ -d /usr/libexec/ubuntu-nido ]; then
+  python3 -m compileall -q /usr/libexec/ubuntu-nido >/dev/null 2>&1 || true
+fi
+
 exit 0

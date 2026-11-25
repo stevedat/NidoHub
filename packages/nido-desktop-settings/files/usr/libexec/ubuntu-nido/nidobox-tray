@@ -7,17 +7,9 @@ while keeping quick NidoBox tools accessible from the NidoOS menu bar.
 
 from __future__ import annotations
 
-import json
-import math
 import os
-import shutil
 import signal
-import socket
-import subprocess
 import sys
-import tempfile
-import threading
-import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
 
@@ -150,24 +142,36 @@ DBUSMENU_XML = """<node>
 """
 
 
-def _point_to_segment_dist(px: float, py: float, ax: float, ay: float, bx: float, by: float) -> float:
+def _point_to_segment_dist(
+    px: float,
+    py: float,
+    ax: float,
+    ay: float,
+    bx: float,
+    by: float,
+    _hypot: Any = None,
+) -> float:
+    if _hypot is None:
+        from math import hypot as _hypot
     vx = bx - ax
     vy = by - ay
     wx = px - ax
     wy = py - ay
     seg_len2 = vx * vx + vy * vy
     if seg_len2 <= 1e-9:
-        return math.hypot(wx, wy)
+        return float(_hypot(wx, wy))
     t = max(0.0, min(1.0, (wx * vx + wy * vy) / seg_len2))
     dx = px - (ax + t * vx)
     dy = py - (ay + t * vy)
-    return math.hypot(dx, dy)
+    return float(_hypot(dx, dy))
 
 
 def render_fallback_icon_pixmap(size: int = 22) -> bytes:
     """Render an antialiased ARGB32 (network byte order) monochrome cube fallback icon."""
     if size <= 0:
         raise ValueError("size must be positive")
+    from math import hypot
+
     scale = size / 16.0
     outer_verts = [
         (8.0 * scale, 1.6 * scale),
@@ -206,7 +210,7 @@ def render_fallback_icon_pixmap(size: int = 22) -> bytes:
                 py = y + oy
                 best = 0.0
                 for (ax, ay), (bx, by), half_w in segments:
-                    d = _point_to_segment_dist(px, py, ax, ay, bx, by) - half_w
+                    d = _point_to_segment_dist(px, py, ax, ay, bx, by, _hypot=hypot) - half_w
                     if d <= -feather:
                         best = 1.0
                         break
@@ -232,11 +236,23 @@ def probe_nidodrop_state(
     timeout: float = 0.15,
 ) -> tuple[bool, str]:
     """Query active NidoDrop LAN station quickly without spawning a subprocess."""
-    base = runtime_dir or Path(os.environ.get("XDG_RUNTIME_DIR", tempfile.gettempdir()))
+    if runtime_dir is not None:
+        base = runtime_dir
+    else:
+        xdg_rt = os.environ.get("XDG_RUNTIME_DIR")
+        if xdg_rt:
+            base = Path(xdg_rt)
+        else:
+            import tempfile
+
+            base = Path(tempfile.gettempdir())
     real_uid = os.getuid() if uid is None else uid
     state_file = base / f"nidobox-drop-{real_uid}.json"
     if not state_file.is_file():
         return (False, "")
+    import json
+    import socket
+
     try:
         st = json.loads(state_file.read_text(encoding="utf-8"))
         port = int(st.get("controlPort", 0))
@@ -277,6 +293,9 @@ def _copy_text_to_clipboard(text: str) -> bool:
     payload = (text or "").strip()
     if not payload:
         return False
+    import shutil
+    import subprocess
+
     candidates: list[list[str]] = []
     if os.environ.get("WAYLAND_DISPLAY") and shutil.which("wl-copy"):
         candidates.append(["wl-copy"])
@@ -456,6 +475,8 @@ def _find_binary(name: str, fixed_paths: tuple[str, ...]) -> str | None:
     for candidate in fixed_paths:
         if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
             return candidate
+    import shutil
+
     return shutil.which(name)
 
 
@@ -474,7 +495,12 @@ def run_tray() -> int:
 
     sni_info = Gio.DBusNodeInfo.new_for_xml(SNI_XML)
     menu_info = Gio.DBusNodeInfo.new_for_xml(DBUSMENU_XML)
-    icon_pixmap = render_fallback_icon_pixmap(22)
+    icon_pixmap_cache: list[bytes | None] = [None]
+
+    def _get_icon_pixmap() -> bytes:
+        if icon_pixmap_cache[0] is None:
+            icon_pixmap_cache[0] = render_fallback_icon_pixmap(22)
+        return icon_pixmap_cache[0]
 
     loop = GLib.MainLoop()
     state: dict[str, Any] = {
@@ -554,6 +580,8 @@ def run_tray() -> int:
             pass
 
     def _spawn_gui(argv: list[str]) -> None:
+        import subprocess
+
         env = dict(os.environ)
         token = str(state.get("activation_token") or "").strip()
         if token:
@@ -594,6 +622,10 @@ def run_tray() -> int:
         if action == "copy_drop_url":
             drop_url = str(state.get("drop_url") or "").strip()
             if drop_url:
+                import shutil
+                import subprocess
+                import threading
+
                 def copy_worker() -> None:
                     copied = _copy_text_to_clipboard(drop_url)
                     if copied and shutil.which("notify-send"):
@@ -613,6 +645,10 @@ def run_tray() -> int:
         if action == "stop_drop":
             nb = _find_binary("nidobox", ("/usr/bin/nidobox", "/usr/local/bin/nidobox"))
             if nb:
+                import shutil
+                import subprocess
+                import threading
+
                 def worker() -> None:
                     ok_stop = False
                     try:
@@ -672,7 +708,7 @@ def run_tray() -> int:
         if prop == "IconName":
             return GLib.Variant("s", resolve_tray_icon_name(bool(state["drop_running"])))
         if prop == "IconPixmap":
-            return GLib.Variant("a(iiay)", [(22, 22, icon_pixmap)])
+            return GLib.Variant("a(iiay)", [(22, 22, _get_icon_pixmap())])
         if prop in ("OverlayIconName", "AttentionIconName", "AttentionMovieName"):
             return GLib.Variant("s", "")
         if prop in ("OverlayIconPixmap", "AttentionIconPixmap"):
@@ -866,6 +902,17 @@ def run_tray() -> int:
 
 def run_self_test() -> int:
     """Run headless validation of D-Bus schemas, menu structure, pixmap, and NidoDrop probe."""
+    # Verify heavy stdlib modules remain unloaded on startup (keeps resident tray RSS minimal)
+    if __name__ == "__main__":
+        for deferred_mod in ("xml.etree.ElementTree", "socket", "subprocess", "threading", "tempfile", "shutil", "json", "math"):
+            assert deferred_mod not in sys.modules, f"{deferred_mod} should be lazily imported in nidobox-tray"
+
+    import json
+    import socket
+    import tempfile
+    import threading
+    import xml.etree.ElementTree as ET
+
     sni_root = ET.fromstring(SNI_XML)
     sni_iface = sni_root.find("interface")
     assert sni_iface is not None and sni_iface.attrib.get("name") == "org.kde.StatusNotifierItem"

@@ -49,13 +49,60 @@ case "${1:-}" in
     ;;
 esac
 
-BIN="/opt/NidoOffice/nidooffice"
-if [ ! -x "$BIN" ]; then
-  BIN="/opt/NidoOffice/genoffice"
+if [ "$SYSTEM_INSTALLED" -eq 1 ]; then
+  BIN="/opt/NidoOffice/nidooffice"
+  if [ ! -x "$BIN" ]; then
+    BIN="/opt/NidoOffice/genoffice"
+  fi
+else
+  BIN="${NIDOOFFICE_BIN:-/opt/NidoOffice/nidooffice}"
+  if [ ! -x "$BIN" ]; then
+    BIN="/opt/NidoOffice/genoffice"
+  fi
 fi
+
+# Detect virtual/software-GPU VMs (same allowlist as 60-nido-vm-gsk & native-first-cleanup)
+# so Electron/Chromium skips slow software EGL/Vulkan probe (~300ms) and llvmpipe RAM overhead.
+# Bare-metal hosts and GPU-passthrough VMs keep hardware GPU acceleration untouched.
+_nido_is_software_gpu_vm() {
+  if [ "${NIDOOFFICE_ENABLE_GPU:-0}" = "1" ]; then
+    return 1
+  fi
+  local vm_type=""
+  if [ "${NIDO_VM_VIRT_TYPE+set}" = "set" ]; then
+    vm_type="$NIDO_VM_VIRT_TYPE"
+  elif command -v systemd-detect-virt >/dev/null 2>&1; then
+    vm_type="$(systemd-detect-virt --vm 2>/dev/null || true)"
+  fi
+  if [ -z "$vm_type" ] || [ "$vm_type" = "none" ]; then
+    return 1
+  fi
+  local drm_dir="${NIDO_DRM_SYSFS:-/sys/class/drm}"
+  local uev drv
+  for uev in "${drm_dir}"/card*/device/uevent; do
+    [ -f "$uev" ] || continue
+    drv="$(awk -F= '$1 == "DRIVER" { print $2; exit }' "$uev" 2>/dev/null || true)"
+    case "$drv" in
+      i915|xe|amdgpu|radeon|nvidia|nouveau|apple|asahi|msm|panfrost|panthor|etnaviv|vc4|v3d)
+        return 1
+        ;;
+    esac
+  done
+  return 0
+}
 
 export ELECTRON_OZONE_PLATFORM_HINT="${ELECTRON_OZONE_PLATFORM_HINT:-auto}"
 EXTRA_ARGS=()
+
+HAS_GPU_FLAG=0
+for arg in "$@"; do
+  case "$arg" in
+    --disable-gpu|--enable-gpu|--use-gl=*) HAS_GPU_FLAG=1; break ;;
+  esac
+done
+if [ "$HAS_GPU_FLAG" -eq 0 ] && _nido_is_software_gpu_vm; then
+  EXTRA_ARGS+=(--disable-gpu)
+fi
 
 if [ -n "${WAYLAND_DISPLAY:-}" ]; then
   HAS_IME=0
@@ -94,4 +141,4 @@ else
   fi
 fi
 
-exec "$BIN" "${EXTRA_ARGS[@]}" "$@"
+exec "$BIN" ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} "$@"

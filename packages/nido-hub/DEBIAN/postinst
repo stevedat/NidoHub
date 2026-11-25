@@ -55,7 +55,7 @@ if [ -d /sys/kernel/security/apparmor ] && [ -f /etc/apparmor.d/nido-pkg-helper 
 fi
 
 if [ "${1:-}" = "configure" ] && command -v python3 >/dev/null 2>&1 && [ -d /usr/lib/nido-hub ]; then
-  python3 -OO -m compileall -q /usr/lib/nido-hub >/dev/null 2>&1 || true
+  python3 -m compileall -q /usr/lib/nido-hub >/dev/null 2>&1 || true
 fi
 
 if command -v gtk-update-icon-cache >/dev/null 2>&1; then

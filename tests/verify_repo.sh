@@ -1767,6 +1767,47 @@ assert "Type=simple" in cleanup_unit_txt, "nido-native-first-cleanup.service mus
 cleanup_txt = (root / "packages/nido-desktop/files/usr/libexec/ubuntu-nido/native-first-cleanup").read_text(encoding="utf-8")
 assert "disabled-extensions=['ding@rastersoft.com']" in cleanup_txt, "native-first-cleanup must disable ding@rastersoft.com on installed systems"
 assert "timedatectl set-ntp true" in cleanup_txt, "native-first-cleanup must enable NTP clock sync on first boot"
+assert "/usr/libexec/ubuntu-nido/" in cleanup_txt and "compileall" in cleanup_txt, "native-first-cleanup must precompile /usr/libexec/ubuntu-nido/ bytecache"
+
+# Verify nidooffice-desktop VM software-GPU --disable-gpu detection (bare metal & GPU passthrough untouched)
+office_launcher = root / "packages/nidooffice-desktop/files/usr/bin/nidooffice-desktop"
+with tempfile.TemporaryDirectory() as otmp:
+    otmp_path = Path(otmp)
+    mock_office_bin = otmp_path / "mock-nidooffice"
+    mock_office_bin.write_text("#!/usr/bin/env bash\nprintf '%s\\n' \"$@\"\n", encoding="utf-8")
+    mock_office_bin.chmod(0o755)
+    (otmp_path / "vm/card0/device").mkdir(parents=True)
+    (otmp_path / "vm/card0/device/uevent").write_text("DRIVER=vmwgfx\n", encoding="utf-8")
+    (otmp_path / "pt/card0/device").mkdir(parents=True)
+    (otmp_path / "pt/card1/device").mkdir(parents=True)
+    (otmp_path / "pt/card0/device/uevent").write_text("DRIVER=vmwgfx\n", encoding="utf-8")
+    (otmp_path / "pt/card1/device/uevent").write_text("DRIVER=amdgpu\n", encoding="utf-8")
+    base_oenv = {k: v for k, v in os.environ.items() if k not in ("WAYLAND_DISPLAY", "NIDOOFFICE_ENABLE_GPU")}
+    base_oenv["NIDOOFFICE_BIN"] = str(mock_office_bin)
+    vm_args = subprocess.run(
+        ["bash", str(office_launcher), "doc.docx"],
+        env={**base_oenv, "NIDO_VM_VIRT_TYPE": "vmware", "NIDO_DRM_SYSFS": str(otmp_path / "vm")},
+        capture_output=True, text=True, check=True,
+    ).stdout.splitlines()
+    assert "--disable-gpu" in vm_args, f"Expected --disable-gpu on software-GPU VM, got {vm_args}"
+    bm_args = subprocess.run(
+        ["bash", str(office_launcher), "doc.docx"],
+        env={**base_oenv, "NIDO_VM_VIRT_TYPE": "none", "NIDO_DRM_SYSFS": str(otmp_path / "vm")},
+        capture_output=True, text=True, check=True,
+    ).stdout.splitlines()
+    assert "--disable-gpu" not in bm_args, f"Bare metal must not inject --disable-gpu: {bm_args}"
+    pt_args = subprocess.run(
+        ["bash", str(office_launcher), "doc.docx"],
+        env={**base_oenv, "NIDO_VM_VIRT_TYPE": "kvm", "NIDO_DRM_SYSFS": str(otmp_path / "pt")},
+        capture_output=True, text=True, check=True,
+    ).stdout.splitlines()
+    assert "--disable-gpu" not in pt_args, f"GPU-passthrough VM must not inject --disable-gpu: {pt_args}"
+    ov_args = subprocess.run(
+        ["bash", str(office_launcher), "--enable-gpu", "doc.docx"],
+        env={**base_oenv, "NIDO_VM_VIRT_TYPE": "vmware", "NIDO_DRM_SYSFS": str(otmp_path / "vm")},
+        capture_output=True, text=True, check=True,
+    ).stdout.splitlines()
+    assert "--disable-gpu" not in ov_args, f"Explicit --enable-gpu must suppress --disable-gpu: {ov_args}"
 
 welcome_script = root / "packages/nido-desktop-settings/files/usr/local/bin/nido-welcome"
 with tempfile.TemporaryDirectory() as wtmp:
