@@ -116,13 +116,13 @@ from pathlib import Path
 
 dist = Path(sys.argv[1])
 expected = [
-    "nidoai-gateway_0.2.0_all.deb",
-    "nidoagent-cli_0.2.0_all.deb",
-    "nido-desktop-settings_0.2.0_all.deb",
-    "nido-hub_0.2.0_all.deb",
-    "nidooffice-cli_0.2.0_all.deb",
-    "nidooffice-desktop_0.13.1_all.deb",
-    "nido-desktop_0.2.0_all.deb",
+    "nidoai-gateway_0.2.1_all.deb",
+    "nidoagent-cli_0.2.1_all.deb",
+    "nido-desktop-settings_0.2.1_all.deb",
+    "nido-hub_0.2.1_all.deb",
+    "nidooffice-cli_0.2.1_all.deb",
+    "nidooffice-desktop_0.13.1-1_all.deb",
+    "nido-desktop_0.2.1_all.deb",
 ]
 
 def parse_ar(raw: bytes) -> dict[str, bytes]:
@@ -161,7 +161,7 @@ for fname in expected:
         names = [m.name for m in tf.getmembers()]
         leaked = [n for n in names if n.endswith("/.env") or n.endswith("/.env.local") or n == "./.env" or n == "./.env.local"]
         assert not leaked, f"{fname}: SECRET LEAKED: {leaked}"
-        if fname == "nidoai-gateway_0.2.0_all.deb":
+        if fname == "nidoai-gateway_0.2.1_all.deb":
             assert "./usr/lib/nidoai/src/cli.mjs" in names, f"{fname}: missing pure JS cli.mjs entry"
             assert "./usr/lib/nidoai/src/gateway/anthropic-adapter.js" in names, f"{fname}: missing unified anthropic-adapter.js"
             assert "./usr/lib/nidoai/src/gateway/nido-account-adapter.js" in names, f"{fname}: missing nido-account-adapter.js"
@@ -173,7 +173,7 @@ for fname in expected:
             assert "./usr/lib/nidoai/src/cli.ts" not in names, f"{fname}: stale cli.ts found (breaks stock Ubuntu nodejs)"
             srv_js = tf.extractfile("./usr/lib/nidoai/src/gateway/server.js").read().decode("utf-8")
             assert "// Rule 1:" not in srv_js, f"{fname}: Stage 1 JS hardening did not strip comments"
-        elif fname == "nido-desktop-settings_0.2.0_all.deb":
+        elif fname == "nido-desktop-settings_0.2.1_all.deb":
             for req_cfg in (
                 "./etc/dconf/profile/user",
                 "./etc/dconf/profile/gdm",
@@ -228,7 +228,7 @@ for fname in expected:
             assert 'TAG+="uaccess"' in uinput_active and "0666" not in uinput_active, f"{fname}: uinput rule must use uaccess (not 0666)"
             ufw_app = tf.extractfile("./etc/ufw/applications.d/nidoos").read().decode("utf-8")
             assert "[NidoKVM]" in ufw_app and "54322/tcp" in ufw_app, f"{fname}: ufw profile missing NidoKVM 54322/tcp"
-        elif fname == "nido-hub_0.2.0_all.deb":
+        elif fname == "nido-hub_0.2.1_all.deb":
             for req_hub in (
                 "./usr/lib/nido-hub/agent_accounts.py",
                 "./usr/lib/nido-hub/ai_discovery.py",
@@ -254,7 +254,7 @@ for fname in expected:
             assert "Unified Nido Account (SSO), AI quota inspection" not in acct_py, (
                 f"{fname}: Stage 1 Python hardening did not strip docstring in nido_account.py"
             )
-        elif fname == "nido-desktop_0.2.0_all.deb":
+        elif fname == "nido-desktop_0.2.1_all.deb":
             ctrl_key = next((k for k in members if k.startswith("control.tar")), None)
             ctrl_raw = members[ctrl_key]
             if ctrl_key.endswith(".gz"):
@@ -267,7 +267,7 @@ for fname in expected:
                 ctrl_tar = ctrl_raw
             with tarfile.open(fileobj=io.BytesIO(ctrl_tar), mode="r:") as ctf:
                 ctrl_txt = ctf.extractfile("./control").read().decode("utf-8")
-                for dep in ("nido-desktop-settings", "nido-hub", "nidoagent-cli", "nidoai-gateway", "nidooffice-cli", "nidooffice-desktop", "vielotus (>= 2.0.8)", "nido-ime-bridge (>= 0.2.0)", "nidobox (>= 1.5.0)", "wl-clipboard", "xclip", "geary", "showtime | totem"):
+                for dep in ("nido-desktop-settings", "nido-hub", "nidoagent-cli", "nidoai-gateway", "nidooffice-cli", "nidooffice-desktop", "vielotus (>= 2.0.10)", "nido-ime-bridge (>= 0.2.0)", "nidobox (>= 1.5.1)", "wl-clipboard", "xclip", "geary", "showtime | totem"):
                     assert dep in ctrl_txt, f"{fname}: missing dependency {dep}"
             for req_st in (
                 "./usr/libexec/ubuntu-nido/showtime-launch",
@@ -276,7 +276,7 @@ for fname in expected:
                 "./usr/lib/systemd/system/nido-native-first-cleanup.service",
             ):
                 assert req_st in names, f"{fname}: missing {req_st}"
-        elif fname == "nidooffice-desktop_0.13.1_all.deb":
+        elif fname == "nidooffice-desktop_0.13.1-1_all.deb":
             for req_od in (
                 "./etc/apparmor.d/nidooffice",
                 "./usr/bin/nidooffice-desktop",
@@ -341,7 +341,7 @@ python3 "${ROOT_DIR}/scripts/build_deb_portable.py" \
   --source-dir "${ROOT_DIR}/packages/nido-hub" \
   --extra-files "${ROOT_DIR}/packages/nido-hub/stage" \
   --version-suffix "+dev1" \
-  --output "${DEV_TEST_DIR}/nido-hub_0.2.0+dev1_all.deb"
+  --output "${DEV_TEST_DIR}/nido-hub_0.2.1+dev1_all.deb"
 python3 "${ROOT_DIR}/scripts/build_apt_repo.py" \
   --dist-dir "${DEV_TEST_DIR}" \
   --out-dir "${DEV_TEST_DIR}/apt" >/dev/null
@@ -350,9 +350,9 @@ import gzip, sys
 from pathlib import Path
 tmp = Path(sys.argv[1])
 ctrl = Path(sys.argv[2]).read_text(encoding="utf-8")
-assert "Version: 0.2.0\n" in ctrl, "Source DEBIAN/control must stay untouched at 0.2.0"
+assert "Version: 0.2.1\n" in ctrl, "Source DEBIAN/control must stay untouched at 0.2.1"
 pkg_txt = gzip.decompress((tmp / "apt/dists/resolute/main/binary-arm64/Packages.gz").read_bytes()).decode("utf-8")
-assert "Version: 0.2.0+dev1\n" in pkg_txt, f"Expected dev suffix in APT metadata: {pkg_txt}"
+assert "Version: 0.2.1+dev1\n" in pkg_txt, f"Expected dev suffix in APT metadata: {pkg_txt}"
 print("Verified --version-suffix +dev1 non-mutating dev APT build.")
 PY
 rm -rf "${DEV_TEST_DIR}"
@@ -380,12 +380,12 @@ extract_root = sandbox / "rootfs"
 extract_root.mkdir(parents=True, exist_ok=True)
 
 for deb_name in (
-    "nidoai-gateway_0.2.0_all.deb",
-    "nidoagent-cli_0.2.0_all.deb",
-    "nido-desktop-settings_0.2.0_all.deb",
-    "nido-hub_0.2.0_all.deb",
-    "nidooffice-cli_0.2.0_all.deb",
-    "nidooffice-desktop_0.13.1_all.deb",
+    "nidoai-gateway_0.2.1_all.deb",
+    "nidoagent-cli_0.2.1_all.deb",
+    "nido-desktop-settings_0.2.1_all.deb",
+    "nido-hub_0.2.1_all.deb",
+    "nidooffice-cli_0.2.1_all.deb",
+    "nidooffice-desktop_0.13.1-1_all.deb",
 ):
     raw = (dist / deb_name).read_bytes()
     pos = 8
@@ -1323,12 +1323,17 @@ by_target2 = {t["target"]: {i["skill"]: i["status"] for i in t["items"]} for t i
 assert by_target2["agents"]["ubuntu-nido-office"] == "unchanged"
 assert by_target2["claude"]["ubuntu-nido-office"] == "skipped_user_override"
 
-# Verify nidoagent ask --json against a lightweight loopback OpenAI-compatible mock server + DOCX->XLSX pipeline
-import http.server as _http_srv, threading as _threading
+# Verify nidoagent ask --json against a lightweight loopback OpenAI-compatible mock server + DOCX->XLSX pipeline + history/search/resume
+import http.server as _http_srv, threading as _threading, stat as _stat
+_received_chat_requests = []
 class _MockChatHandler(_http_srv.BaseHTTPRequestHandler):
     def do_POST(self):
         length = int(self.headers.get("Content-Length", "0"))
-        _ = self.rfile.read(length)
+        raw_body = self.rfile.read(length)
+        try:
+            _received_chat_requests.append(_json.loads(raw_body.decode("utf-8")))
+        except Exception:
+            pass
         payload = _json.dumps({
             "id": "chatcmpl-test",
             "model": "mock-nido-model",
@@ -1362,8 +1367,123 @@ try:
         ).stdout
     )
     assert ask_json["ok"] is True and ask_json["backend"] == "gateway" and ask_json["model"] == "mock-nido-model"
+    assert isinstance(ask_json.get("sessionId"), str) and len(ask_json["sessionId"]) >= 16, ask_json
     assert Path(ask_json["outPath"]).resolve() == ask_out_xlsx.resolve() and ask_out_xlsx.is_file()
     assert any(Path(p).resolve() == docx_path.resolve() for p in ask_json["attachedFiles"])
+
+    history_file = sandbox / "home/.nidoai/history.jsonl"
+    assert history_file.is_file(), "Expected history.jsonl to be created after nidoagent ask"
+    assert _stat.S_IMODE(history_file.stat().st_mode) == 0o600, f"Expected 0600 on history.jsonl, got {oct(history_file.stat().st_mode)}"
+    hist_raw = history_file.read_text(encoding="utf-8")
+    assert "<untrusted_attachment" not in hist_raw, "Attachment body must NOT be stored verbatim in history.jsonl"
+    assert "ubuntu_nido_mock_chat_token_0123456789" not in hist_raw, "Client token must NOT leak into history.jsonl"
+
+    # 2. Verify secret redaction + Vietnamese diacritic persistence
+    synthetic_secret = "sk-test1234567890abcdefghijklmno"
+    ask_vn = _json.loads(
+        subprocess.run(
+            [nidoagent_bin, "ask", "--json", f"Phân tích hợp đồng quý 3 với key {synthetic_secret}"],
+            text=True, check=True, env=ask_env, capture_output=True,
+        ).stdout
+    )
+    vn_session_id = ask_vn["sessionId"]
+    hist_after_vn = history_file.read_text(encoding="utf-8")
+    assert synthetic_secret not in hist_after_vn, "Synthetic secret leaked into history.jsonl"
+    assert "[REDACTED]" in hist_after_vn, "Expected [REDACTED] marker in history.jsonl"
+
+    # 3. Verify --no-history, NIDOAGENT_HISTORY=0, and ai-policy.json historyEnabled=false opt-outs
+    subprocess.run(
+        [nidoagent_bin, "ask", "--no-history", "--json", "ephemeral query no flag"],
+        text=True, check=True, env=ask_env, capture_output=True,
+    )
+    env_hist_off = dict(ask_env, NIDOAGENT_HISTORY="0")
+    subprocess.run(
+        [nidoagent_bin, "ask", "--json", "ephemeral query env off"],
+        text=True, check=True, env=env_hist_off, capture_output=True,
+    )
+    policy_cfg_dir = sandbox / "home/.config/ubuntu-nido"
+    policy_cfg_dir.mkdir(parents=True, exist_ok=True)
+    policy_cfg_path = policy_cfg_dir / "ai-policy.json"
+    policy_cfg_path.write_text('{"aiEnabled": true, "historyEnabled": false}\n', encoding="utf-8")
+    env_pol_hist_off = dict(ask_env, XDG_CONFIG_HOME=str(sandbox / "home/.config"))
+    subprocess.run(
+        [nidoagent_bin, "ask", "--json", "ephemeral query policy off"],
+        text=True, check=True, env=env_pol_hist_off, capture_output=True,
+    )
+    policy_cfg_path.write_text('{"aiEnabled": true, "historyEnabled": true}\n', encoding="utf-8")
+    hist_after_optouts = history_file.read_text(encoding="utf-8")
+    for forbidden_ephemeral in ("ephemeral query no flag", "ephemeral query env off", "ephemeral query policy off"):
+        assert forbidden_ephemeral not in hist_after_optouts, f"Opt-out failed for: {forbidden_ephemeral}"
+
+    # 4. Verify nidoagent history list, stats, diacritic-insensitive search, and show (last + prefix)
+    h_list = _json.loads(
+        subprocess.run([nidoagent_bin, "history", "list", "--json"], text=True, check=True, env=ask_env, capture_output=True).stdout
+    )
+    assert h_list["ok"] is True and h_list["totalSessions"] == 2, h_list
+    h_stats = _json.loads(
+        subprocess.run([nidoagent_bin, "history", "stats", "--json"], text=True, check=True, env=ask_env, capture_output=True).stdout
+    )
+    assert h_stats["ok"] is True and h_stats["totalSessions"] == 2 and h_stats["totalMessages"] == 4, h_stats
+    h_search = _json.loads(
+        subprocess.run([nidoagent_bin, "history", "search", "--json", "hop dong quy 3"], text=True, check=True, env=ask_env, capture_output=True).stdout
+    )
+    assert h_search["ok"] is True and h_search["totalMatches"] >= 1, h_search
+    assert h_search["matches"][0]["sessionId"] == vn_session_id, h_search
+    h_show_last = _json.loads(
+        subprocess.run([nidoagent_bin, "history", "show", "last", "--json"], text=True, check=True, env=ask_env, capture_output=True).stdout
+    )
+    assert h_show_last["ok"] is True and h_show_last["session"]["sessionId"] == vn_session_id, h_show_last
+    h_show_prefix = _json.loads(
+        subprocess.run([nidoagent_bin, "history", "show", vn_session_id[:-3], "--json"], text=True, check=True, env=ask_env, capture_output=True).stdout
+    )
+    assert h_show_prefix["ok"] is True and h_show_prefix["session"]["sessionId"] == vn_session_id, h_show_prefix
+
+    # 5. Verify nidoagent chat persistence + chat --resume last forwards prior context to backend
+    subprocess.run(
+        [nidoagent_bin, "chat", "--plain"],
+        input="Tin nhắn đầu tiên\nexit\n",
+        text=True, check=True, env=ask_env, capture_output=True,
+    )
+    h_chats = _json.loads(
+        subprocess.run([nidoagent_bin, "history", "list", "--mode", "chat", "--json"], text=True, check=True, env=ask_env, capture_output=True).stdout
+    )
+    assert len(h_chats["sessions"]) == 1, h_chats
+    chat_sid = h_chats["sessions"][0]["sessionId"]
+    _received_chat_requests.clear()
+    resume_run = subprocess.run(
+        [nidoagent_bin, "chat", "--resume", "last", "--plain"],
+        input="Câu hỏi tiếp theo\nexit\n",
+        text=True, check=True, env=ask_env, capture_output=True,
+    )
+    assert "Đã khôi phục phiên" in resume_run.stdout, resume_run.stdout
+    assert len(_received_chat_requests) == 1, f"Expected 1 resumed chat request, got {len(_received_chat_requests)}"
+    resumed_msgs = _received_chat_requests[0]["messages"]
+    resumed_contents = [m["content"] for m in resumed_msgs]
+    assert "Tin nhắn đầu tiên" in resumed_contents, f"Resumed messages missing prior user turn: {resumed_msgs}"
+    assert "Câu hỏi tiếp theo" in resumed_contents, f"Resumed messages missing new turn: {resumed_msgs}"
+    h_chat_show = _json.loads(
+        subprocess.run([nidoagent_bin, "history", "show", chat_sid, "--json"], text=True, check=True, env=ask_env, capture_output=True).stdout
+    )
+    assert len(h_chat_show["messages"]) == 4, f"Expected 4 messages in resumed chat session, got {len(h_chat_show['messages'])}"
+
+    # 6. Verify history delete, prune, and clear
+    h_del = _json.loads(
+        subprocess.run([nidoagent_bin, "history", "delete", vn_session_id, "--json"], text=True, check=True, env=ask_env, capture_output=True).stdout
+    )
+    assert h_del["ok"] is True and h_del["deletedSessionId"] == vn_session_id and h_del["removedMessages"] == 2, h_del
+    h_prune = _json.loads(
+        subprocess.run([nidoagent_bin, "history", "prune", "--days", "90", "--json"], text=True, check=True, env=ask_env, capture_output=True).stdout
+    )
+    assert h_prune["ok"] is True and h_prune["kept"] >= 6, h_prune
+    h_clear = _json.loads(
+        subprocess.run([nidoagent_bin, "history", "clear", "--json"], text=True, check=True, env=ask_env, capture_output=True).stdout
+    )
+    assert h_clear["ok"] is True, h_clear
+    h_after_clear = _json.loads(
+        subprocess.run([nidoagent_bin, "history", "list", "--json"], text=True, check=True, env=ask_env, capture_output=True).stdout
+    )
+    assert h_after_clear["totalSessions"] == 0, h_after_clear
+
     disabled_env = dict(ask_env)
     disabled_env["NIDOAI_ENABLED"] = "0"
     dis_res = subprocess.run(

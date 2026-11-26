@@ -55,7 +55,7 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
     echo "=== Stage 2 Native Build Dry-Run (${a}) ==="
     python3 "${SCRIPT_DIR}/compile_hub_cython.py" \
       --arch "$a" \
-      --out-deb "${REPO_ROOT}/packages/dist/native/nido-hub_0.2.0_${a}.deb" \
+      --out-deb "${REPO_ROOT}/packages/dist/native/nido-hub_0.2.1_${a}.deb" \
       --dry-run
     bash "${SCRIPT_DIR}/build_gateway_sea.sh" "$a" "${REPO_ROOT}/packages/dist/native/${a}" --dry-run
   done
@@ -118,7 +118,7 @@ PY
     --compression xz \
     "${manifest_args[@]}" \
     ${ver_args[@]+"${ver_args[@]}"} \
-    --output "${NATIVE_OUT}/nido-hub_0.2.0${DEB_VERSION_SUFFIX}_${arch}.deb"
+    --output "${NATIVE_OUT}/nido-hub_0.2.1${DEB_VERSION_SUFFIX}_${arch}.deb"
 
   # 2. Native nidoai-gateway_<ver>_<arch>.deb (Node 22 SEA multi-call ELF binary, zero raw JS source)
   local gw_work="${work_tmp}/nidoai-gateway"
@@ -143,7 +143,7 @@ PY
     --compression xz \
     "${manifest_args[@]}" \
     ${ver_args[@]+"${ver_args[@]}"} \
-    --output "${NATIVE_OUT}/nidoai-gateway_0.2.0${DEB_VERSION_SUFFIX}_${arch}.deb"
+    --output "${NATIVE_OUT}/nidoai-gateway_0.2.1${DEB_VERSION_SUFFIX}_${arch}.deb"
 
   # 3. Native nidoagent-cli_<ver>_<arch>.deb (delegates to unified SEA binary, zero raw JS source)
   local ag_work="${work_tmp}/nidoagent-cli"
@@ -162,7 +162,7 @@ PY
     --compression xz \
     "${manifest_args[@]}" \
     ${ver_args[@]+"${ver_args[@]}"} \
-    --output "${NATIVE_OUT}/nidoagent-cli_0.2.0${DEB_VERSION_SUFFIX}_${arch}.deb"
+    --output "${NATIVE_OUT}/nidoagent-cli_0.2.1${DEB_VERSION_SUFFIX}_${arch}.deb"
 
   rm -rf "$work_tmp"
 }

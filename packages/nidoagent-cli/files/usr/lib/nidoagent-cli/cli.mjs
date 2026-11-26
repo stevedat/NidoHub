@@ -4,13 +4,19 @@
  * Zero-dependency ESM client talking to the local NidoAI Gateway.
  */
 import { execFileSync, spawn } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
 
-const VERSION = '0.2.0';
+const VERSION = '0.2.1';
 const MAX_ATTACH_BYTES = 65_536;
+const HISTORY_SCHEMA_VERSION = 1;
+const HISTORY_MAX_CONTENT_CHARS = 32_768;
+const HISTORY_DEFAULT_RETENTION_DAYS = 90;
+const HISTORY_DEFAULT_MAX_RECORDS = 5000;
+const HISTORY_COMPACT_THRESHOLD_BYTES = 4 * 1024 * 1024;
 const OFFICE_EXTS = new Set([
   '.docx',
   '.xlsx',
@@ -110,9 +116,12 @@ Usage:
   nidoagent account [status|login|logout|sync] [--json]                Quản lý Tài khoản Nido (SSO, trạng thái gói & đồng bộ quota)
   nidoagent capabilities [--json]                                      Liệt kê công cụ bản địa & OS Skills sẵn sàng cho AI Agent
   nidoagent skills [list|sync] [--all] [--json]                        Liệt kê hoặc đồng bộ OS Skills cho agy / codex / claude
-  nidoagent ask [--model <id>] [--effort <lvl>] [--json|--plain|--raw] [--file <p>] [--out <p>] <prompt>
+  nidoagent ask [--model <id>] [--effort <lvl>] [--json|--plain|--raw] [--no-history] [--file <p>] [--out <p>] <prompt>
                                                                        Gửi câu hỏi / tệp (streaming nhanh) & xuất báo cáo
-  nidoagent chat [--model <id>] [--effort <lvl>] [--plain|--raw]       Mở phiên hội thoại giữ ấm (warm session)
+  nidoagent chat [--model <id>] [--effort <lvl>] [--resume [<id|last>]] [--no-history] [--plain|--raw]
+                                                                       Mở hoặc khôi phục phiên hội thoại giữ ấm (warm session)
+  nidoagent history [list|search|show|delete|clear|prune|stats] [--json]
+                                                                       Xem, tìm kiếm hoặc dọn dẹp lịch sử hội thoại cục bộ
   nidoagent --version | --help                                         Hiện thông tin phiên bản / trợ giúp
 `);
 }
@@ -1692,6 +1701,747 @@ function emitAskError(message, asJson, exitCode = 1) {
   process.exit(exitCode);
 }
 
+const SECRET_TOKEN_RE_LIST = [
+  /\bsk-[A-Za-z0-9_-]{20,}\b/g,
+  /\bAIza[0-9A-Za-z_-]{30,}\b/g,
+  new RegExp('\\b' + 'gh' + 'p_[A-Za-z0-9]{20,}\\b', 'g'),
+];
+const BEARER_SECRET_RE = /\bBearer\s+[A-Za-z0-9._~+/-]{20,}=*/gi;
+const COMBINING_MARKS_RE = /[\u0300-\u036f]/g;
+
+function resolveHistoryFilePath() {
+  return path.join(stateDirCandidates()[0], 'history.jsonl');
+}
+
+function resolveHistoryRetentionDays() {
+  const raw = (process.env.NIDOAGENT_HISTORY_DAYS ?? '').trim();
+  if (raw !== '') {
+    const parsed = Number.parseInt(raw, 10);
+    if (Number.isFinite(parsed) && parsed >= 0) return parsed;
+  }
+  return HISTORY_DEFAULT_RETENTION_DAYS;
+}
+
+function resolveHistoryMaxRecords() {
+  const raw = (process.env.NIDOAGENT_HISTORY_MAX_RECORDS ?? '').trim();
+  if (raw !== '') {
+    const parsed = Number.parseInt(raw, 10);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+  return HISTORY_DEFAULT_MAX_RECORDS;
+}
+
+function parseBoolFlagString(val) {
+  const norm = String(val ?? '').trim().toLowerCase();
+  if (norm === '0' || norm === 'false' || norm === 'off' || norm === 'no') return false;
+  if (norm === '1' || norm === 'true' || norm === 'on' || norm === 'yes') return true;
+  return null;
+}
+
+function isHistoryEnabled(flagNoHistory = false) {
+  if (flagNoHistory) return false;
+  const envParsed = parseBoolFlagString(process.env.NIDOAGENT_HISTORY);
+  if (envParsed !== null) return envParsed;
+  const xdgConfig = (process.env.XDG_CONFIG_HOME || '').trim() || path.join(os.homedir(), '.config');
+  const policyPath = path.join(xdgConfig, 'ubuntu-nido', 'ai-policy.json');
+  if (fs.existsSync(policyPath)) {
+    try {
+      const policy = JSON.parse(fs.readFileSync(policyPath, 'utf8'));
+      if (policy && typeof policy.historyEnabled === 'boolean') {
+        return policy.historyEnabled;
+      }
+    } catch {
+      // ignore malformed policy file
+    }
+  }
+  for (const dir of stateDirCandidates()) {
+    const envLocal = parseEnvFile(path.join(dir, '.env.local'));
+    const localParsed = parseBoolFlagString(envLocal.NIDOAGENT_HISTORY);
+    if (localParsed !== null) return localParsed;
+  }
+  return true;
+}
+
+function generateSessionId() {
+  const now = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  const datePart = `${now.getUTCFullYear()}${pad(now.getUTCMonth() + 1)}${pad(now.getUTCDate())}`;
+  const timePart = `${pad(now.getUTCHours())}${pad(now.getUTCMinutes())}${pad(now.getUTCSeconds())}`;
+  return `${datePart}-${timePart}-${crypto.randomBytes(3).toString('hex')}`;
+}
+
+function generateRecordId() {
+  return crypto.randomBytes(6).toString('hex');
+}
+
+function redactSecretsForHistory(text, extraSecrets = []) {
+  let out = String(text ?? '');
+  if (!out) return '';
+  if (Array.isArray(extraSecrets)) {
+    for (const secret of extraSecrets) {
+      if (typeof secret === 'string' && secret.length >= 8) {
+        out = out.split(secret).join('[REDACTED]');
+      }
+    }
+  }
+  for (const re of SECRET_TOKEN_RE_LIST) {
+    out = out.replace(re, '[REDACTED]');
+  }
+  out = out.replace(BEARER_SECRET_RE, 'Bearer [REDACTED]');
+  return out;
+}
+
+function truncateHistoryContent(text) {
+  const s = String(text ?? '');
+  if (s.length <= HISTORY_MAX_CONTENT_CHARS) return s;
+  return `${s.slice(0, HISTORY_MAX_CONTENT_CHARS)}\n...[đã rút gọn]`;
+}
+
+function foldVietnamese(str) {
+  return String(str || '')
+    .normalize('NFD')
+    .replace(COMBINING_MARKS_RE, '')
+    .replace(/đ/g, 'd')
+    .replace(/Đ/g, 'D')
+    .toLowerCase();
+}
+
+function readHistoryRecords(filePath = resolveHistoryFilePath()) {
+  if (!fs.existsSync(filePath)) return [];
+  let raw;
+  try {
+    raw = fs.readFileSync(filePath, 'utf8');
+  } catch {
+    return [];
+  }
+  const records = [];
+  for (const line of raw.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    try {
+      const obj = JSON.parse(trimmed);
+      if (
+        obj &&
+        typeof obj === 'object' &&
+        typeof obj.sessionId === 'string' &&
+        obj.sessionId &&
+        typeof obj.role === 'string' &&
+        typeof obj.content === 'string'
+      ) {
+        records.push(obj);
+      }
+    } catch {
+      // skip corrupted or truncated line
+    }
+  }
+  return records;
+}
+
+function rewriteHistoryRecords(records, filePath = resolveHistoryFilePath()) {
+  const dir = path.dirname(filePath);
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  try {
+    fs.chmodSync(dir, 0o700);
+  } catch {
+    // ignore chmod failures on restricted filesystems
+  }
+  const body = records.length > 0 ? `${records.map((r) => JSON.stringify(r)).join('\n')}\n` : '';
+  const tmpPath = path.join(dir, `.history.${process.pid}.${Date.now()}.tmp`);
+  fs.writeFileSync(tmpPath, body, { encoding: 'utf8', mode: 0o600 });
+  try {
+    fs.chmodSync(tmpPath, 0o600);
+  } catch {
+    // ignore
+  }
+  fs.renameSync(tmpPath, filePath);
+  try {
+    fs.chmodSync(filePath, 0o600);
+  } catch {
+    // ignore
+  }
+}
+
+function pruneHistoryRecords(options = {}) {
+  const filePath = options.filePath || resolveHistoryFilePath();
+  const days = options.days !== undefined ? options.days : resolveHistoryRetentionDays();
+  const maxRecords = options.maxRecords !== undefined ? options.maxRecords : resolveHistoryMaxRecords();
+  const records = readHistoryRecords(filePath);
+  const before = records.length;
+  let filtered = records;
+  if (typeof days === 'number' && Number.isFinite(days) && days > 0) {
+    const cutoffMs = Date.now() - days * 86_400_000;
+    filtered = filtered.filter((r) => {
+      const t = Date.parse(r.ts || '');
+      return !Number.isFinite(t) || t >= cutoffMs;
+    });
+  }
+  if (typeof maxRecords === 'number' && Number.isFinite(maxRecords) && maxRecords > 0 && filtered.length > maxRecords) {
+    filtered = filtered.slice(filtered.length - maxRecords);
+  }
+  const removed = before - filtered.length;
+  if (removed > 0 || options.forceRewrite) {
+    rewriteHistoryRecords(filtered, filePath);
+  }
+  return {
+    removed,
+    kept: filtered.length,
+    before,
+    filePath,
+  };
+}
+
+function appendHistoryTurn({
+  sessionId,
+  mode,
+  userContent,
+  assistantContent,
+  backend,
+  model,
+  cwd,
+  files,
+  outPath,
+  extraSecrets,
+}) {
+  try {
+    const filePath = resolveHistoryFilePath();
+    const dir = path.dirname(filePath);
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    try {
+      fs.chmodSync(dir, 0o700);
+    } catch {
+      // ignore
+    }
+    const baseMs = Date.now();
+    const userTs = new Date(baseMs).toISOString();
+    const assistantTs = new Date(baseMs + 1).toISOString();
+    const cleanUser = truncateHistoryContent(redactSecretsForHistory(userContent, extraSecrets));
+    const cleanAssistant = truncateHistoryContent(redactSecretsForHistory(assistantContent, extraSecrets));
+    const safeFiles = Array.isArray(files) && files.length > 0 ? files.map((f) => String(f)) : undefined;
+    const safeOutPath = typeof outPath === 'string' && outPath ? outPath : undefined;
+    const userRec = {
+      v: HISTORY_SCHEMA_VERSION,
+      id: generateRecordId(),
+      sessionId,
+      mode: mode || 'ask',
+      ts: userTs,
+      role: 'user',
+      content: cleanUser,
+      ...(backend ? { backend } : {}),
+      ...(model ? { model } : {}),
+      ...(cwd ? { cwd } : {}),
+      ...(safeFiles ? { files: safeFiles } : {}),
+    };
+    const assistantRec = {
+      v: HISTORY_SCHEMA_VERSION,
+      id: generateRecordId(),
+      sessionId,
+      mode: mode || 'ask',
+      ts: assistantTs,
+      role: 'assistant',
+      content: cleanAssistant,
+      ...(backend ? { backend } : {}),
+      ...(model ? { model } : {}),
+      ...(safeOutPath ? { outPath: safeOutPath } : {}),
+    };
+    const lines = `${JSON.stringify(userRec)}\n${JSON.stringify(assistantRec)}\n`;
+    fs.appendFileSync(filePath, lines, { encoding: 'utf8', mode: 0o600 });
+    try {
+      fs.chmodSync(filePath, 0o600);
+    } catch {
+      // ignore
+    }
+    try {
+      const stat = fs.statSync(filePath);
+      if (stat.size > HISTORY_COMPACT_THRESHOLD_BYTES) {
+        pruneHistoryRecords({ filePath });
+      }
+    } catch {
+      // ignore compaction stat errors
+    }
+  } catch {
+    // non-fatal: never fail ask/chat due to history write error
+  }
+}
+
+function groupHistorySessions(records, { mode } = {}) {
+  const bySession = new Map();
+  for (const r of records) {
+    if (mode && (r.mode || 'ask') !== mode) continue;
+    let s = bySession.get(r.sessionId);
+    if (!s) {
+      s = {
+        sessionId: r.sessionId,
+        mode: r.mode || 'ask',
+        startedAt: r.ts || '',
+        updatedAt: r.ts || '',
+        turns: 0,
+        messageCount: 0,
+        model: r.model || '',
+        backend: r.backend || '',
+        cwd: r.cwd || '',
+        preview: '',
+        files: [],
+        outPath: '',
+      };
+      bySession.set(r.sessionId, s);
+    }
+    s.messageCount += 1;
+    if (r.role === 'user') {
+      s.turns += 1;
+      if (!s.preview && r.content) {
+        s.preview = r.content.replace(/\s+/g, ' ').trim().slice(0, 120);
+      }
+    }
+    if (r.ts) {
+      if (!s.startedAt || r.ts < s.startedAt) s.startedAt = r.ts;
+      if (!s.updatedAt || r.ts > s.updatedAt) s.updatedAt = r.ts;
+    }
+    if (r.model) s.model = r.model;
+    if (r.backend) s.backend = r.backend;
+    if (r.cwd && !s.cwd) s.cwd = r.cwd;
+    if (Array.isArray(r.files)) {
+      for (const f of r.files) {
+        if (!s.files.includes(f)) s.files.push(f);
+      }
+    }
+    if (r.outPath) s.outPath = r.outPath;
+  }
+  return [...bySession.values()].sort((a, b) => (b.updatedAt || '').localeCompare(a.updatedAt || ''));
+}
+
+function resolveHistorySessionId(records, query) {
+  const sessions = groupHistorySessions(records);
+  if (sessions.length === 0) {
+    return { ok: false, error: 'Chưa có lịch sử hội thoại nào.' };
+  }
+  const raw = String(query || '').trim();
+  const norm = raw.toLowerCase();
+  if (!raw || norm === 'last' || norm === 'latest') {
+    return { ok: true, sessionId: sessions[0].sessionId };
+  }
+  const exact = sessions.find((s) => s.sessionId === raw);
+  if (exact) {
+    return { ok: true, sessionId: exact.sessionId };
+  }
+  const matches = sessions.filter((s) => s.sessionId.toLowerCase().startsWith(norm));
+  if (matches.length === 1) {
+    return { ok: true, sessionId: matches[0].sessionId };
+  }
+  if (matches.length > 1) {
+    return {
+      ok: false,
+      error: `Tiền tố phiên '${raw}' khớp nhiều phiên (${matches.slice(0, 5).map((m) => m.sessionId).join(', ')}). Hãy nhập rõ hơn.`,
+      candidates: matches.map((m) => m.sessionId),
+    };
+  }
+  return { ok: false, error: `Không tìm thấy phiên lịch sử '${raw}'.` };
+}
+
+function buildSearchSnippet(content, foldedContent, rawQueryLower, foldedQuery, foldedTokens) {
+  const singleLine = String(content || '').replace(/\s+/g, ' ').trim();
+  if (singleLine.length <= 140) return singleLine;
+  const foldedSingle = foldVietnamese(singleLine);
+  let idx = singleLine.toLowerCase().indexOf(rawQueryLower);
+  if (idx < 0) idx = foldedSingle.indexOf(foldedQuery);
+  if (idx < 0 && foldedTokens.length > 0) {
+    idx = foldedSingle.indexOf(foldedTokens[0]);
+  }
+  if (idx < 0) idx = 0;
+  const start = Math.max(0, idx - 50);
+  const end = Math.min(singleLine.length, start + 140);
+  const prefix = start > 0 ? '...' : '';
+  const suffix = end < singleLine.length ? '...' : '';
+  return `${prefix}${singleLine.slice(start, end)}${suffix}`;
+}
+
+function searchHistoryRecords(records, query, { mode, role, limit = 20 } = {}) {
+  const rawQuery = String(query || '').trim();
+  const rawQueryLower = rawQuery.toLowerCase();
+  const foldedQuery = foldVietnamese(rawQuery);
+  const foldedTokens = foldedQuery.split(/\s+/).filter(Boolean);
+  const rawTokens = rawQueryLower.split(/\s+/).filter(Boolean);
+  const matched = [];
+  for (const r of records) {
+    if (mode && (r.mode || 'ask') !== mode) continue;
+    if (role && r.role !== role) continue;
+    const rawLower = r.content.toLowerCase();
+    const folded = foldVietnamese(r.content);
+    let allTokensMatch = true;
+    for (const tok of foldedTokens) {
+      if (!folded.includes(tok)) {
+        allTokensMatch = false;
+        break;
+      }
+    }
+    if (!allTokensMatch) continue;
+    let score = 0;
+    if (rawQueryLower && rawLower.includes(rawQueryLower)) score += 10;
+    else if (foldedQuery && folded.includes(foldedQuery)) score += 6;
+    for (let i = 0; i < foldedTokens.length; i += 1) {
+      if (rawTokens[i] && rawLower.includes(rawTokens[i])) score += 3;
+      else if (folded.includes(foldedTokens[i])) score += 2;
+    }
+    matched.push({
+      sessionId: r.sessionId,
+      mode: r.mode || 'ask',
+      ts: r.ts || '',
+      role: r.role,
+      model: r.model || '',
+      backend: r.backend || '',
+      score,
+      snippet: buildSearchSnippet(r.content, folded, rawQueryLower, foldedQuery, foldedTokens),
+    });
+  }
+  matched.sort((a, b) => {
+    if (b.score !== a.score) return b.score - a.score;
+    return (b.ts || '').localeCompare(a.ts || '');
+  });
+  return {
+    totalMatches: matched.length,
+    matches: matched.slice(0, limit),
+  };
+}
+
+function emitHistoryError(message, asJson, exitCode = 1) {
+  if (asJson) {
+    console.error(JSON.stringify({ ok: false, error: message }));
+  } else {
+    console.error(message);
+  }
+  process.exit(exitCode);
+}
+
+function cmdHistory(args = []) {
+  const flagJsonEarly = args.includes('--json');
+  let sub = '';
+  let flagJson = false;
+  let flagYes = false;
+  let flagPlain = false;
+  let flagRaw = false;
+  let modeFilter = '';
+  let roleFilter = '';
+  let limit = 20;
+  let beforeDays = null;
+  let pruneDays = resolveHistoryRetentionDays();
+  let pruneMax = resolveHistoryMaxRecords();
+  const positional = [];
+
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (!sub && (arg === 'list' || arg === 'search' || arg === 'find' || arg === 'show' || arg === 'view' || arg === 'delete' || arg === 'rm' || arg === 'clear' || arg === 'prune' || arg === 'stats')) {
+      if (arg === 'find') sub = 'search';
+      else if (arg === 'view') sub = 'show';
+      else if (arg === 'rm') sub = 'delete';
+      else sub = arg;
+    } else if (arg === '--json') {
+      flagJson = true;
+    } else if (arg === '--yes' || arg === '-y') {
+      flagYes = true;
+    } else if (arg === '--plain') {
+      flagPlain = true;
+    } else if (arg === '--raw') {
+      flagRaw = true;
+    } else if (arg === '--limit' || arg === '-n') {
+      i += 1;
+      const n = Number.parseInt(args[i] ?? '', 10);
+      if (!Number.isFinite(n) || n < 1) {
+        emitHistoryError('nidoagent history: --limit phải là số nguyên >= 1', flagJsonEarly, 2);
+      }
+      limit = n;
+    } else if (arg === '--mode') {
+      i += 1;
+      const m = (args[i] ?? '').trim();
+      if (m !== 'ask' && m !== 'chat') {
+        emitHistoryError('nidoagent history: --mode chỉ hỗ trợ ask hoặc chat', flagJsonEarly, 2);
+      }
+      modeFilter = m;
+    } else if (arg === '--role') {
+      i += 1;
+      const r = (args[i] ?? '').trim();
+      if (r !== 'user' && r !== 'assistant') {
+        emitHistoryError('nidoagent history: --role chỉ hỗ trợ user hoặc assistant', flagJsonEarly, 2);
+      }
+      roleFilter = r;
+    } else if (arg === '--before') {
+      i += 1;
+      const d = Number.parseInt(args[i] ?? '', 10);
+      if (!Number.isFinite(d) || d < 0) {
+        emitHistoryError('nidoagent history: --before phải là số ngày >= 0', flagJsonEarly, 2);
+      }
+      beforeDays = d;
+    } else if (arg === '--days') {
+      i += 1;
+      const d = Number.parseInt(args[i] ?? '', 10);
+      if (!Number.isFinite(d) || d < 0) {
+        emitHistoryError('nidoagent history: --days phải là số ngày >= 0', flagJsonEarly, 2);
+      }
+      pruneDays = d;
+    } else if (arg === '--max') {
+      i += 1;
+      const m = Number.parseInt(args[i] ?? '', 10);
+      if (!Number.isFinite(m) || m < 1) {
+        emitHistoryError('nidoagent history: --max phải là số bản ghi >= 1', flagJsonEarly, 2);
+      }
+      pruneMax = m;
+    } else if (arg.startsWith('-')) {
+      emitHistoryError(`nidoagent history: tham số không hợp lệ '${arg}'`, flagJsonEarly, 2);
+    } else {
+      positional.push(arg);
+    }
+  }
+
+  if (!sub) sub = 'list';
+  const filePath = resolveHistoryFilePath();
+
+  if (sub === 'list') {
+    const records = readHistoryRecords(filePath);
+    const allSessions = groupHistorySessions(records, { mode: modeFilter || undefined });
+    const sessions = allSessions.slice(0, limit);
+    if (flagJson) {
+      console.log(
+        JSON.stringify(
+          {
+            ok: true,
+            filePath,
+            enabled: isHistoryEnabled(false),
+            totalSessions: allSessions.length,
+            sessions,
+          },
+          null,
+          2
+        )
+      );
+      return;
+    }
+    if (sessions.length === 0) {
+      console.log('Chưa có lịch sử hội thoại nào.');
+      return;
+    }
+    console.log(`Lịch sử NidoAgent (${sessions.length}/${allSessions.length} phiên — ${filePath}):`);
+    for (const s of sessions) {
+      const tsShort = s.updatedAt ? s.updatedAt.slice(0, 19).replace('T', ' ') : '-';
+      console.log(`  [${s.sessionId}] (${s.mode}, ${s.turns} lượt, ${tsShort}) ${s.preview}`);
+    }
+    return;
+  }
+
+  if (sub === 'search') {
+    const query = positional.join(' ').trim();
+    if (!query) {
+      emitHistoryError('Usage: nidoagent history search [--mode ask|chat] [--role user|assistant] [--limit N] [--json] <từ khóa>', flagJson, 2);
+    }
+    const records = readHistoryRecords(filePath);
+    const { totalMatches, matches } = searchHistoryRecords(records, query, {
+      mode: modeFilter || undefined,
+      role: roleFilter || undefined,
+      limit,
+    });
+    if (flagJson) {
+      console.log(
+        JSON.stringify(
+          {
+            ok: true,
+            query,
+            totalMatches,
+            matches,
+          },
+          null,
+          2
+        )
+      );
+      return;
+    }
+    if (matches.length === 0) {
+      console.log(`Không tìm thấy kết quả cho "${query}".`);
+      return;
+    }
+    console.log(`Tìm thấy ${totalMatches} kết quả (hiển thị ${matches.length}) cho "${query}":`);
+    for (const m of matches) {
+      const tsShort = m.ts ? m.ts.slice(0, 19).replace('T', ' ') : '-';
+      console.log(`  [${m.sessionId}] (${m.role}, ${tsShort}) ${m.snippet}`);
+    }
+    return;
+  }
+
+  if (sub === 'show') {
+    if (positional.length === 0) {
+      emitHistoryError('Usage: nidoagent history show [--json|--plain|--raw] <sessionId|last>', flagJson, 2);
+    }
+    const records = readHistoryRecords(filePath);
+    const resolved = resolveHistorySessionId(records, positional[0]);
+    if (!resolved.ok) {
+      emitHistoryError(resolved.error, flagJson, 1);
+    }
+    const sessionRecords = records.filter((r) => r.sessionId === resolved.sessionId);
+    const sessionMeta = groupHistorySessions(sessionRecords)[0] || { sessionId: resolved.sessionId };
+    if (flagJson) {
+      console.log(
+        JSON.stringify(
+          {
+            ok: true,
+            session: sessionMeta,
+            messages: sessionRecords,
+          },
+          null,
+          2
+        )
+      );
+      return;
+    }
+    const outMode = resolveOutputMode(flagPlain, flagRaw);
+    console.log(`Phiên ${sessionMeta.sessionId} (${sessionMeta.mode || 'ask'}, ${sessionMeta.turns || 0} lượt):`);
+    for (const r of sessionRecords) {
+      const label = r.role === 'user' ? 'Người dùng' : 'NidoAgent';
+      console.log(`\n--- ${label} (${r.ts || '-'}) ---`);
+      console.log(r.role === 'assistant' ? renderMarkdownFull(r.content, outMode) : r.content);
+    }
+    return;
+  }
+
+  if (sub === 'delete') {
+    if (positional.length === 0) {
+      emitHistoryError('Usage: nidoagent history delete [--json] <sessionId>', flagJson, 2);
+    }
+    const records = readHistoryRecords(filePath);
+    const resolved = resolveHistorySessionId(records, positional[0]);
+    if (!resolved.ok) {
+      emitHistoryError(resolved.error, flagJson, 1);
+    }
+    const remaining = records.filter((r) => r.sessionId !== resolved.sessionId);
+    const removedMessages = records.length - remaining.length;
+    rewriteHistoryRecords(remaining, filePath);
+    if (flagJson) {
+      console.log(
+        JSON.stringify(
+          {
+            ok: true,
+            deletedSessionId: resolved.sessionId,
+            removedMessages,
+            remainingMessages: remaining.length,
+          },
+          null,
+          2
+        )
+      );
+      return;
+    }
+    console.log(`Đã xóa phiên ${resolved.sessionId} (${removedMessages} tin nhắn).`);
+    return;
+  }
+
+  if (sub === 'clear') {
+    const records = readHistoryRecords(filePath);
+    if (beforeDays !== null && beforeDays > 0) {
+      const cutoffMs = Date.now() - beforeDays * 86_400_000;
+      const kept = records.filter((r) => {
+        const t = Date.parse(r.ts || '');
+        return !Number.isFinite(t) || t >= cutoffMs;
+      });
+      const removed = records.length - kept.length;
+      if (removed > 0) {
+        rewriteHistoryRecords(kept, filePath);
+      }
+      if (flagJson) {
+        console.log(
+          JSON.stringify(
+            {
+              ok: true,
+              beforeDays,
+              removedMessages: removed,
+              remainingMessages: kept.length,
+            },
+            null,
+            2
+          )
+        );
+        return;
+      }
+      console.log(`Đã dọn ${removed} tin nhắn cũ hơn ${beforeDays} ngày (còn ${kept.length} tin nhắn).`);
+      return;
+    }
+    if (fs.existsSync(filePath)) {
+      rewriteHistoryRecords([], filePath);
+    }
+    if (flagJson) {
+      console.log(
+        JSON.stringify(
+          {
+            ok: true,
+            clearedMessages: records.length,
+            filePath,
+          },
+          null,
+          2
+        )
+      );
+      return;
+    }
+    console.log(`Đã xóa toàn bộ lịch sử NidoAgent (${records.length} tin nhắn).`);
+    return;
+  }
+
+  if (sub === 'prune') {
+    const res = pruneHistoryRecords({
+      filePath,
+      days: pruneDays,
+      maxRecords: pruneMax,
+    });
+    if (flagJson) {
+      console.log(
+        JSON.stringify(
+          {
+            ok: true,
+            days: pruneDays,
+            maxRecords: pruneMax,
+            ...res,
+          },
+          null,
+          2
+        )
+      );
+      return;
+    }
+    console.log(`Đã dọn lịch sử: xóa ${res.removed} bản ghi, giữ lại ${res.kept} bản ghi.`);
+    return;
+  }
+
+  if (sub === 'stats') {
+    const records = readHistoryRecords(filePath);
+    const sessions = groupHistorySessions(records);
+    let sizeBytes = 0;
+    try {
+      if (fs.existsSync(filePath)) sizeBytes = fs.statSync(filePath).size;
+    } catch {
+      sizeBytes = 0;
+    }
+    const oldestAt = records.length > 0 ? records[0].ts || '' : '';
+    const newestAt = records.length > 0 ? records[records.length - 1].ts || '' : '';
+    const payload = {
+      ok: true,
+      filePath,
+      enabled: isHistoryEnabled(false),
+      retentionDays: resolveHistoryRetentionDays(),
+      maxRecords: resolveHistoryMaxRecords(),
+      totalMessages: records.length,
+      totalSessions: sessions.length,
+      askSessions: sessions.filter((s) => s.mode === 'ask').length,
+      chatSessions: sessions.filter((s) => s.mode === 'chat').length,
+      sizeBytes,
+      oldestAt,
+      newestAt,
+    };
+    if (flagJson) {
+      console.log(JSON.stringify(payload, null, 2));
+      return;
+    }
+    console.log(`Thống kê lịch sử NidoAgent (${filePath}):`);
+    console.log(`  Trạng thái  : ${payload.enabled ? 'Bật' : 'Tắt'} (giữ ${payload.retentionDays} ngày, tối đa ${payload.maxRecords} bản ghi)`);
+    console.log(`  Số phiên    : ${payload.totalSessions} (ask: ${payload.askSessions}, chat: ${payload.chatSessions})`);
+    console.log(`  Số tin nhắn : ${payload.totalMessages}`);
+    console.log(`  Dung lượng  : ${payload.sizeBytes} bytes`);
+  }
+}
+
 async function cmdAsk(args) {
   const flagJsonEarly = args.includes('--json');
   const files = [];
@@ -1702,6 +2452,7 @@ async function cmdAsk(args) {
   let flagPlain = false;
   let flagRaw = false;
   let flagJson = false;
+  let flagNoHistory = false;
 
   for (let i = 0; i < args.length; i += 1) {
     if (args[i] === '--file' || args[i] === '-f') {
@@ -1734,6 +2485,8 @@ async function cmdAsk(args) {
       flagPlain = true;
     } else if (args[i] === '--raw') {
       flagRaw = true;
+    } else if (args[i] === '--no-history') {
+      flagNoHistory = true;
     } else {
       promptParts.push(args[i]);
     }
@@ -1748,19 +2501,20 @@ async function cmdAsk(args) {
   const prompt = promptParts.join(' ').trim();
   if (!prompt && files.length === 0) {
     emitAskError(
-      'Usage: nidoagent ask [--model <id>] [--effort <lvl>] [--json|--plain|--raw] [--file <path>] [--out <path>] <prompt>',
+      'Usage: nidoagent ask [--model <id>] [--effort <lvl>] [--json|--plain|--raw] [--no-history] [--file <path>] [--out <path>] <prompt>',
       flagJson,
       2
     );
   }
 
+  const userPromptText = prompt || 'Hãy tóm tắt và phân tích nội dung các tệp đính kèm.';
   let sections;
   try {
     sections = [];
     for (const f of files) {
       sections.push(readAttachedFile(f));
     }
-    sections.push(prompt || 'Hãy tóm tắt và phân tích nội dung các tệp đính kèm.');
+    sections.push(userPromptText);
   } catch (err) {
     emitAskError(err instanceof Error ? err.message : String(err), flagJson, 1);
   }
@@ -1818,16 +2572,35 @@ async function cmdAsk(args) {
     }
   }
 
+  const resolvedFiles = files.map((f) => path.resolve(f));
+  let savedSessionId = '';
+  if (isHistoryEnabled(flagNoHistory)) {
+    savedSessionId = generateSessionId();
+    appendHistoryTurn({
+      sessionId: savedSessionId,
+      mode: 'ask',
+      userContent: userPromptText,
+      assistantContent: reply,
+      backend: backend || 'gateway',
+      model: resolvedModel || model || 'auto',
+      cwd: process.cwd(),
+      files: resolvedFiles,
+      outPath: resolvedOut,
+      extraSecrets: [conn.clientToken],
+    });
+  }
+
   if (flagJson) {
     console.log(
       JSON.stringify(
         {
           ok: true,
           version: VERSION,
+          ...(savedSessionId ? { sessionId: savedSessionId } : {}),
           backend: backend || 'gateway',
           model: resolvedModel || model || 'auto',
           reply,
-          attachedFiles: files.map((f) => path.resolve(f)),
+          attachedFiles: resolvedFiles,
           ...(resolvedOut ? { outPath: resolvedOut } : {}),
         },
         null,
@@ -1853,16 +2626,31 @@ async function cmdChat(args = []) {
   let effort = '';
   let flagPlain = false;
   let flagRaw = false;
+  let flagNoHistory = false;
+  let resumeTarget = null;
   for (let i = 0; i < args.length; i += 1) {
-    if (args[i] === '--model' || args[i] === '-m') {
+    const arg = args[i];
+    if (arg === '--model' || arg === '-m') {
       i += 1;
       if (args[i]) model = args[i];
-    } else if (args[i] === '--effort') {
+    } else if (arg === '--effort') {
       i += 1;
       if (args[i]) effort = args[i];
-    } else if (args[i] === '--plain') {
+    } else if (arg === '--resume' || arg === '-r') {
+      const next = args[i + 1];
+      if (next && !next.startsWith('-')) {
+        i += 1;
+        resumeTarget = next.trim();
+      } else {
+        resumeTarget = 'last';
+      }
+    } else if (arg.startsWith('--resume=')) {
+      resumeTarget = arg.slice('--resume='.length).trim() || 'last';
+    } else if (arg === '--no-history') {
+      flagNoHistory = true;
+    } else if (arg === '--plain') {
       flagPlain = true;
-    } else if (args[i] === '--raw') {
+    } else if (arg === '--raw') {
       flagRaw = true;
     }
   }
@@ -1874,6 +2662,29 @@ async function cmdChat(args = []) {
     console.error(readiness.message);
     process.exit(1);
   }
+
+  const historyActive = isHistoryEnabled(flagNoHistory);
+  let sessionId = '';
+  let restoredMessages = [];
+  if (resumeTarget !== null) {
+    const allRecords = readHistoryRecords();
+    const resolved = resolveHistorySessionId(allRecords, resumeTarget);
+    if (!resolved.ok) {
+      console.error(resolved.error);
+      process.exit(1);
+    }
+    sessionId = resolved.sessionId;
+    const prevMsgs = allRecords
+      .filter((r) => r.sessionId === sessionId && (r.role === 'user' || r.role === 'assistant'))
+      .map((r) => ({ role: r.role, content: r.content }));
+    restoredMessages =
+      prevMsgs.length > MAX_CHAT_HISTORY_MESSAGES
+        ? prevMsgs.slice(prevMsgs.length - MAX_CHAT_HISTORY_MESSAGES)
+        : prevMsgs;
+  } else {
+    sessionId = generateSessionId();
+  }
+
   const fallbackAgents = readiness.signedInAgents || readSignedInAgentClis();
   const gwReady = Boolean(readiness.gw?.configured);
   const agyAgent = !gwReady ? fallbackAgents.find((a) => a.id === 'agy') : null;
@@ -1889,6 +2700,7 @@ async function cmdChat(args = []) {
       content:
         'Bạn là NidoAgent — trợ lý điều phối công việc trên NidoOS. Trả lời rõ ràng, hữu ích.',
     },
+    ...restoredMessages,
   ];
   const rl = readline.createInterface({
     input: process.stdin,
@@ -1911,7 +2723,10 @@ async function cmdChat(args = []) {
   const modeNote = warmAgy
     ? `Google Antigravity Warm Session (${model || process.env.NIDO_AGY_MODEL || 'gemini-3.8-flash-low'})`
     : conn.baseUrl;
-  console.log(`NidoOS Agent Chat (${modeNote}) — gõ "exit" để thoát.`);
+  console.log(`NidoOS Agent Chat (${modeNote}) · Phiên: ${sessionId} — gõ "/history", "/clear" hoặc "exit".`);
+  if (restoredMessages.length > 0) {
+    console.log(`Đã khôi phục phiên ${sessionId} (${restoredMessages.length} tin nhắn trước đó).`);
+  }
   safePrompt();
 
   let cleanedUp = false;
@@ -1940,6 +2755,25 @@ async function cmdChat(args = []) {
       if (trimmed === 'exit' || trimmed === 'quit' || trimmed === '/exit') {
         break;
       }
+      if (trimmed === '/history') {
+        console.log(
+          `Phiên hiện tại: ${sessionId} · ${messages.length - 1} tin nhắn trong ngữ cảnh · Lưu lịch sử: ${historyActive ? 'bật' : 'tắt'}`
+        );
+        safePrompt();
+        continue;
+      }
+      if (trimmed === '/clear') {
+        messages.splice(1);
+        restoredMessages = [];
+        sessionId = generateSessionId();
+        firstWarmTurn = true;
+        if (warmAgy) {
+          warmAgy.close();
+        }
+        console.log(`Đã làm mới ngữ cảnh. Phiên mới: ${sessionId}`);
+        safePrompt();
+        continue;
+      }
       messages.push({ role: 'user', content: trimmed });
       if (messages.length > MAX_CHAT_HISTORY_MESSAGES + 1) {
         messages.splice(1, messages.length - 1 - MAX_CHAT_HISTORY_MESSAGES);
@@ -1948,9 +2782,24 @@ async function cmdChat(args = []) {
         const writer = new MarkdownStreamWriter(outMode, (s) => process.stdout.write(s));
         let resObj;
         if (warmAgy) {
-          const turnPrompt = firstWarmTurn
-            ? `[System]\n${messages[0].content}\n\n${trimmed}`
-            : trimmed;
+          const parts = [];
+          if (firstWarmTurn) {
+            parts.push(`[System]\n${messages[0].content}`);
+            if (restoredMessages.length > 0) {
+              const recent = restoredMessages.slice(-12);
+              let transcript = '';
+              for (const m of recent) {
+                const lineStr = `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}\n`;
+                if (transcript.length + lineStr.length > 8000) break;
+                transcript += lineStr;
+              }
+              if (transcript) {
+                parts.push(`[Lịch sử phiên trước]\n${transcript.trim()}`);
+              }
+            }
+          }
+          parts.push(trimmed);
+          const turnPrompt = parts.join('\n\n');
           firstWarmTurn = false;
           process.stdout.write('\n');
           resObj = await warmAgy.sendTurn(turnPrompt, (delta) => writer.push(delta));
@@ -1965,6 +2814,21 @@ async function cmdChat(args = []) {
           });
         }
         messages.push({ role: 'assistant', content: resObj.reply });
+        if (historyActive) {
+          appendHistoryTurn({
+            sessionId,
+            mode: 'chat',
+            userContent: trimmed,
+            assistantContent: resObj.reply,
+            backend: resObj.backend || (warmAgy ? 'agy' : 'gateway'),
+            model:
+              resObj.model ||
+              model ||
+              (warmAgy ? process.env.NIDO_AGY_MODEL || 'gemini-3.8-flash-low' : 'auto'),
+            cwd: process.cwd(),
+            extraSecrets: [conn.clientToken],
+          });
+        }
         if (resObj.streamed) {
           writer.flush();
           process.stdout.write('\n');
@@ -2007,6 +2871,10 @@ async function main() {
   }
   if (cmd === 'skills') {
     cmdSkills(rest);
+    return;
+  }
+  if (cmd === 'history' || cmd === 'hist') {
+    cmdHistory(rest);
     return;
   }
   if (cmd === 'ask') {

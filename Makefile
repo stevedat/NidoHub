@@ -1,7 +1,7 @@
 .PHONY: help assets packages ime-bridge apt-repo dev-apt dev-apt-deploy release-apt release-apt-deploy release-apt-native release-apt-native-deploy check security-audit native-packages native-packages-amd64 native-packages-arm64 iso iso-arm64 iso-arm64-fast docker-iso clean
 
 UBUNTU_VERSION     ?= 26.04
-NIDO_VERSION       ?= 0.2.0
+NIDO_VERSION       ?= 0.2.1
 DEB_VERSION_SUFFIX ?= +dev$(shell date -u +%Y%m%d%H%M)
 APT_GPG_KEY        ?= AC980631CB8BA9D2602A0990528AF2083F61DC2F
 APT_PAGES_PROJECT  ?= ubuntu-nido-apt
@@ -99,7 +99,7 @@ native-packages-arm64:
 
 release-apt-native:
 	DEB_VERSION_SUFFIX="" bash packages/build-all.sh
-	@if [ ! -f packages/dist/native/nidoai-gateway_0.2.0_arm64.deb ] || [ ! -f packages/dist/native/nidoai-gateway_0.2.0_amd64.deb ]; then \
+	@if [ ! -f packages/dist/native/nidoai-gateway_0.2.1_arm64.deb ] || [ ! -f packages/dist/native/nidoai-gateway_0.2.1_amd64.deb ]; then \
 		APT_GPG_KEY="$(APT_GPG_KEY)" DEB_VERSION_SUFFIX="" bash scripts/native-build/build_native_debs.sh --arch all; \
 	fi
 	python3 scripts/build_apt_repo.py --dist-dir packages/dist --vendor-dir packages/vendor --native-dir packages/dist/native --out-dir apt-repo

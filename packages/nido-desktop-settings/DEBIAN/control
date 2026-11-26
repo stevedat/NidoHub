@@ -1,9 +1,9 @@
 Package: nido-desktop-settings
-Version: 0.2.0
+Version: 0.2.1
 Section: misc
 Priority: optional
 Architecture: all
-Depends: nidoagent-cli (>= 0.2.0), nido-hub (>= 0.2.0)
+Depends: nidoagent-cli (>= 0.2.1), nido-hub (>= 0.2.1)
 Recommends: zenity, libnotify-bin
 Maintainer: Nido Holdings <support@nido-holdings.com>
 Homepage: https://nido-holdings.com

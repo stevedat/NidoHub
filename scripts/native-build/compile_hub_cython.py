@@ -186,7 +186,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.dry_run:
         compile_modules_to_so(hub_lib, repo / "packages/nido-hub/stage", dry_run=True)
-        target_label = args.out_deb or args.stage_only or (repo / f"packages/dist/native/nido-hub_0.2.0_{args.arch}.deb")
+        target_label = args.out_deb or args.stage_only or (repo / f"packages/dist/native/nido-hub_0.2.1_{args.arch}.deb")
         print(f"[DRY-RUN] Would assemble Architecture={args.arch} native .deb -> {target_label}")
         return 0
 

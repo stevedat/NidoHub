@@ -8,10 +8,10 @@ import { DEFAULT_NIDO_MODEL, resolveNidoAccountProviderConfig, resolveNidoConfig
 export const PKG_VERSION = (() => {
     try {
         const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
-        return typeof pkg.version === 'string' ? pkg.version : '0.2.0';
+        return typeof pkg.version === 'string' ? pkg.version : '0.2.1';
     }
     catch {
-        return '0.2.0';
+        return '0.2.1';
     }
 })();
 export function isAllowedUpstreamUrl(rawUrl) {

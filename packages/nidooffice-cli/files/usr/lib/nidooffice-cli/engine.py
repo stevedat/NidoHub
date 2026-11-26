@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 from xml.sax.saxutils import escape as xml_escape
 
-VERSION = "0.2.0"
+VERSION = "0.2.1"
 MAX_UNCOMPRESSED_BYTES = 32 * 1024 * 1024  # 32 MiB zip-bomb guard
 
 W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"

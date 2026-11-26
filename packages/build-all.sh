@@ -87,7 +87,7 @@ else
   cat > "${STAGE_DIR}/usr/lib/nidoai/package.json" <<'PKG'
 {
   "name": "nidoai-gateway",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "type": "module"
 }
 PKG
@@ -176,47 +176,47 @@ python3 "$DEB_BUILDER" \
   --extra-files "$STAGE_DIR" \
   "${MANIFEST_ARGS[@]}" \
   ${VER_ARGS[@]+"${VER_ARGS[@]}"} \
-  --output "${DIST_DIR}/nidoai-gateway_0.2.0${DEB_VERSION_SUFFIX}_all.deb"
+  --output "${DIST_DIR}/nidoai-gateway_0.2.1${DEB_VERSION_SUFFIX}_all.deb"
 
 python3 "$DEB_BUILDER" \
   --source-dir "${SCRIPT_DIR}/nidoagent-cli" \
   --extra-files "$NIDOAGENT_STAGE_DIR" \
   "${MANIFEST_ARGS[@]}" \
   ${VER_ARGS[@]+"${VER_ARGS[@]}"} \
-  --output "${DIST_DIR}/nidoagent-cli_0.2.0${DEB_VERSION_SUFFIX}_all.deb"
+  --output "${DIST_DIR}/nidoagent-cli_0.2.1${DEB_VERSION_SUFFIX}_all.deb"
 
 python3 "$DEB_BUILDER" \
   --source-dir "${SCRIPT_DIR}/nido-desktop-settings" \
   --extra-files "$SETTINGS_STAGE_DIR" \
   "${MANIFEST_ARGS[@]}" \
   ${VER_ARGS[@]+"${VER_ARGS[@]}"} \
-  --output "${DIST_DIR}/nido-desktop-settings_0.2.0${DEB_VERSION_SUFFIX}_all.deb"
+  --output "${DIST_DIR}/nido-desktop-settings_0.2.1${DEB_VERSION_SUFFIX}_all.deb"
 
 python3 "$DEB_BUILDER" \
   --source-dir "${SCRIPT_DIR}/nido-hub" \
   --extra-files "$NIDOHUB_STAGE_DIR" \
   "${MANIFEST_ARGS[@]}" \
   ${VER_ARGS[@]+"${VER_ARGS[@]}"} \
-  --output "${DIST_DIR}/nido-hub_0.2.0${DEB_VERSION_SUFFIX}_all.deb"
+  --output "${DIST_DIR}/nido-hub_0.2.1${DEB_VERSION_SUFFIX}_all.deb"
 
 python3 "$DEB_BUILDER" \
   --source-dir "${SCRIPT_DIR}/nidooffice-cli" \
   --extra-files "$NIDOOFFICE_CLI_STAGE_DIR" \
   "${MANIFEST_ARGS[@]}" \
   ${VER_ARGS[@]+"${VER_ARGS[@]}"} \
-  --output "${DIST_DIR}/nidooffice-cli_0.2.0${DEB_VERSION_SUFFIX}_all.deb"
+  --output "${DIST_DIR}/nidooffice-cli_0.2.1${DEB_VERSION_SUFFIX}_all.deb"
 
 python3 "$DEB_BUILDER" \
   --source-dir "${SCRIPT_DIR}/nidooffice-desktop" \
   "${MANIFEST_ARGS[@]}" \
   ${VER_ARGS[@]+"${VER_ARGS[@]}"} \
-  --output "${DIST_DIR}/nidooffice-desktop_0.13.1${DEB_VERSION_SUFFIX}_all.deb"
+  --output "${DIST_DIR}/nidooffice-desktop_0.13.1-1${DEB_VERSION_SUFFIX}_all.deb"
 
 python3 "$DEB_BUILDER" \
   --source-dir "${SCRIPT_DIR}/nido-desktop" \
   "${MANIFEST_ARGS[@]}" \
   ${VER_ARGS[@]+"${VER_ARGS[@]}"} \
-  --output "${DIST_DIR}/nido-desktop_0.2.0${DEB_VERSION_SUFFIX}_all.deb"
+  --output "${DIST_DIR}/nido-desktop_0.2.1${DEB_VERSION_SUFFIX}_all.deb"
 
 if [[ -n "$VIELOTUS_BIN_DIR" && -d "$VIELOTUS_BIN_DIR" ]]; then
   mkdir -p "${SCRIPT_DIR}/vendor"

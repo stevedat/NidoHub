@@ -65,7 +65,7 @@ Returns JSON:
 ```json
 {
   "ok": true,
-  "version": "0.2.0",
+  "version": "0.2.1",
   "backend": "gateway",
   "model": "...",
   "reply": "...",
@@ -73,6 +73,20 @@ Returns JSON:
   "outPath": "/path/to/summary.xlsx"
 }
 ```
+
+## Conversation History & Resume
+
+List, search (Vietnamese diacritic-insensitive), inspect, or clear local conversation history stored with `0600` permissions in `~/.nidoai/history.jsonl`, or resume a previous interactive chat session:
+
+```bash
+nidoagent history list --json
+nidoagent history search --json "<keyword>"
+nidoagent history show last --json
+nidoagent history clear --json
+nidoagent chat --resume last
+```
+
+Privacy & retention controls: pass `--no-history` per command, set `NIDOAGENT_HISTORY=0`, or set `"historyEnabled": false` in `~/.config/ubuntu-nido/ai-policy.json`.
 
 ## Guardrails
 
