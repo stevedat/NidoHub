@@ -32,12 +32,12 @@ jobs:
 
       - name: Test real dpkg installation on Ubuntu
         run: |
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y ./packages/dist/nidoai-gateway_0.2.0_all.deb \
-            ./packages/dist/nidoagent-cli_0.2.0_all.deb \
-            ./packages/dist/nido-desktop-settings_0.2.0_all.deb \
-            ./packages/dist/nido-hub_0.2.0_all.deb \
-            ./packages/dist/nidooffice-cli_0.2.0_all.deb \
-            ./packages/dist/nidooffice-desktop_0.13.1_all.deb
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y ./packages/dist/nidoai-gateway_*_all.deb \
+            ./packages/dist/nidoagent-cli_*_all.deb \
+            ./packages/dist/nido-desktop-settings_*_all.deb \
+            ./packages/dist/nido-hub_*_all.deb \
+            ./packages/dist/nidooffice-cli_*_all.deb \
+            ./packages/dist/nidooffice-desktop_*_all.deb
           nidoagent --version
           nidoai doctor
           nido-hub --self-test
@@ -51,7 +51,7 @@ jobs:
           apt-cache policy nidobox | grep -q "ubuntu-nido-apt"
           apt-cache policy nidooffice-desktop | grep -q "ubuntu-nido-apt"
           apt-cache policy nido-desktop | grep -q "ubuntu-nido-apt"
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ./packages/vendor/nido-ime-bridge_0.2.0_amd64.deb ./packages/dist/nido-desktop_0.2.0_all.deb
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ./packages/vendor/nido-ime-bridge_*_amd64.deb ./packages/dist/nido-desktop_*_all.deb
           /usr/lib/ibus/nido-ibus-vielotus --self-test
           dpkg --compare-versions "$(dpkg-query -W -f='${Version}' nidobox)" ge "1.5.0"
           nidobox --self-test

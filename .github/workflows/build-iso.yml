@@ -121,10 +121,10 @@ jobs:
           cd iso-builder
           NIDO_VERSION="${GITHUB_REF_NAME#v}"
           if [[ ! "$NIDO_VERSION" =~ ^[0-9]+\.[0-9]+ ]]; then
-            NIDO_VERSION="0.2.0"
+            NIDO_VERSION="0.2.1"
           fi
           export NIDO_INSTALLER_VI_DIR="${GITHUB_WORKSPACE}/iso-builder/work/installer-vi-bundle"
-          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+          if [[ "${GITHUB_REF}" == refs/tags/v* || "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
             sudo -E NIDO_VERSION="$NIDO_VERSION" ./build.sh --release
           else
             sudo -E NIDO_VERSION="$NIDO_VERSION" ./build.sh
@@ -191,9 +191,13 @@ jobs:
             echo "ERROR: Stale minimal.enhanced-secureboot.squashfs remained in install-sources.yaml" >&2
             exit 1
           fi
-          SFS_BYTES="$(stat -c%s "$MNT_DIR/casper/minimal.squashfs")"
-          grep -q "size: ${SFS_BYTES}\$" "$MNT_DIR/casper/install-sources.yaml" || {
-            echo "ERROR: install-sources.yaml size mismatch for minimal.squashfs ($SFS_BYTES bytes)" >&2
+          if [ -s "$MNT_DIR/casper/minimal.size" ]; then
+            EXPECTED_SIZE_BYTES="$(tr -d '[:space:]' < "$MNT_DIR/casper/minimal.size")"
+          else
+            EXPECTED_SIZE_BYTES="$(stat -c%s "$MNT_DIR/casper/minimal.squashfs")"
+          fi
+          grep -q "size: ${EXPECTED_SIZE_BYTES}\$" "$MNT_DIR/casper/install-sources.yaml" || {
+            echo "ERROR: install-sources.yaml size mismatch for minimal.squashfs (expected ${EXPECTED_SIZE_BYTES} bytes)" >&2
             exit 1
           }
 
