@@ -180,19 +180,25 @@ dart pub global activate melos 6.3.2 >/dev/null
 export MELOS_SDK_PATH=auto
 (cd "$SRC_DIR" && dart pub global run melos bootstrap)
 
-# 4. Patch ubuntu_localizations in-place inside isolated PUB_CACHE & regenerate Dart l10n
-UB_LOC_DIR="$(find "${PUB_CACHE}/hosted/pub.dev" -maxdepth 1 -type d -name 'ubuntu_localizations-*' | head -n1)"
-if [[ -z "$UB_LOC_DIR" || ! -d "$UB_LOC_DIR" ]]; then
+# 4. Patch ALL cached ubuntu_localizations-* versions in-place inside isolated PUB_CACHE & regenerate Dart l10n
+PATCHED_LOC_COUNT=0
+shopt -s nullglob
+for ub_loc_dir in "${PUB_CACHE}/hosted/pub.dev"/ubuntu_localizations-*; do
+  [[ -d "$ub_loc_dir" ]] || continue
+  echo "==> Patching Vietnamese l10n (121/121) in ${ub_loc_dir}..."
+  cp "${L10N_DIR}/ubuntu_localizations_vi.arb" "${ub_loc_dir}/lib/src/l10n/ubuntu_vi.arb"
+  (cd "$ub_loc_dir" && flutter gen-l10n)
+  grep -q "Tiếp theo" "${ub_loc_dir}"/lib/src/l10n/ubuntu_localizations_vi*.dart || {
+    echo "ERROR: ubuntu_localizations Vietnamese codegen did not emit expected strings in ${ub_loc_dir}" >&2
+    exit 1
+  }
+  PATCHED_LOC_COUNT=$((PATCHED_LOC_COUNT + 1))
+done
+shopt -u nullglob
+if [[ "$PATCHED_LOC_COUNT" -eq 0 ]]; then
   echo "ERROR: ubuntu_localizations not found in isolated PUB_CACHE (${PUB_CACHE})" >&2
   exit 1
 fi
-echo "==> Patching Vietnamese l10n (121/121) in ${UB_LOC_DIR}..."
-cp "${L10N_DIR}/ubuntu_localizations_vi.arb" "${UB_LOC_DIR}/lib/src/l10n/ubuntu_vi.arb"
-(cd "$UB_LOC_DIR" && flutter gen-l10n)
-grep -q "Tiếp theo" "${UB_LOC_DIR}"/lib/src/l10n/ubuntu_localizations_vi*.dart || {
-  echo "ERROR: ubuntu_localizations Vietnamese codegen did not emit expected strings" >&2
-  exit 1
-}
 
 # 5. Overlay 100% Vietnamese ARBs into ubuntu_provision & ubuntu_bootstrap and regenerate l10n
 echo "==> Applying Vietnamese l10n into ubuntu_provision (116/116) & ubuntu_bootstrap (447/447)..."
@@ -223,22 +229,31 @@ if [[ ! -x "${BUNDLE_SRC}/ubuntu_bootstrap" || ! -f "${BUNDLE_SRC}/lib/libapp.so
   exit 1
 fi
 
-# 7. Verify compiled Dart AOT libapp.so actually contains Vietnamese UTF-16LE strings
+# 7. Verify compiled Dart AOT libapp.so contains live Vietnamese strings from all 3 l10n packages
 python3 - "${BUNDLE_SRC}/lib/libapp.so" <<'PY'
 import sys
 from pathlib import Path
 
 blob = Path(sys.argv[1]).read_bytes()
 required = [
-    "Trình cài đặt NidoOS",
-    "Tạo tài khoản của bạn",
+    # ubuntu_bootstrap
+    "Thiết lập ổ đĩa",
     "Sẵn sàng cài đặt",
     "Cài đặt hoàn tất",
+    # ubuntu_provision
+    "Trợ năng",
+    "Tạo tài khoản của bạn",
+    "Kết nối mạng Internet",
+    # ubuntu_localizations
     "Tiếp theo",
+    "Quay lại",
 ]
-for phrase in required:
-    if phrase.encode("utf-16le") not in blob and phrase.encode("utf-8") not in blob:
-        raise SystemExit(f"ERROR: Vietnamese phrase {phrase!r} not found in compiled libapp.so!")
+missing = [
+    p for p in required
+    if p.encode("utf-16le") not in blob and p.encode("utf-8") not in blob
+]
+if missing:
+    raise SystemExit(f"ERROR: Vietnamese phrases missing from compiled libapp.so: {missing}")
 print(f"Verified all {len(required)} Vietnamese phrases compiled into AOT libapp.so ({len(blob)} bytes).")
 PY
 
