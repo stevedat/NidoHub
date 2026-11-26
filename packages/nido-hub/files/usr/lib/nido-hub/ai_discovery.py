@@ -953,10 +953,36 @@ def install_ollama_user(
     return True, f"Đã cài đặt Ollama chính chủ (SHA256 hợp lệ) tại {ol_bin}.", str(ol_bin)
 
 
-def _ensure_ollama_user_service(home_dir: Path, ollama_bin: str) -> None:
+def compute_ollama_memory_limits(ram_gb: float) -> tuple[int, int]:
+    """Return dynamic cgroup v2 (MemoryHigh MiB, MemoryMax MiB) scaled to host RAM.
+
+    Targets ~50% RAM soft ceiling (MemoryHigh) and ~65% RAM hard ceiling (MemoryMax)
+    while always reserving >=2 GiB (<12 GiB hosts) or >=3 GiB (>=12 GiB hosts)
+    so GNOME Shell, NidoOffice, and browsers remain responsive under local LLM load.
+    """
+    safe_ram_gb = max(2.0, float(ram_gb or 4.0))
+    total_mib = max(2048, int(round(safe_ram_gb * 1024)))
+    desktop_reserve_mib = 2048 if safe_ram_gb < 12.0 else 3072
+    raw_max = min(int(round(total_mib * 0.65)), max(1536, total_mib - desktop_reserve_mib))
+    max_mib = max(1536, (raw_max // 128) * 128)
+    raw_high = min(int(round(total_mib * 0.50)), max(1024, max_mib - 512))
+    high_mib = max(1024, (raw_high // 128) * 128)
+    if high_mib >= max_mib:
+        high_mib = max(1024, max_mib - 256)
+    return high_mib, max_mib
+
+
+def _ensure_ollama_user_service(
+    home_dir: Path,
+    ollama_bin: str,
+    ram_gb: float | None = None,
+    reload_systemd: bool = True,
+) -> Path:
     unit_dir = home_dir / ".config" / "systemd" / "user"
     unit_dir.mkdir(parents=True, exist_ok=True)
     unit_file = unit_dir / "ollama.service"
+    eff_ram_gb = _read_ram_gb() if ram_gb is None else ram_gb
+    mem_high_mib, mem_max_mib = compute_ollama_memory_limits(eff_ram_gb)
     unit_file.write_text(
         "[Unit]\n"
         "Description=Ollama Local LLM Runtime (Ubuntu-Nido User Service)\n"
@@ -965,6 +991,9 @@ def _ensure_ollama_user_service(home_dir: Path, ollama_bin: str) -> None:
         "Type=simple\n"
         "Environment=OLLAMA_HOST=127.0.0.1:11434\n"
         "Environment=OLLAMA_KEEP_ALIVE=3m\n"
+        "Environment=OLLAMA_MAX_LOADED_MODELS=1\n"
+        f"MemoryHigh={mem_high_mib}M\n"
+        f"MemoryMax={mem_max_mib}M\n"
         "OOMScoreAdjust=500\n"
         f"ExecStart={ollama_bin} serve\n"
         "Restart=on-failure\n"
@@ -973,7 +1002,7 @@ def _ensure_ollama_user_service(home_dir: Path, ollama_bin: str) -> None:
         "WantedBy=default.target\n",
         encoding="utf-8",
     )
-    if shutil.which("systemctl"):
+    if reload_systemd and shutil.which("systemctl"):
         subprocess.run(
             ["systemctl", "--user", "daemon-reload"],
             check=False,
@@ -988,6 +1017,7 @@ def _ensure_ollama_user_service(home_dir: Path, ollama_bin: str) -> None:
             stderr=subprocess.DEVNULL,
             timeout=8,
         )
+    return unit_file
 
 
 def pull_ollama_model(

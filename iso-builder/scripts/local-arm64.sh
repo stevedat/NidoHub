@@ -97,6 +97,18 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+probe_cmd() {
+  if command -v timeout >/dev/null 2>&1; then
+    timeout 3 "$@" >/dev/null 2>&1
+  elif command -v gtimeout >/dev/null 2>&1; then
+    gtimeout 3 "$@" >/dev/null 2>&1
+  elif command -v python3 >/dev/null 2>&1; then
+    python3 -c 'import subprocess, sys; sys.exit(subprocess.run(sys.argv[1:], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3).returncode)' "$@" 2>/dev/null
+  else
+    "$@" >/dev/null 2>&1
+  fi
+}
+
 detect_engine() {
   if [ "$ENGINE" != "auto" ]; then
     echo "$ENGINE"
@@ -104,9 +116,9 @@ detect_engine() {
   fi
   if [ "$(uname -s)" = "Linux" ] && [ "$(id -u)" -eq 0 ]; then
     echo "host"
-  elif command -v podman >/dev/null 2>&1 && podman info >/dev/null 2>&1; then
+  elif command -v podman >/dev/null 2>&1 && probe_cmd podman info; then
     echo "podman"
-  elif command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+  elif command -v docker >/dev/null 2>&1 && probe_cmd docker info; then
     echo "docker"
   elif command -v podman >/dev/null 2>&1; then
     echo "podman"

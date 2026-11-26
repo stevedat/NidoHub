@@ -2,11 +2,12 @@
 Description=NidoAI Local AI Gateway
 ConditionPathExists=!/snap/ubuntu-desktop-bootstrap
 ConditionPathExists=%h/.config/ubuntu-nido/ai-policy.json
-After=dbus.socket gnome-keyring-daemon.service
+After=dbus.socket gnome-keyring-daemon.service nidoai-gateway.socket
 
 [Service]
 Type=simple
 Environment=NODE_NO_WARNINGS=1
+Environment=NIDOAI_IDLE_TIMEOUT_MS=600000
 PassEnvironment=DBUS_SESSION_BUS_ADDRESS XDG_RUNTIME_DIR DISPLAY WAYLAND_DISPLAY
 ExecStart=/usr/libexec/nidoai/gateway-daemon
 Restart=on-failure
@@ -22,8 +23,10 @@ RestrictNamespaces=yes
 LockPersonality=yes
 LimitCORE=0
 UMask=0077
+MemoryHigh=256M
 MemoryMax=512M
+OOMScoreAdjust=300
 CPUQuota=150%
 
 [Install]
-WantedBy=default.target
+Also=nidoai-gateway.socket

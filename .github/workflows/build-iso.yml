@@ -79,12 +79,29 @@ jobs:
       - name: Install ISO build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y squashfs-tools xorriso rsync wget curl dpkg-dev python3 p7zip-full zstd rclone
+          sudo apt-get install -y squashfs-tools xorriso rsync wget curl dpkg-dev python3 p7zip-full zstd rclone \
+            clang cmake jq libgtk-3-dev ninja-build pkg-config unzip zip
           if [ "${TARGET_ARCH}" = "amd64" ]; then
             sudo apt-get install -y isolinux syslinux-utils grub-pc-bin qemu-system-x86
           else
             sudo apt-get install -y qemu-system-arm
           fi
+
+      - name: Cache Flutter SDK (3.38.10) for Vietnamese Live Installer
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/nido-flutter-3.38.10
+          key: nido-flutter-3.38.10-${{ matrix.arch }}
+
+      - name: Cache compiled 100% Vietnamese Live Installer bundle
+        uses: actions/cache@v4
+        with:
+          path: iso-builder/work/installer-vi-bundle
+          key: nido-installer-vi-${{ matrix.arch }}-${{ hashFiles('iso-builder/config/installer-l10n/*.arb', 'scripts/build_installer_vi.sh') }}
+
+      - name: Build 100% Vietnamese Live Installer bundle (ubuntu-desktop-bootstrap)
+        run: |
+          bash scripts/build_installer_vi.sh --arch "${TARGET_ARCH}" --out-dir iso-builder/work/installer-vi-bundle
 
       - name: Build assets, .deb packages (Stage 1 + Stage 2 native on 26.04) & static APT repo
         run: |
@@ -106,6 +123,7 @@ jobs:
           if [[ ! "$NIDO_VERSION" =~ ^[0-9]+\.[0-9]+ ]]; then
             NIDO_VERSION="0.2.0"
           fi
+          export NIDO_INSTALLER_VI_DIR="${GITHUB_WORKSPACE}/iso-builder/work/installer-vi-bundle"
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
             sudo -E NIDO_VERSION="$NIDO_VERSION" ./build.sh --release
           else
@@ -161,6 +179,11 @@ jobs:
             exit 1
           }
           grep -q "locale_support: locale-only" "$MNT_DIR/casper/install-sources.yaml"
+          grep -q "    vi:" "$MNT_DIR/casper/install-sources.yaml"
+          unsquashfs -ls "$MNT_DIR/casper/minimal.standard.live.squashfs" | grep -q "usr/libexec/nido-installer/bundle/lib/libapp.so" || {
+            echo "ERROR: Missing 100% Vietnamese installer bundle in minimal.standard.live.squashfs" >&2
+            exit 1
+          }
           if grep -q "^sources:" "$MNT_DIR/casper/install-sources.yaml"; then
             grep -q "^version: 2" "$MNT_DIR/casper/install-sources.yaml"
           fi

@@ -10,6 +10,7 @@ set -euo pipefail
 FONT_ROOT="${NIDO_FONT_ROOT:-/usr/share/fonts}"
 SNAP_ROOT="${NIDO_SNAP_ROOT:-/snap/ubuntu-desktop-bootstrap}"
 SNAP_DESKTOP_DIR="${NIDO_SNAP_DESKTOP_DIR:-/var/lib/snapd/desktop/applications}"
+BUNDLE_DIR="${NIDO_INSTALLER_BUNDLE_DIR:-/usr/libexec/nido-installer/bundle}"
 DRY_RUN=0
 
 find_first_font() {
@@ -107,7 +108,13 @@ run_self_test() {
   local td
   td="$(mktemp -d "${TMPDIR:-/tmp}/nido-bind-fonts.XXXXXX")"
   trap 'rm -rf "$td"' RETURN
-  mkdir -p "${td}/fonts/truetype/noto" "${td}/fonts/truetype/dejavu" "${td}/snap/590/bin/data/flutter_assets/packages/yaru/assets/fonts"
+  mkdir -p "${td}/fonts/truetype/noto" "${td}/fonts/truetype/dejavu" \
+    "${td}/snap/590/bin/lib" "${td}/snap/590/bin/data/flutter_assets/packages/yaru/assets/fonts" \
+    "${td}/bundle/lib" "${td}/bundle/data/flutter_assets/packages/yaru/assets/fonts"
+  printf '#!/bin/sh\n' > "${td}/snap/590/bin/ubuntu_bootstrap"
+  printf '#!/bin/sh\n' > "${td}/bundle/ubuntu_bootstrap"
+  chmod 755 "${td}/snap/590/bin/ubuntu_bootstrap" "${td}/bundle/ubuntu_bootstrap"
+  printf 'AOT' > "${td}/bundle/lib/libapp.so"
   local f
   # Mirror real Ubuntu fonts-noto-core + fonts-noto-mono filenames (NotoMono-Regular.ttf)
   # plus DejaVuSansMono.ttf to prove UbuntuMono-Regular.ttf never falls back to DejaVuSansMono.
@@ -120,17 +127,25 @@ run_self_test() {
   done
   FONT_ROOT="${td}/fonts"
   SNAP_ROOT="${td}/snap"
+  BUNDLE_DIR="${td}/bundle"
   DRY_RUN=1
   local count=0
+  local bundle_count=0
   local mono_bound=""
   while IFS= read -r line; do
-    if [[ "$line" == BIND:* ]]; then
+    if [[ "$line" == BIND_BUNDLE:* ]]; then
+      bundle_count=$((bundle_count + 1))
+    elif [[ "$line" == BIND:* ]]; then
       count=$((count + 1))
       if [[ "$line" == *"UbuntuMono-Regular.ttf" ]]; then
         mono_bound="$line"
       fi
     fi
   done < <(apply_mounts)
+  if [[ "$bundle_count" -ne 3 ]]; then
+    echo "ERROR: Expected 3 Vietnamese installer bundle bindings, got ${bundle_count}" >&2
+    return 1
+  fi
   if [[ "$count" -ne 9 ]]; then
     echo "ERROR: Expected 9 installer font bindings, got ${count}" >&2
     return 1
@@ -139,7 +154,7 @@ run_self_test() {
     echo "ERROR: UbuntuMono-Regular.ttf did not bind to NotoMono-Regular.ttf: ${mono_bound}" >&2
     return 1
   fi
-  echo "bind-installer-fonts self-test passed (9/9 Flutter Yaru font targets mapped; mono -> NotoMono-Regular.ttf)."
+  echo "bind-installer-fonts self-test passed (3/3 VI bundle mounts + 9/9 Flutter Yaru font targets mapped; mono -> NotoMono-Regular.ttf)."
   return 0
 }
 
@@ -167,6 +182,34 @@ verify_system_fonts() {
   return 0
 }
 
+apply_bundle_overlay() {
+  local rev_dir="$1"
+  local bound_bundle=0
+  [[ -x "${BUNDLE_DIR}/ubuntu_bootstrap" && -f "${BUNDLE_DIR}/lib/libapp.so" && -d "${BUNDLE_DIR}/data/flutter_assets" ]] || return 0
+
+  local item src dst
+  for item in ubuntu_bootstrap lib data; do
+    src="${BUNDLE_DIR}/${item}"
+    dst="${rev_dir}/bin/${item}"
+    [[ -e "$src" && -e "$dst" ]] || continue
+    if [[ "$DRY_RUN" -eq 1 ]]; then
+      printf 'BIND_BUNDLE:%s -> %s\n' "$src" "$dst"
+      bound_bundle=$((bound_bundle + 1))
+    else
+      if command -v mountpoint >/dev/null 2>&1 && mountpoint -q "$dst" 2>/dev/null; then
+        bound_bundle=$((bound_bundle + 1))
+        continue
+      fi
+      if mount --bind "$src" "$dst" 2>/dev/null; then
+        bound_bundle=$((bound_bundle + 1))
+      fi
+    fi
+  done
+  if [[ "$DRY_RUN" -eq 0 && "$bound_bundle" -gt 0 ]]; then
+    echo "[NidoOS] bind-installer-fonts: activated Vietnamese installer bundle (${bound_bundle}/3 mounts) on ${rev_dir}."
+  fi
+}
+
 apply_mounts() {
   [[ -d "$SNAP_ROOT" ]] || return 0
   wait_for_snap_fonts
@@ -176,6 +219,7 @@ apply_mounts() {
     # Skip symlinks (e.g. 'current') so each real squashfs mountpoint is bound once
     [[ -L "$rev_dir" ]] && continue
     [[ -d "$rev_dir" ]] || continue
+    apply_bundle_overlay "$rev_dir"
     fonts_dir="${rev_dir}/bin/data/flutter_assets/packages/yaru/assets/fonts"
     [[ -d "$fonts_dir" ]] || continue
     for target_file in "${fonts_dir}"/Ubuntu*.ttf; do

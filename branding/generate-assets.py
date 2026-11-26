@@ -598,11 +598,16 @@ def generate_desktop_provision_assets(provision_dir: Path) -> list[Path]:
         sdir.mkdir(parents=True, exist_ok=True)
         emblem = sdir / "nidoos-emblem.svg"
         emblem.write_text(NIDOOS_LOGO_SVG, encoding="utf-8")
+        vi_html_text = _render_slide_html(vi_title, vi_lead, vi_body)
         vi_html = sdir / "slide_vi_VN.html"
-        vi_html.write_text(_render_slide_html(vi_title, vi_lead, vi_body), encoding="utf-8")
+        vi_html.write_text(vi_html_text, encoding="utf-8")
+        # Also write slide_vi.html because ubuntu-desktop-bootstrap's slides_provider
+        # looks up slide_${Intl.defaultLocale}.html, which is 'vi' when selected in UI.
+        vi_short_html = sdir / "slide_vi.html"
+        vi_short_html.write_text(vi_html_text, encoding="utf-8")
         en_html = sdir / "slide_en_US.html"
         en_html.write_text(_render_slide_html(en_title, en_lead, en_body), encoding="utf-8")
-        generated.extend([emblem, vi_html, en_html])
+        generated.extend([emblem, vi_html, vi_short_html, en_html])
 
     return generated
 

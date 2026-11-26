@@ -32,7 +32,9 @@ from agent_accounts import (  # noqa: E402
 from ai_discovery import (  # noqa: E402
     OLLAMA_DEFAULT_BASE_URL,
     HardwareProfile,
+    _ensure_ollama_user_service,
     compute_capability_matrix,
+    compute_ollama_memory_limits,
     is_vision_model,
     live_verify_backend,
     parse_ollama_sha256sum,
@@ -528,6 +530,18 @@ def run_self_test(app_mod: Any) -> int:
 
         sha_sample = "a" * 64 + "  ollama-linux-arm64.tar.zst\n" + "b" * 64 + "  ollama-linux-amd64.tar.zst\n"
         assert parse_ollama_sha256sum(sha_sample, "ollama-linux-arm64.tar.zst") == "a" * 64
+
+        # Verify dynamic cgroup v2 Ollama memory ceilings scale safely across 4/8/16/32 GiB hosts
+        for ram_gb, exp_min_reserve in ((4.0, 2048), (8.0, 2048), (16.0, 3072), (32.0, 3072)):
+            hi_mib, mx_mib = compute_ollama_memory_limits(ram_gb)
+            total_mib = int(round(ram_gb * 1024))
+            assert 1024 <= hi_mib < mx_mib, (ram_gb, hi_mib, mx_mib)
+            assert total_mib - mx_mib >= exp_min_reserve, (ram_gb, hi_mib, mx_mib)
+            assert hi_mib % 128 == 0 and mx_mib % 128 == 0, (hi_mib, mx_mib)
+        ol_unit = _ensure_ollama_user_service(backend.home_dir / "ol-home", "/usr/local/bin/ollama", ram_gb=8.0, reload_systemd=False)
+        ol_txt = ol_unit.read_text(encoding="utf-8")
+        assert "OLLAMA_KEEP_ALIVE=3m" in ol_txt and "OLLAMA_MAX_LOADED_MODELS=1" in ol_txt, ol_txt
+        assert "MemoryHigh=4096M" in ol_txt and "MemoryMax=5248M" in ol_txt and "OOMScoreAdjust=500" in ol_txt, ol_txt
 
         # Verify NIDOAI_LOCAL_MODEL persists cleanly
         backend.save_ai_settings(

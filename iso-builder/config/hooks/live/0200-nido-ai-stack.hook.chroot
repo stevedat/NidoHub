@@ -25,10 +25,11 @@ else
   fi
 fi
 
-if [ -f /usr/lib/systemd/user/nidoai-gateway.service ]; then
-  mkdir -p /etc/systemd/user/default.target.wants
-  ln -sf /usr/lib/systemd/user/nidoai-gateway.service \
-    /etc/systemd/user/default.target.wants/nidoai-gateway.service
+rm -f /etc/systemd/user/default.target.wants/nidoai-gateway.service
+if [ -f /usr/lib/systemd/user/nidoai-gateway.socket ]; then
+  mkdir -p /etc/systemd/user/sockets.target.wants
+  ln -sf /usr/lib/systemd/user/nidoai-gateway.socket \
+    /etc/systemd/user/sockets.target.wants/nidoai-gateway.socket
 fi
 
 nidoagent --version

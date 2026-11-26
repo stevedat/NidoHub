@@ -391,7 +391,21 @@ class NidoHubBackend:
             return
         if active:
             subprocess.run(
-                ["systemctl", "--user", "enable", "nidoai-gateway.service"],
+                ["systemctl", "--user", "unmask", "nidoai-gateway.socket", "nidoai-gateway.service"],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=8,
+            )
+            subprocess.run(
+                ["systemctl", "--user", "disable", "nidoai-gateway.service"],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=8,
+            )
+            subprocess.run(
+                ["systemctl", "--user", "enable", "--now", "nidoai-gateway.socket"],
                 check=False,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -406,7 +420,7 @@ class NidoHubBackend:
             )
             if res.returncode != 0:
                 subprocess.run(
-                    ["systemctl", "--user", "enable", "--now", "nidoai-gateway.service"],
+                    ["systemctl", "--user", "start", "nidoai-gateway.service"],
                     check=False,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
@@ -414,14 +428,21 @@ class NidoHubBackend:
                 )
         else:
             subprocess.run(
-                ["systemctl", "--user", "disable", "--now", "nidoai-gateway.service"],
+                ["systemctl", "--user", "disable", "--now", "nidoai-gateway.socket", "nidoai-gateway.service"],
                 check=False,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 timeout=8,
             )
             subprocess.run(
-                ["systemctl", "--user", "stop", "nidoai-gateway.service"],
+                ["systemctl", "--user", "stop", "nidoai-gateway.socket", "nidoai-gateway.service"],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=8,
+            )
+            subprocess.run(
+                ["systemctl", "--user", "mask", "nidoai-gateway.socket"],
                 check=False,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -582,12 +603,26 @@ class NidoHubBackend:
         import urllib.request
 
         try:
-            with urllib.request.urlopen(url, timeout=0.6):
+            with urllib.request.urlopen(url, timeout=1.5):
                 return
         except Exception:
             pass
 
         if shutil.which("systemctl"):
+            subprocess.run(
+                ["systemctl", "--user", "unmask", "nidoai-gateway.socket"],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=8,
+            )
+            subprocess.run(
+                ["systemctl", "--user", "start", "nidoai-gateway.socket"],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=8,
+            )
             subprocess.run(
                 ["systemctl", "--user", "start", "nidoai-gateway.service"],
                 check=False,

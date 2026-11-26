@@ -1,0 +1,13 @@
+[Unit]
+Description=NidoAI Local AI Gateway Activation Socket
+ConditionPathExists=!/snap/ubuntu-desktop-bootstrap
+ConditionPathExists=%h/.config/ubuntu-nido/ai-policy.json
+
+[Socket]
+ListenStream=127.0.0.1:18090
+ListenStream=%t/nidoai-gateway.sock
+SocketMode=0600
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target

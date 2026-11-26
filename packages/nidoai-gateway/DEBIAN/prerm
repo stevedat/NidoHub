@@ -2,7 +2,8 @@
 set -e
 
 if [ "$1" = "remove" ] || [ "$1" = "purge" ]; then
-  rm -f /etc/systemd/user/default.target.wants/nidoai-gateway.service || true
+  rm -f /etc/systemd/user/default.target.wants/nidoai-gateway.service \
+    /etc/systemd/user/sockets.target.wants/nidoai-gateway.socket || true
   if command -v apparmor_parser >/dev/null 2>&1 && [ -f /etc/apparmor.d/nidoai-gateway ]; then
     apparmor_parser -R /etc/apparmor.d/nidoai-gateway >/dev/null 2>&1 || true
   fi

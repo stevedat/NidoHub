@@ -43,6 +43,23 @@ repack_layered_live_overlays() {
   mount -t proc proc "$WORK_DIR/live_merged/proc"
   mount -t sysfs sysfs "$WORK_DIR/live_merged/sys"
 
+  # Stage 100%-Vietnamese Flutter installer bundle ONLY inside the Live ISO delta layer
+  # (0 bytes added to the installed minimal.squashfs target system).
+  local installer_vi_dir="${NIDO_INSTALLER_VI_DIR:-$WORK_DIR/installer-vi-bundle}"
+  if [ -x "${installer_vi_dir}/ubuntu_bootstrap" ] \
+    && [ -f "${installer_vi_dir}/lib/libapp.so" ] \
+    && [ -d "${installer_vi_dir}/data/flutter_assets" ]; then
+    info "  → Staging 100%-Vietnamese Live Installer bundle into minimal.standard.live.squashfs..."
+    rm -rf "$WORK_DIR/live_merged/usr/libexec/nido-installer/bundle"
+    mkdir -p "$WORK_DIR/live_merged/usr/libexec/nido-installer/bundle"
+    cp -a "${installer_vi_dir}/ubuntu_bootstrap" \
+      "${installer_vi_dir}/lib" \
+      "${installer_vi_dir}/data" \
+      "$WORK_DIR/live_merged/usr/libexec/nido-installer/bundle/"
+    [ -f "${installer_vi_dir}/manifest.json" ] && cp "${installer_vi_dir}/manifest.json" "$WORK_DIR/live_merged/usr/libexec/nido-installer/bundle/"
+    chmod 755 "$WORK_DIR/live_merged/usr/libexec/nido-installer/bundle/ubuntu_bootstrap"
+  fi
+
   chroot "$WORK_DIR/live_merged" /bin/bash -c '
     set -e
     export DEBIAN_FRONTEND=noninteractive
@@ -148,6 +165,12 @@ repack_layered_live_overlays() {
     test -f /usr/share/desktop-provision/whitelabel.yaml
     test -f /usr/share/desktop-provision/images/nidoos-logo-dark.svg
     test -f /usr/share/desktop-provision/slides/1/slide_vi_VN.html
+    test -f /usr/share/desktop-provision/slides/1/slide_vi.html
+    if [ -x /usr/libexec/nido-installer/bundle/ubuntu_bootstrap ]; then
+      test -f /usr/libexec/nido-installer/bundle/lib/libapp.so
+      test -d /usr/libexec/nido-installer/bundle/data/flutter_assets
+      ! LD_LIBRARY_PATH="/usr/libexec/nido-installer/bundle/lib" ldd /usr/libexec/nido-installer/bundle/ubuntu_bootstrap | grep -q "not found"
+    fi
     test -x /usr/local/bin/himalaya
     dpkg -s geary >/dev/null
     test -f /etc/xdg/autostart/ubuntu-nido-ime-sync.desktop

@@ -61,6 +61,9 @@ fi
 if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files systemd-timesyncd.service >/dev/null 2>&1; then
   systemctl restart systemd-timesyncd.service >/dev/null 2>&1 || true
 fi
+if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files fstrim.timer >/dev/null 2>&1; then
+  systemctl enable --now fstrim.timer >/dev/null 2>&1 || true
+fi
 
 if [ -x /usr/libexec/ubuntu-nido/configure-firewall ]; then
   /usr/libexec/ubuntu-nido/configure-firewall >/dev/null 2>&1 || true

@@ -610,6 +610,16 @@ export async function startGatewayServer(initialConfig, options = {}) {
     let actualPort = initialConfig.port;
     let activeSocketPath = null;
     const ephemeralClientToken = Boolean(options.ephemeralClientToken);
+    const listenFds = Array.isArray(options.listenFds)
+        ? options.listenFds.filter((fd) => Number.isInteger(fd) && fd >= 3)
+        : [];
+    const socketActivated = listenFds.length > 0;
+    const rawIdleMs = Number(options.idleTimeoutMs ?? 0);
+    const idleTimeoutMs = Number.isFinite(rawIdleMs) && rawIdleMs > 0 ? Math.max(250, Math.floor(rawIdleMs)) : 0;
+    let inFlightRequests = 0;
+    let lastActivityAt = Date.now();
+    let idleTimer = null;
+    let idleTriggered = false;
     const stateDir = options.stateDir || initialConfig.stateDir || resolveNidoAiStateDir();
     const configDir = options.configDir || initialConfig.configDir || resolveNidoConfigDir();
     const useSecretStore = process.env.NIDOAI_SECRET_STORE !== 'file';
@@ -703,6 +713,7 @@ export async function startGatewayServer(initialConfig, options = {}) {
             baseUrl: `http://127.0.0.1:${actualPort}`,
             clientToken: currentConfig.clientToken,
             ...(activeSocketPath ? { socketPath: activeSocketPath } : {}),
+            ...(socketActivated ? { socketActivated: true, state: 'running' } : {}),
             capabilities: {
                 vision: p.kind !== 'nido',
                 streaming: true,
@@ -839,6 +850,18 @@ export async function startGatewayServer(initialConfig, options = {}) {
     const cachedHtml = enableWebUi ? renderControlPanelHtml(csrfToken, PKG_VERSION, cspNonce) : '';
     const cachedHtmlBytes = Buffer.byteLength(cachedHtml).toString();
     const handleHttpRequest = async (req, res) => {
+        inFlightRequests += 1;
+        lastActivityAt = Date.now();
+        let requestFinished = false;
+        const markRequestFinished = () => {
+            if (requestFinished)
+                return;
+            requestFinished = true;
+            inFlightRequests = Math.max(0, inFlightRequests - 1);
+            lastActivityAt = Date.now();
+        };
+        res.once('finish', markRequestFinished);
+        res.once('close', markRequestFinished);
         const requestStartMs = performance.now();
         const requestId = crypto.randomUUID();
         const method = req.method ?? 'GET';
@@ -1296,6 +1319,8 @@ export async function startGatewayServer(initialConfig, options = {}) {
                 status: 'ok',
                 version: PKG_VERSION,
                 bind: `${currentConfig.host}:${actualPort}`,
+                socketActivated,
+                idleTimeoutMs,
                 primaryBackend: {
                     kind: primary.kind,
                     configured: primary.kind === 'local' ? primaryReachable : primary.configured,
@@ -1779,9 +1804,10 @@ export async function startGatewayServer(initialConfig, options = {}) {
             finish();
         }
     });
-    const server = http.createServer(handleHttpRequest);
-    configureHttpTimeouts(server);
+    let server = null;
     let udsServer = null;
+    let udsOwnedByProcess = false;
+    const extraServers = [];
     const rawUdsCandidate = typeof options.udsPath === 'string'
         ? options.udsPath
         : (process.platform === 'linux'
@@ -1817,6 +1843,7 @@ export async function startGatewayServer(initialConfig, options = {}) {
                     // ignore transient socket errors
                 });
                 udsServer = sockSrv;
+                udsOwnedByProcess = true;
                 activeSocketPath = udsCandidate;
                 resUds(udsCandidate);
             });
@@ -1825,74 +1852,183 @@ export async function startGatewayServer(initialConfig, options = {}) {
             resUds(null);
         }
     });
-    return new Promise((resolve, reject) => {
-        server.once('error', reject);
-        server.listen(currentConfig.port, '127.0.0.1', () => {
-            const addr = server.address();
-            actualPort = typeof addr === 'object' && addr ? addr.port : currentConfig.port;
-            // Persistent error handler (replaces the once('error') from promise setup)
-            server.removeAllListeners('error');
-            server.on('error', (err) => {
+    const attachInheritedFd = (fd) => new Promise((resFd, rejFd) => {
+        const srv = http.createServer(handleHttpRequest);
+        configureHttpTimeouts(srv);
+        srv.once('error', rejFd);
+        srv.listen({ fd }, () => {
+            srv.removeAllListeners('error');
+            srv.on('error', (err) => {
                 console.error(JSON.stringify({ event: 'server_error', error: err.message, timestamp: new Date().toISOString() }));
             });
-            void startUdsListenerIfEligible().then(() => {
-                if (options.writeRuntimeDiscovery) {
-                    const primary = currentConfig.backends[currentConfig.primaryBackend];
-                    writeRuntimeDiscovery({
-                        baseUrl: `http://127.0.0.1:${actualPort}`,
-                        clientToken: currentConfig.clientToken,
-                        ...(activeSocketPath ? { socketPath: activeSocketPath } : {}),
-                        capabilities: {
-                            vision: primary.kind !== 'nido',
-                            streaming: true,
-                            jsonObject: true,
-                            primaryBackend: primary.kind,
-                            primaryConfigured: primary.configured,
-                            primaryReachable: primary.kind === 'local' ? false : primary.configured,
-                            secretStoreMode: currentConfig.secretStoreMode,
-                        },
-                    });
-                }
-                resolve({
-                    server,
-                    udsServer,
-                    socketPath: activeSocketPath,
-                    host: '127.0.0.1',
-                    port: actualPort,
-                    close: async () => {
-                        if (codexWorker) {
-                            await codexWorker.stop();
-                            codexWorker = null;
-                        }
-                        if (udsServer) {
-                            const closingUds = udsServer;
-                            udsServer = null;
-                            await closeHttpServerGracefully(closingUds);
-                        }
-                        if (activeSocketPath && fs.existsSync(activeSocketPath)) {
-                            try {
-                                fs.unlinkSync(activeSocketPath);
-                            }
-                            catch {
-                                // ignore socket cleanup error
-                            }
-                        }
-                        if (options.writeRuntimeDiscovery) {
-                            const runtimePath = getRuntimeDiscoveryPath();
-                            const currentDisc = readRuntimeDiscovery();
-                            if (currentDisc && currentDisc.pid === process.pid && fs.existsSync(runtimePath)) {
-                                try {
-                                    fs.unlinkSync(runtimePath);
-                                }
-                                catch {
-                                    // ignore runtime cleanup error on shutdown
-                                }
-                            }
-                        }
-                        await closeHttpServerGracefully(server);
-                    },
-                });
-            });
+            resFd(srv);
         });
     });
+    try {
+        if (socketActivated) {
+            for (const fd of listenFds) {
+                const srv = await attachInheritedFd(fd);
+                const addr = srv.address();
+                if (addr && typeof addr === 'object' && typeof addr.port === 'number') {
+                    if (!server) {
+                        server = srv;
+                        actualPort = addr.port;
+                    }
+                    else {
+                        extraServers.push(srv);
+                    }
+                }
+                else if (!udsServer) {
+                    udsServer = srv;
+                    udsOwnedByProcess = false;
+                    activeSocketPath = (typeof addr === 'string' && addr.trim())
+                        ? addr.trim()
+                        : (udsCandidate || '');
+                }
+                else {
+                    extraServers.push(srv);
+                }
+            }
+            if (!udsServer) {
+                await startUdsListenerIfEligible();
+            }
+        }
+        else {
+            server = http.createServer(handleHttpRequest);
+            configureHttpTimeouts(server);
+            await new Promise((resListen, rejListen) => {
+                server.once('error', rejListen);
+                server.listen(currentConfig.port, '127.0.0.1', () => {
+                    const addr = server.address();
+                    actualPort = typeof addr === 'object' && addr ? addr.port : currentConfig.port;
+                    // Persistent error handler (replaces the once('error') from promise setup)
+                    server.removeAllListeners('error');
+                    server.on('error', (err) => {
+                        console.error(JSON.stringify({ event: 'server_error', error: err.message, timestamp: new Date().toISOString() }));
+                    });
+                    resListen();
+                });
+            });
+            await startUdsListenerIfEligible();
+        }
+    }
+    catch (err) {
+        const toClose = [server, udsServer, ...extraServers].filter(Boolean);
+        await Promise.all(toClose.map((srv) => closeHttpServerGracefully(srv, 500)));
+        throw err;
+    }
+    const buildRuntimeDiscoveryCapabilities = () => {
+        const primary = currentConfig.backends[currentConfig.primaryBackend];
+        return {
+            vision: primary.kind !== 'nido',
+            streaming: true,
+            jsonObject: true,
+            primaryBackend: primary.kind,
+            primaryConfigured: primary.configured,
+            primaryReachable: primary.kind === 'local' ? false : primary.configured,
+            secretStoreMode: currentConfig.secretStoreMode,
+        };
+    };
+    if (options.writeRuntimeDiscovery) {
+        writeRuntimeDiscovery({
+            baseUrl: `http://127.0.0.1:${actualPort}`,
+            clientToken: currentConfig.clientToken,
+            ...(activeSocketPath ? { socketPath: activeSocketPath } : {}),
+            ...(socketActivated ? { socketActivated: true, state: 'running' } : {}),
+            capabilities: buildRuntimeDiscoveryCapabilities(),
+        });
+    }
+    if (idleTimeoutMs > 0) {
+        lastActivityAt = Date.now();
+        const checkEveryMs = Math.max(100, Math.min(30_000, Math.floor(idleTimeoutMs / 4)));
+        idleTimer = setInterval(() => {
+            if (idleTriggered || inFlightRequests > 0)
+                return;
+            if (codexWorker && codexWorker.isRunning())
+                return;
+            const idleForMs = Date.now() - lastActivityAt;
+            if (idleForMs >= idleTimeoutMs) {
+                idleTriggered = true;
+                if (idleTimer) {
+                    clearInterval(idleTimer);
+                    idleTimer = null;
+                }
+                if (typeof options.onIdleSleep === 'function') {
+                    options.onIdleSleep(idleForMs);
+                }
+            }
+        }, checkEveryMs);
+        idleTimer.unref?.();
+    }
+    return {
+        server,
+        udsServer,
+        socketPath: activeSocketPath,
+        socketActivated,
+        idleTimeoutMs,
+        host: '127.0.0.1',
+        port: actualPort,
+        close: async (closeOpts = {}) => {
+            if (idleTimer) {
+                clearInterval(idleTimer);
+                idleTimer = null;
+            }
+            if (codexWorker) {
+                await codexWorker.stop();
+                codexWorker = null;
+            }
+            for (const extra of extraServers.splice(0, extraServers.length)) {
+                await closeHttpServerGracefully(extra);
+            }
+            if (udsServer) {
+                const closingUds = udsServer;
+                udsServer = null;
+                await closeHttpServerGracefully(closingUds);
+            }
+            if (udsOwnedByProcess && activeSocketPath && fs.existsSync(activeSocketPath)) {
+                try {
+                    fs.unlinkSync(activeSocketPath);
+                }
+                catch {
+                    // ignore socket cleanup error
+                }
+            }
+            if (options.writeRuntimeDiscovery) {
+                const preserveForSleep = Boolean(closeOpts?.idleSleep && socketActivated);
+                if (preserveForSleep) {
+                    try {
+                        writeRuntimeDiscovery({
+                            baseUrl: `http://127.0.0.1:${actualPort}`,
+                            clientToken: currentConfig.clientToken,
+                            pid: 0,
+                            socketActivated: true,
+                            state: 'sleeping',
+                            ...(activeSocketPath ? { socketPath: activeSocketPath } : {}),
+                            capabilities: buildRuntimeDiscoveryCapabilities(),
+                        });
+                    }
+                    catch {
+                        // ignore sleeping discovery write failure
+                    }
+                }
+                else {
+                    const runtimePath = getRuntimeDiscoveryPath();
+                    const currentDisc = readRuntimeDiscovery();
+                    if (currentDisc && currentDisc.pid === process.pid && fs.existsSync(runtimePath)) {
+                        try {
+                            fs.unlinkSync(runtimePath);
+                        }
+                        catch {
+                            // ignore runtime cleanup error on shutdown
+                        }
+                    }
+                }
+            }
+            if (server) {
+                const closingTcp = server;
+                server = null;
+                await closeHttpServerGracefully(closingTcp);
+            }
+        },
+    };
 }

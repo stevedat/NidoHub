@@ -193,6 +193,9 @@ swap-priority = 100
 ZRAM
 if command -v systemctl >/dev/null 2>&1; then
   systemctl enable earlyoom.service >/dev/null 2>&1 || true
+  if [ -f /usr/lib/systemd/system/fstrim.timer ] || [ -f /lib/systemd/system/fstrim.timer ]; then
+    systemctl enable fstrim.timer >/dev/null 2>&1 || true
+  fi
 fi
 
 # Prevent Ubuntu non-LTS release upgrade prompts (updates flow via NidoHub + unattended-upgrades)

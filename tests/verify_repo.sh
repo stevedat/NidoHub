@@ -40,6 +40,7 @@ SHELL_SCRIPTS=(
   "${ROOT_DIR}/packages/nido-desktop/files/usr/libexec/ubuntu-nido/showtime-launch"
   "${ROOT_DIR}/packages/nido-desktop/files/usr/libexec/ubuntu-nido/native-first-cleanup"
   "${ROOT_DIR}/scripts/build_ime_bridge.sh"
+  "${ROOT_DIR}/scripts/build_installer_vi.sh"
   "${ROOT_DIR}/scripts/validate_native_first.sh"
   "${ROOT_DIR}/iso-builder/build.sh"
   "${ROOT_DIR}/iso-builder/scripts/config.sh"
@@ -166,6 +167,7 @@ for fname in expected:
             assert "./usr/lib/nidoai/src/gateway/nido-account-adapter.js" in names, f"{fname}: missing nido-account-adapter.js"
             assert "./usr/lib/nidoai/src/security/secret-store.js" in names, f"{fname}: missing unified secret-store.js"
             assert "./usr/libexec/nidoai/gateway-daemon" in names, f"{fname}: missing gateway-daemon"
+            assert "./usr/lib/systemd/user/nidoai-gateway.socket" in names, f"{fname}: missing systemd activation socket"
             assert "./etc/apparmor.d/nidoai-gateway" in names, f"{fname}: missing AppArmor profile"
             assert "./usr/share/nido-security/manifests/nidoai-gateway.sha256" in names, f"{fname}: missing integrity manifest"
             assert "./usr/lib/nidoai/src/cli.ts" not in names, f"{fname}: stale cli.ts found (breaks stock Ubuntu nodejs)"
@@ -178,6 +180,7 @@ for fname in expected:
                 "./etc/dconf/db/local.d/00-ubuntu-nido-settings",
                 "./etc/dconf/db/gdm.d/01-nidoos-logo",
                 "./etc/sysctl.d/90-nidoos-hardening.conf",
+                "./etc/sysctl.d/91-nidoos-memory.conf",
                 "./etc/modules-load.d/nido-uinput.conf",
                 "./etc/udev/rules.d/70-nido-uinput.rules",
                 "./etc/ufw/applications.d/nidoos",
@@ -191,6 +194,7 @@ for fname in expected:
                 "./usr/share/desktop-provision/images/nidoos-mascot-dark.svg",
                 "./usr/share/desktop-provision/images/nidoos-storage-icon.svg",
                 "./usr/share/desktop-provision/slides/1/slide_vi_VN.html",
+                "./usr/share/desktop-provision/slides/1/slide_vi.html",
                 "./usr/share/desktop-provision/slides/4/slide_en_US.html",
                 "./etc/skel/.config/gnome-initial-setup-done",
                 "./usr/local/share/applications/thunderbird_thunderbird.desktop",
@@ -1804,6 +1808,7 @@ for forbidden_preedit in (
     assert forbidden_preedit not in ime_c_src, f"Zero-underline bridge must never call {forbidden_preedit}"
 assert "libVieLotusCAPI.so.0" in ime_c_src and "dlopen(" in ime_c_src, "nido-ibus-vielotus must dlopen libVieLotusCAPI.so.0"
 subprocess.run(["bash", str(root / "scripts/build_ime_bridge.sh"), "--dry-run"], check=True)
+subprocess.run(["bash", str(root / "scripts/build_installer_vi.sh"), "--dry-run"], check=True)
 
 bind_fonts_script = root / "packages/nido-desktop-settings/files/usr/libexec/ubuntu-nido/bind-installer-fonts"
 subprocess.run(["bash", str(bind_fonts_script), "--self-test"], check=True)
@@ -1826,8 +1831,20 @@ subprocess.run(["bash", str(vm_gsk_script), "--self-test"], check=True)
 gw_unit_txt = (root / "packages/nidoai-gateway/files/usr/lib/systemd/user/nidoai-gateway.service").read_text(encoding="utf-8")
 assert "ConditionPathExists=%h/.config/ubuntu-nido/ai-policy.json" in gw_unit_txt, "nidoai-gateway.service must wait for ai-policy.json"
 assert "After=dbus.socket gnome-keyring-daemon.service" in gw_unit_txt, "nidoai-gateway.service must order after dbus & gnome-keyring"
+for req_gw_opt in ("NIDOAI_IDLE_TIMEOUT_MS=600000", "MemoryHigh=256M", "MemoryMax=512M", "OOMScoreAdjust=300", "Also=nidoai-gateway.socket"):
+    assert req_gw_opt in gw_unit_txt, f"nidoai-gateway.service missing {req_gw_opt}"
 for bad_user_opt in ("PrivateTmp=", "ProtectKernelTunables=", "ProtectKernelModules=", "ProtectControlGroups="):
     assert bad_user_opt not in gw_unit_txt, f"Unprivileged user unit nidoai-gateway.service must not set root-only {bad_user_opt}"
+gw_sock_txt = (root / "packages/nidoai-gateway/files/usr/lib/systemd/user/nidoai-gateway.socket").read_text(encoding="utf-8")
+for req_sock_opt in ("ListenStream=127.0.0.1:18090", "ListenStream=%t/nidoai-gateway.sock", "SocketMode=0600", "WantedBy=sockets.target"):
+    assert req_sock_opt in gw_sock_txt, f"nidoai-gateway.socket missing {req_sock_opt}"
+gw_postinst_txt = (root / "packages/nidoai-gateway/DEBIAN/postinst").read_text(encoding="utf-8")
+assert "sockets.target.wants/nidoai-gateway.socket" in gw_postinst_txt and "rm -f /etc/systemd/user/default.target.wants/nidoai-gateway.service" in gw_postinst_txt, "nidoai-gateway postinst must enable socket activation and clean eager service wants"
+mem_sysctl_txt = (root / "packages/nido-desktop-settings/files/etc/sysctl.d/91-nidoos-memory.conf").read_text(encoding="utf-8")
+for req_mem_opt in ("vm.swappiness = 100", "vm.page-cluster = 0", "vm.watermark_boost_factor = 0", "vm.watermark_scale_factor = 125"):
+    assert req_mem_opt in mem_sysctl_txt, f"91-nidoos-memory.conf missing {req_mem_opt}"
+prune_hook_txt = (root / "iso-builder/config/hooks/live/0110-nido-minimal-prune.hook.chroot").read_text(encoding="utf-8")
+assert "fstrim.timer" in prune_hook_txt, "0110-nido-minimal-prune hook must enable fstrim.timer"
 gw_aa_txt = (root / "packages/nidoai-gateway/files/etc/apparmor.d/nidoai-gateway").read_text(encoding="utf-8")
 for req_aa in ("/usr/libexec/nidoai/nidoai-sea mrix,", "/usr/bin/secret-tool ix,", "/usr/bin/mkdir ix,", "/usr/bin/chmod ix,", "/usr/lib/cargo/bin/coreutils/chmod ix,", "/usr/bin/which* rix,", "@{PROC}/version* r,", "unix,", "dbus (send, receive) bus=session,", "network inet dgram,"):
     assert req_aa in gw_aa_txt, f"nidoai-gateway AppArmor profile missing {req_aa}"
@@ -1845,6 +1862,7 @@ assert "Type=simple" in cleanup_unit_txt, "nido-native-first-cleanup.service mus
 cleanup_txt = (root / "packages/nido-desktop/files/usr/libexec/ubuntu-nido/native-first-cleanup").read_text(encoding="utf-8")
 assert "disabled-extensions=['ding@rastersoft.com']" in cleanup_txt, "native-first-cleanup must disable ding@rastersoft.com on installed systems"
 assert "timedatectl set-ntp true" in cleanup_txt, "native-first-cleanup must enable NTP clock sync on first boot"
+assert "fstrim.timer" in cleanup_txt, "native-first-cleanup must enable fstrim.timer on installed systems"
 assert "/usr/libexec/ubuntu-nido/" in cleanup_txt and "compileall" in cleanup_txt, "native-first-cleanup must precompile /usr/libexec/ubuntu-nido/ bytecache"
 
 # Verify nidooffice-desktop VM software-GPU --disable-gpu detection (bare metal & GPU passthrough untouched)
@@ -2026,11 +2044,123 @@ try:
         if sig_proc.poll() is None:
             sig_proc.kill()
             sig_proc.wait(timeout=3)
+
+    # Verify systemd socket-activation (LISTEN_FDS=2 TCP+UDS) + idle auto-sleep to 0 MB + wake re-auth
+    import socket as _sock
+    import urllib.error as _uerr
+    import urllib.request as _ureq
+    sa_home = Path(sandbox_empty_home) / "sa-home"
+    sa_cfg = sa_home / ".config"
+    sa_state = sa_home / ".nidoai"
+    (sa_cfg / "ubuntu-nido").mkdir(parents=True, exist_ok=True)
+    sa_state.mkdir(parents=True, exist_ok=True)
+    sa_token = "nidoai_socket_activation_persistent_token_0123456789"
+    (sa_cfg / "ubuntu-nido" / "ai-policy.json").write_text('{"aiEnabled":true,"setupCompleted":true}\n', encoding="utf-8")
+    (sa_state / ".env.local").write_text(
+        f"NIDOAI_ENABLED=1\nNIDOAI_CLIENT_TOKEN={sa_token}\nNIDOAI_PRIMARY_BACKEND=gemini\n",
+        encoding="utf-8",
+    )
+    os.chmod(sa_state / ".env.local", 0o600)
+    sa_uds_dir = Path(tempfile.mkdtemp(prefix="nido-sa-"))
+    sa_uds_path = sa_uds_dir / "gw.sock"
+    sa_tcp = _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM)
+    sa_uds = _sock.socket(_sock.AF_UNIX, _sock.SOCK_STREAM)
+    try:
+        sa_tcp.setsockopt(_sock.SOL_SOCKET, _sock.SO_REUSEADDR, 1)
+        sa_tcp.bind(("127.0.0.1", 0))
+        sa_tcp.listen(16)
+        sa_port = sa_tcp.getsockname()[1]
+        sa_uds.bind(str(sa_uds_path))
+        sa_uds.listen(16)
+        sa_env = {
+            k: v for k, v in os.environ.items()
+            if k not in ("NIDOAI_ENABLED", "NIDOAI_BASE_URL", "NIDOAI_GATEWAY_PORT", "NIDOAI_PORT", "NIDOAI_CLIENT_TOKEN", "NIDOAI_EPHEMERAL_TOKEN")
+        }
+        sa_env.update({
+            "HOME": str(sa_home),
+            "XDG_CONFIG_HOME": str(sa_cfg),
+            "XDG_RUNTIME_DIR": str(sa_uds_dir),
+            "NIDOAI_HOME": str(sa_state),
+            "NIDOAI_SECRET_STORE": "file",
+            "NIDOAI_IDLE_TIMEOUT_MS": "1000",
+        })
+        sa_tramp = (
+            "import fcntl, os, sys; "
+            "t, u = int(sys.argv[1]), int(sys.argv[2]); "
+            "t2 = fcntl.fcntl(t, fcntl.F_DUPFD, 10); "
+            "u2 = fcntl.fcntl(u, fcntl.F_DUPFD, 11); "
+            "os.dup2(t2, 3); os.dup2(u2, 4); "
+            "os.set_inheritable(3, True); os.set_inheritable(4, True); "
+            "os.close(t2); os.close(u2); "
+            "env = dict(os.environ, LISTEN_PID=str(os.getpid()), LISTEN_FDS='2'); "
+            "os.execvpe(sys.argv[3], sys.argv[3:], env)"
+        )
+        for wake_round in (1, 2):
+            sa_proc = subprocess.Popen(
+                [sys.executable, "-c", sa_tramp, str(sa_tcp.fileno()), str(sa_uds.fileno()), "node", str(nidoai_cli_js), "serve"],
+                pass_fds=(sa_tcp.fileno(), sa_uds.fileno()),
+                env=sa_env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            try:
+                h_data = None
+                for _ in range(40):
+                    try:
+                        with _ureq.urlopen(f"http://127.0.0.1:{sa_port}/healthz", timeout=1.0) as hr:
+                            h_data = json.loads(hr.read().decode("utf-8"))
+                            break
+                    except (OSError, _uerr.URLError):
+                        _t.sleep(0.05)
+                assert h_data and h_data.get("status") == "ok" and h_data.get("socketActivated") is True, (wake_round, h_data)
+                assert h_data.get("idleTimeoutMs") == 1000, h_data
+
+                # Authenticated request succeeds on very first try with persistent 0600 token (zero 401 on wake)
+                m_req = _ureq.Request(
+                    f"http://127.0.0.1:{sa_port}/v1/models",
+                    headers={"Authorization": f"Bearer {sa_token}"},
+                )
+                with _ureq.urlopen(m_req, timeout=2.0) as mr:
+                    assert mr.status == 200
+
+                # Inherited UDS listener also serves HTTP cleanly
+                with _sock.socket(_sock.AF_UNIX, _sock.SOCK_STREAM) as uc:
+                    uc.settimeout(2.0)
+                    uc.connect(str(sa_uds_path))
+                    uc.sendall(b"GET /healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+                    u_resp = uc.recv(4096).decode("utf-8", errors="replace")
+                    assert "200 OK" in u_resp and '"socketActivated":true' in u_resp, u_resp
+
+                # Wait for idle auto-sleep (must exit cleanly with code 0 within 5s)
+                sa_out, sa_err = sa_proc.communicate(timeout=5.0)
+                assert sa_proc.returncode == 0 and "gateway_idle_sleep" in sa_out, (wake_round, sa_proc.returncode, sa_out, sa_err)
+
+                # Systemd-owned UDS file MUST remain intact & sleeping runtime.json preserved for next wake
+                assert sa_uds_path.exists(), "Socket-activated idle sleep must NEVER unlink systemd UDS path!"
+                sa_rt = json.loads((sa_state / "runtime.json").read_text(encoding="utf-8"))
+                assert sa_rt.get("pid") == 0 and sa_rt.get("socketActivated") is True and sa_rt.get("state") == "sleeping", sa_rt
+                assert sa_rt.get("clientToken") == sa_token, "Sleeping runtime.json must preserve persistent clientToken"
+                if wake_round == 1:
+                    st_sleep = subprocess.run(["node", str(nidoai_cli_js), "status"], env=sa_env, capture_output=True, text=True, check=True)
+                    st_sleep_j = json.loads(st_sleep.stdout)
+                    assert st_sleep_j.get("activated") is True and st_sleep_j.get("state") == "sleeping" and st_sleep_j.get("processAlive") is False, st_sleep_j
+            finally:
+                if sa_proc.poll() is None:
+                    sa_proc.kill()
+                    sa_proc.wait(timeout=3)
+    finally:
+        sa_tcp.close()
+        sa_uds.close()
+        import shutil as _sh2
+        _sh2.rmtree(sa_uds_dir, ignore_errors=True)
 finally:
     import shutil as _sh
     _sh.rmtree(sandbox_empty_home, ignore_errors=True)
 print("Verified Vietnamese Fontconfig XML, Sen Viet Telex+VNI sync self-test, AI OFF & unsigned-in guards.")
 PY
+cleanup_smoke
+GW_PID=""
 pass "Live nidoai-gateway <-> nidoagent-cli, nido-hub, and nidooffice smoke tests passed"
 
 echo "=== 6. Layered Casper Updater, Live-Layer Reconciliation & CDROM Signature Tests ==="
@@ -2120,6 +2250,8 @@ assert "preinstalled_langs" not in out_26, "preinstalled_langs must be stripped"
 assert "variations" not in out_26, "variations must be stripped"
 assert "minimal.enhanced-secureboot.squashfs" not in out_26, "enhanced-secureboot variation must be stripped"
 assert "Ubuntu-Nido Desktop" in out_26, "Display name not updated (26.04)"
+assert "    vi: Ubuntu-Nido Desktop" in out_26, "Vietnamese display name missing in install-sources.yaml"
+assert "    vi: Hệ điều hành NidoOS tinh gọn" in out_26, "Vietnamese description missing in install-sources.yaml"
 assert "A minimal but usable Ubuntu Desktop." not in out_26, "Ubuntu description leaked in install-sources.yaml"
 assert "NidoOS AI-Native Minimal Desktop." in out_26, "NidoOS description missing in install-sources.yaml"
 
@@ -2296,12 +2428,10 @@ bash -c '
 ' _ "${ROOT_DIR}"
 
 LOCAL_TEST_EXT="$(mktemp -d)"
-trap 'rm -rf "$LOCAL_TEST_EXT"' EXIT
 bash "${ROOT_DIR}/iso-builder/scripts/local-arm64.sh" --help >/dev/null
 DRY_OUT="$(bash "${ROOT_DIR}/iso-builder/scripts/local-arm64.sh" --ext-dir "$LOCAL_TEST_EXT" --dry-run)"
 grep -q "FAST_ISO / Comp : 1 / zstd" <<< "$DRY_OUT"
 rm -rf "$LOCAL_TEST_EXT"
-trap - EXIT
 pass "FAST_ISO=1 config and local-arm64.sh dry-run verification passed"
 
 echo "=== 7. Public Repo Hygiene, Secret & Binary Leak Audit ==="

@@ -397,6 +397,7 @@ check_vi(\"/usr/share/fonts/truetype/noto/NotoMono-Regular.ttf\")"
     test -f /usr/share/desktop-provision/images/nidoos-logo-dark.svg
     test -f /usr/share/desktop-provision/images/nidoos-logo-light.svg
     test -f /usr/share/desktop-provision/slides/1/slide_vi_VN.html
+    test -f /usr/share/desktop-provision/slides/1/slide_vi.html
     test -f /usr/share/ubuntu-nido/skills/ubuntu-nido-email/SKILL.md
     test -f /usr/local/share/applications/thunderbird_thunderbird.desktop
     test -f /usr/local/share/applications/gnome-initial-setup.desktop
@@ -428,9 +429,13 @@ check_vi(\"/usr/share/fonts/truetype/noto/NotoMono-Regular.ttf\")"
     test -f /usr/share/plymouth/themes/spinner/bgrt-fallback.png
     test -x /usr/bin/nidoai
     test -x /usr/libexec/nidoai/gateway-daemon
+    test -f /usr/lib/systemd/user/nidoai-gateway.socket
+    test -L /etc/systemd/user/sockets.target.wants/nidoai-gateway.socket
+    test ! -e /etc/systemd/user/default.target.wants/nidoai-gateway.service
     test -f /etc/apparmor.d/nidoai-gateway
     test -f /etc/apparmor.d/nido-pkg-helper
     test -f /etc/sysctl.d/90-nidoos-hardening.conf
+    test -f /etc/sysctl.d/91-nidoos-memory.conf
     test -f /etc/ufw/applications.d/nidoos
     test -x /usr/libexec/ubuntu-nido/configure-firewall
     /usr/libexec/ubuntu-nido/configure-firewall --self-test >/dev/null

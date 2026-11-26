@@ -52,6 +52,30 @@ function isAiDisabledByPolicy(stateDir) {
     }
     return false;
 }
+function consumeSystemdListenFds() {
+    const rawFds = Number.parseInt(process.env.LISTEN_FDS ?? '', 10);
+    const rawPid = Number.parseInt(process.env.LISTEN_PID ?? '', 10);
+    delete process.env.LISTEN_FDS;
+    delete process.env.LISTEN_PID;
+    delete process.env.LISTEN_FDNAMES;
+    if (!Number.isFinite(rawFds) || rawFds <= 0 || rawPid !== process.pid) {
+        return [];
+    }
+    const count = Math.min(rawFds, 8);
+    const fds = [];
+    for (let i = 0; i < count; i++) {
+        fds.push(3 + i);
+    }
+    return fds;
+}
+function resolveIdleTimeoutMs(socketActivated) {
+    const raw = (process.env.NIDOAI_IDLE_TIMEOUT_MS ?? '').trim();
+    if (raw !== '') {
+        const parsed = Number.parseInt(raw, 10);
+        return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+    }
+    return socketActivated ? 600_000 : 0;
+}
 function removeStaleRuntimeDiscovery() {
     const runtimePath = getRuntimeDiscoveryPath();
     if (fs.existsSync(runtimePath)) {
@@ -80,6 +104,8 @@ async function main() {
     }
     if (cmd === 'serve') {
         const stateDir = resolveConfigCwd();
+        const listenFds = consumeSystemdListenFds();
+        const socketActivated = listenFds.length > 0;
         if (isAiDisabledByPolicy(stateDir)) {
             removeStaleRuntimeDiscovery();
             console.log(JSON.stringify({
@@ -92,36 +118,57 @@ async function main() {
             useSecretStore: process.env.NIDOAI_SECRET_STORE !== 'file',
         });
         const explicitEnvToken = (process.env.NIDOAI_CLIENT_TOKEN ?? '').trim();
-        const ephemeralClientToken = !explicitEnvToken && process.env.NIDOAI_EPHEMERAL_TOKEN !== '0';
+        // Socket-activated runs preserve the per-user 0600 configured token so apps waking the gateway
+        // from 0-MB idle sleep (NidoOffice, NidoAgent, NidoHub) never fail with 401 on the first request.
+        const ephemeralClientToken = !socketActivated && !explicitEnvToken && process.env.NIDOAI_EPHEMERAL_TOKEN !== '0';
         if (ephemeralClientToken) {
             config.clientToken = `nidoai_${crypto.randomBytes(24).toString('hex')}`;
             config.clientTokenConfigured = true;
         }
-        const handle = await startGatewayServer(config, {
-            writeRuntimeDiscovery: true,
-            stateDir,
-            configDir: config.configDir,
-            ephemeralClientToken,
-        });
+        const idleTimeoutMs = resolveIdleTimeoutMs(socketActivated);
+        let handle = null;
         let shuttingDown = false;
-        const shutdown = () => {
+        const shutdown = (reason = 'signal') => {
             if (shuttingDown)
                 return;
             shuttingDown = true;
+            const isIdleSleep = reason === 'idle_sleep';
+            if (isIdleSleep) {
+                console.log(JSON.stringify({
+                    event: 'gateway_idle_sleep',
+                    idleTimeoutMs,
+                    socketActivated,
+                }));
+            }
+            if (!handle) {
+                process.exit(0);
+                return;
+            }
             const forceExitTimer = setTimeout(() => process.exit(0), 4000);
             forceExitTimer.unref?.();
-            handle.close().finally(() => {
+            handle.close({ idleSleep: isIdleSleep }).finally(() => {
                 clearTimeout(forceExitTimer);
                 process.exit(0);
             });
         };
-        process.once('SIGINT', shutdown);
-        process.once('SIGTERM', shutdown);
+        handle = await startGatewayServer(config, {
+            writeRuntimeDiscovery: true,
+            stateDir,
+            configDir: config.configDir,
+            ephemeralClientToken,
+            listenFds,
+            idleTimeoutMs,
+            onIdleSleep: () => shutdown('idle_sleep'),
+        });
+        process.once('SIGINT', () => shutdown('signal'));
+        process.once('SIGTERM', () => shutdown('signal'));
         console.log(JSON.stringify({
             event: 'gateway_started',
             listen: `http://${handle.host}:${handle.port}`,
             controlPanel: `http://${handle.host}:${handle.port}/`,
             tokenBootstrappedOnFirstRun: bootstrapped,
+            socketActivated,
+            idleTimeoutMs,
             primaryBackend: config.primaryBackend,
             defaultModel: config.backends[config.primaryBackend].defaultModel,
         }));
@@ -180,8 +227,11 @@ async function main() {
                 alive = false;
             }
         }
+        const sleeping = Boolean(!alive && disc.socketActivated && disc.state === 'sleeping');
         console.log(JSON.stringify({
-            activated: alive && disc.clientToken.length >= 16,
+            activated: (alive || sleeping) && disc.clientToken.length >= 16,
+            state: alive ? 'running' : (sleeping ? 'sleeping' : 'stopped'),
+            socketActivated: Boolean(disc.socketActivated),
             runtimePath,
             baseUrl: disc.baseUrl,
             maskedToken: maskSecret(disc.clientToken),

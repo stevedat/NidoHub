@@ -125,22 +125,43 @@ def _strip_nested_keys(
     return out
 
 
-def _set_localized_en(block: list[str], section: str, new_value: str) -> list[str]:
+def _set_localized_section(
+    block: list[str], section: str, en_value: str, vi_value: str | None = None
+) -> list[str]:
     out: list[str] = []
     in_section = False
+    section_indent = "    "
+    saw_vi = False
+
+    def flush_vi_if_needed() -> None:
+        nonlocal saw_vi
+        if in_section and vi_value is not None and not saw_vi:
+            out.append(f"{section_indent}vi: {vi_value}")
+            saw_vi = True
+
     for idx, line in enumerate(block):
         stripped = line[2:] if idx == 0 and line.startswith("- ") else line.lstrip()
         is_top = idx == 0 or (
             line.startswith("  ") and not line.startswith("   ") and not line.startswith("  - ")
         )
         if is_top:
+            flush_vi_if_needed()
             in_section = stripped.startswith(f"{section}:")
+            saw_vi = False
             out.append(line)
         elif in_section and stripped.startswith("en:"):
-            indent = line[: len(line) - len(line.lstrip())]
-            out.append(f"{indent}en: {new_value}")
+            section_indent = line[: len(line) - len(line.lstrip())]
+            out.append(f"{section_indent}en: {en_value}")
+        elif in_section and stripped.startswith("vi:"):
+            section_indent = line[: len(line) - len(line.lstrip())]
+            if vi_value is not None:
+                out.append(f"{section_indent}vi: {vi_value}")
+                saw_vi = True
+            else:
+                out.append(line)
         else:
             out.append(line)
+    flush_vi_if_needed()
     return out
 
 
@@ -150,18 +171,23 @@ def update_install_sources(
     squashfs_size: int,
     display_name: str = "NidoOS Desktop",
     display_description: str = "NidoOS AI-Native Minimal Desktop.",
+    display_name_vi: str | None = None,
+    display_description_vi: str = "Hệ điều hành NidoOS tinh gọn, tích hợp AI và bộ gõ tiếng Việt Sen Việt.",
 ) -> str:
     """Update install-sources.yaml for a flattened remastered squashfs image."""
+    vi_name = display_name_vi or display_name
     header, entries, footer = split_yaml_document(yaml_text)
     if not entries:
         return (
             f"- default: true\n"
             f"  description:\n"
             f"    en: {display_description}\n"
+            f"    vi: {display_description_vi}\n"
             f"  id: ubuntu-nido-desktop\n"
             f"  locale_support: locale-only\n"
             f"  name:\n"
             f"    en: {display_name}\n"
+            f"    vi: {vi_name}\n"
             f"  path: {squashfs_filename}\n"
             f"  size: {squashfs_size}\n"
             f"  type: fsimage\n"
@@ -185,8 +211,8 @@ def update_install_sources(
             block = _set_top_field(block, "type", "fsimage")
             block = _set_top_field(block, "default", "true")
             block = _set_top_field(block, "locale_support", "locale-only")
-            block = _set_localized_en(block, "name", display_name)
-            block = _set_localized_en(block, "description", display_description)
+            block = _set_localized_section(block, "name", display_name, vi_name)
+            block = _set_localized_section(block, "description", display_description, display_description_vi)
             updated_primary = True
         kept.append(block)
 
