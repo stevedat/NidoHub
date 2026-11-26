@@ -132,6 +132,15 @@ if [ "${1:-}" = "configure" ]; then
     udevadm control --reload-rules >/dev/null 2>&1 || true
     udevadm trigger --subsystem-match=misc --sysname-match=uinput >/dev/null 2>&1 || true
   fi
+  if [ -d /run/systemd/system ] && command -v systemctl >/dev/null 2>&1; then
+    systemctl daemon-reload >/dev/null 2>&1 || true
+    systemctl try-restart earlyoom.service >/dev/null 2>&1 || true
+  fi
+  if [ ! -f /run/casper-md5check.json ] && [ ! -d /snap/ubuntu-desktop-bootstrap ] \
+    && [ -f /boot/grub/grub.cfg ] && ! grep -qs 'nowatchdog' /boot/grub/grub.cfg \
+    && command -v update-grub >/dev/null 2>&1; then
+    update-grub >/dev/null 2>&1 || true
+  fi
   if [ -x /usr/libexec/ubuntu-nido/configure-firewall ]; then
     /usr/libexec/ubuntu-nido/configure-firewall --ensure-rules >/dev/null 2>&1 || true
   fi

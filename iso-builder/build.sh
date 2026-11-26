@@ -5,7 +5,7 @@
 #
 # Usage:
 #   sudo ./build.sh                          # Dev build (zstd fast)
-#   sudo ./build.sh --release                # Release build (xz, smaller)
+#   sudo ./build.sh --release                # Release build (zstd level 15, fast install)
 #   sudo ./build.sh /path/to/ubuntu.iso      # Use existing local ISO
 #   sudo ./build.sh --clean                  # Clean build work/cache/ISO
 #   sudo ./build.sh --quick                  # Overlay + repack quickly
@@ -41,10 +41,10 @@ for arg in "$@"; do
   case "$arg" in
     --release)
       FAST_ISO=0
-      SQUASHFS_COMP="xz"
-      SQUASHFS_OPTS=(-b 1M -Xdict-size 100% -noappend)
+      SQUASHFS_COMP="zstd"
+      SQUASHFS_OPTS=(-b 1M -Xcompression-level 15 -noappend)
       export FAST_ISO SQUASHFS_COMP
-      info "Release mode: xz compression (smaller ISO)"
+      info "Release mode: zstd level 15 compression (compact ISO + 5-15x faster Live boot & install)"
       ;;
     --fast)
       FAST_ISO=1

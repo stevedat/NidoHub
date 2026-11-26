@@ -120,10 +120,17 @@ repack_layered_live_overlays() {
       ln -snf /usr/lib/systemd/system/nido-installer-fonts.service \
         /etc/systemd/system/graphical.target.wants/nido-installer-fonts.service
     fi
-    if [ -f /var/lib/snapd/desktop/applications/ubuntu-desktop-bootstrap_ubuntu-desktop-bootstrap.desktop ]; then
-      sed -i "s/^Name=Install RELEASE/Name=Cài đặt NidoOS/" \
-        /var/lib/snapd/desktop/applications/ubuntu-desktop-bootstrap_ubuntu-desktop-bootstrap.desktop || true
-    fi
+    for inst_desk in /var/lib/snapd/desktop/applications/ubuntu-desktop-bootstrap*.desktop; do
+      if [ -f "$inst_desk" ]; then
+        sed -i \
+          -e "/^Name\[vi\]=/d" \
+          -e "/^Comment\[vi\]=/d" \
+          -e "s/^Name=.*/Name=Cài đặt NidoOS\nName[vi]=Cài đặt NidoOS/" \
+          -e "s/^Comment=.*/Comment=Cài đặt NidoOS lên máy tính của bạn\nComment[vi]=Cài đặt NidoOS lên máy tính của bạn/" \
+          -e "s/^Icon=.*/Icon=nidoos-logo/" \
+          "$inst_desk" || true
+      fi
+    done
     if [ -d /usr/share/glib-2.0/schemas ]; then
       glib-compile-schemas /usr/share/glib-2.0/schemas/
     fi
@@ -261,6 +268,7 @@ step_repack_squashfs() {
       python3 "$SCRIPT_DIR/scripts/update_install_sources.py" \
         --yaml "$WORK_DIR/custom/casper/install-sources.yaml" \
         --squashfs "$out_sfs" \
+        --size-bytes "$root_bytes" \
         --name "NidoOS Desktop"
     fi
   else

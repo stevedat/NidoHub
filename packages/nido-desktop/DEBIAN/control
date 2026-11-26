@@ -3,7 +3,7 @@ Version: 0.2.1
 Section: metapackages
 Priority: optional
 Architecture: all
-Depends: nido-desktop-settings (>= 0.2.1), nido-hub (>= 0.2.1), nidoagent-cli (>= 0.2.1), nidoai-gateway (>= 0.2.1), nidooffice-cli (>= 0.2.1), nidooffice-desktop (>= 0.13.1-1), vielotus (>= 2.0.10), nido-ime-bridge (>= 0.2.0), nidobox (>= 1.5.1), wl-clipboard, xclip, geary, showtime | totem
+Depends: nido-desktop-settings (>= 0.2.1), nido-hub (>= 0.2.1), nidoagent-cli (>= 0.2.1), nidoai-gateway (>= 0.2.1), nidooffice-cli (>= 0.2.1), nidooffice-desktop (>= 0.13.1-1), vielotus (>= 2.0.11), nido-ime-bridge (>= 0.2.2), nidobox (>= 1.5.1), wl-clipboard, xclip, geary, showtime | totem
 Recommends: nautilus, gnome-terminal, zenity, libsecret-tools, fwupd, unattended-upgrades, flatpak, xdg-desktop-portal-gnome, apparmor-utils, ufw
 Maintainer: Nido Holdings <support@nido-holdings.com>
 Homepage: https://nido-holdings.com

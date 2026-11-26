@@ -181,8 +181,12 @@ for fname in expected:
                 "./etc/dconf/db/gdm.d/01-nidoos-logo",
                 "./etc/sysctl.d/90-nidoos-hardening.conf",
                 "./etc/sysctl.d/91-nidoos-memory.conf",
+                "./etc/default/grub.d/60-nidoos.cfg",
                 "./etc/modules-load.d/nido-uinput.conf",
+                "./etc/udev/rules.d/60-nido-io-scheduler.rules",
                 "./etc/udev/rules.d/70-nido-uinput.rules",
+                "./usr/lib/systemd/system/earlyoom.service.d/10-nidoos.conf",
+                "./usr/lib/systemd/zram-generator.conf.d/50-nidoos.conf",
                 "./etc/ufw/applications.d/nidoos",
                 "./usr/share/glib-2.0/schemas/90_nidoos-input-sources.gschema.override",
                 "./etc/fonts/conf.d/52-ubuntu-nido-vietnamese.conf",
@@ -267,7 +271,7 @@ for fname in expected:
                 ctrl_tar = ctrl_raw
             with tarfile.open(fileobj=io.BytesIO(ctrl_tar), mode="r:") as ctf:
                 ctrl_txt = ctf.extractfile("./control").read().decode("utf-8")
-                for dep in ("nido-desktop-settings", "nido-hub", "nidoagent-cli", "nidoai-gateway", "nidooffice-cli", "nidooffice-desktop", "vielotus (>= 2.0.10)", "nido-ime-bridge (>= 0.2.0)", "nidobox (>= 1.5.1)", "wl-clipboard", "xclip", "geary", "showtime | totem"):
+                for dep in ("nido-desktop-settings", "nido-hub", "nidoagent-cli", "nidoai-gateway", "nidooffice-cli", "nidooffice-desktop", "vielotus (>= 2.0.11)", "nido-ime-bridge (>= 0.2.2)", "nidobox (>= 1.5.1)", "wl-clipboard", "xclip", "geary", "showtime | totem"):
                     assert dep in ctrl_txt, f"{fname}: missing dependency {dep}"
             for req_st in (
                 "./usr/libexec/ubuntu-nido/showtime-launch",
@@ -315,7 +319,7 @@ for suite in ("resolute", "noble"):
             base = v.split("-", 1)[0].split("+", 1)[0]
             return tuple(int(x) for x in base.split(".") if x.isdigit())
 
-        for v_pkg, min_ver in (("nidobox", (1, 5, 0)), ("vielotus", (2, 0, 8)), ("nido-ime-bridge", (0, 2, 0))):
+        for v_pkg, min_ver in (("nidobox", (1, 5, 0)), ("vielotus", (2, 0, 11)), ("nido-ime-bridge", (0, 2, 2))):
             vendor_debs = sorted((repo.parent / "packages" / "vendor").glob(f"{v_pkg}_*_{arch}.deb"))
             if not vendor_debs:
                 continue
@@ -1890,8 +1894,46 @@ gdm_txt = (root / "packages/nido-desktop-settings/files/etc/dconf/db/gdm.d/01-ni
 assert "accent-color='teal'" in gdm_txt and "logo='/usr/share/pixmaps/nidoos-logo.png'" in gdm_txt
 
 wl_txt = (root / "packages/nido-desktop-settings/files/usr/share/desktop-provision/whitelabel.yaml").read_text(encoding="utf-8")
-for wl_tok in ('accent-color: "#0D9488"', 'nidoos-logo-dark.svg', 'nidoos-logo-light.svg', 'nidoos-storage-icon.svg'):
+for wl_tok in ('accent-color: "#0D9488"', 'nidoos-logo-dark.svg', 'nidoos-logo-light.svg', 'nidoos-storage-icon.svg', 'source-selection:'):
     assert wl_tok in wl_txt, f"Missing expected whitelabel token: {wl_tok}"
+
+# Verify installer icon branding & installation speed fixes across hooks, cleanup, and build.sh
+ply_hook = (root / "iso-builder/config/hooks/live/0900-nido-plymouth.hook.chroot").read_text(encoding="utf-8")
+assert "ubiquity.svg" in ply_hook and "apps/ubiquity.png" in ply_hook, "0900-nido-plymouth must replace Yaru ubiquity installer icons"
+nf_hook = (root / "iso-builder/config/hooks/live/0120-nido-native-first.hook.chroot").read_text(encoding="utf-8")
+assert "/usr/share/ubuntu-nido/51nidoos-unattended-upgrades.conf" in nf_hook, "0120 hook must stage security-only unattended-upgrades template"
+assert "rm -f /etc/apt/apt.conf.d/51nidoos-unattended-upgrades" in nf_hook, "0120 hook must keep active unattended-upgrades deferred during ISO install"
+assert "-updates" not in nf_hook.split("51nidoos-unattended-upgrades.conf", 1)[1].split("UNATT", 2)[1], "51nidoos-unattended-upgrades template must stay security-only (no -updates)"
+nf_cleanup = (root / "packages/nido-desktop/files/usr/libexec/ubuntu-nido/native-first-cleanup").read_text(encoding="utf-8")
+assert "51nidoos-unattended-upgrades.conf" in nf_cleanup and "/etc/apt/apt.conf.d/51nidoos-unattended-upgrades" in nf_cleanup, "native-first-cleanup must activate security-only unattended-upgrades on first boot"
+build_sh_txt = (root / "iso-builder/build.sh").read_text(encoding="utf-8")
+assert 'SQUASHFS_COMP="xz"' not in build_sh_txt and "-Xcompression-level 15" in build_sh_txt, "Release ISO must use fast-decompress zstd instead of slow xz"
+repack_sh_txt = (root / "iso-builder/scripts/repack.sh").read_text(encoding="utf-8")
+assert "Icon=nidoos-logo" in repack_sh_txt and '--size-bytes "$root_bytes"' in repack_sh_txt, "repack.sh must brand installer icon and pass uncompressed root_bytes to install-sources.yaml"
+
+# Functional test: nido-welcome Live shortcut branding replaces Icon=ubiquity -> Icon=nidoos-logo
+with tempfile.TemporaryDirectory(prefix="nido-welcome-test-") as wtd:
+    wroot = Path(wtd)
+    (wroot / "Desktop").mkdir()
+    desk_file = wroot / "Desktop" / "ubuntu-desktop-bootstrap_ubuntu-desktop-bootstrap.desktop"
+    snap_file = wroot / "snap-installer.desktop"
+    sample_desk = "[Desktop Entry]\nType=Application\nName=Install RELEASE\nComment=Install this system permanently to your hard disk\nExec=ubuntu-desktop-bootstrap\nIcon=ubiquity\n"
+    desk_file.write_text(sample_desk, encoding="utf-8")
+    snap_file.write_text(sample_desk, encoding="utf-8")
+    w_env = dict(
+        os.environ,
+        HOME=str(wroot),
+        XDG_CONFIG_HOME=str(wroot / ".config"),
+        XDG_DATA_HOME=str(wroot / ".local/share"),
+        DISPLAY=":99",
+        NIDO_TEST_LIVE_SESSION="1",
+        NIDO_SNAP_INSTALLER_DESKTOP=str(snap_file),
+    )
+    subprocess.run(["bash", str(root / "packages/nido-desktop-settings/files/usr/local/bin/nido-welcome")], env=w_env, check=True)
+    for out_d in (desk_file, wroot / ".local/share/applications/ubuntu-desktop-bootstrap_ubuntu-desktop-bootstrap.desktop"):
+        txt_d = out_d.read_text(encoding="utf-8")
+        assert "Icon=nidoos-logo\n" in txt_d and "Icon=ubiquity" not in txt_d, f"{out_d} still has Ubuntu icon:\n{txt_d}"
+        assert "Name=Cài đặt NidoOS\n" in txt_d and "Name[vi]=Cài đặt NidoOS\n" in txt_d, f"{out_d} missing NidoOS name:\n{txt_d}"
 
 ime_script = root / "packages/nido-desktop-settings/files/usr/libexec/ubuntu-nido/ensure-vietnamese-ime"
 subprocess.run([sys.executable, str(ime_script), "--self-test"], check=True)
@@ -1927,6 +1969,38 @@ for forbidden_preedit in (
 ):
     assert forbidden_preedit not in ime_c_src, f"Zero-underline bridge must never call {forbidden_preedit}"
 assert "libVieLotusCAPI.so.0" in ime_c_src and "dlopen(" in ime_c_src, "nido-ibus-vielotus must dlopen libVieLotusCAPI.so.0"
+for req_ime_guard in (
+    "eng_class->set_surrounding_text = engine_set_surrounding_text;",
+    "sur_guard_on_update",
+    "sur_guard_before_key",
+    "core_arm_post_commit",
+    "Post-commit BS rehydrate tone",
+    "core_try_adopt_surrounding_modifier",
+    "vl_presentation_rules_resolve",
+    "vl_dev_code_on_backtick",
+    "vl_ui_is_english",
+    "vl_is_numpad_digit_keysym",
+):
+    assert req_ime_guard in ime_c_src, f"nido-ibus-vielotus.c missing regression guard: {req_ime_guard}"
+nido_vl_settings = root / "packages/nido-ime-bridge/files/usr/bin/nido-vielotus-settings"
+assert nido_vl_settings.is_file(), "Missing NidoOS-customized nido-vielotus-settings UI"
+subprocess.run(["bash", "-n", str(nido_vl_settings)], check=True)
+nido_vl_txt = nido_vl_settings.read_text(encoding="utf-8")
+for req_ui_tok in (
+    "v2.0.11",
+    "nido-vielotus",
+    "nido-vielotus-vni",
+    "NIDO_BS_BACKEND",
+    "NIDO_BS_DELAY_US",
+    "Be Vietnam Pro",
+    "#2DD4BF",
+    "NIDO_BRIDGE_ACTIVE",
+):
+    assert req_ui_tok in nido_vl_txt, f"nido-vielotus-settings missing NidoOS customization token: {req_ui_tok}"
+nido_vl_postinst = (root / "packages/nido-ime-bridge/DEBIAN/postinst").read_text(encoding="utf-8")
+nido_vl_postrm = (root / "packages/nido-ime-bridge/DEBIAN/postrm").read_text(encoding="utf-8")
+assert "dpkg-divert --package nido-ime-bridge --add" in nido_vl_postinst, "postinst must dpkg-divert vielotus-settings"
+assert "dpkg-divert --package nido-ime-bridge --remove" in nido_vl_postrm, "postrm must clean up vielotus-settings diversion"
 subprocess.run(["bash", str(root / "scripts/build_ime_bridge.sh"), "--dry-run"], check=True)
 subprocess.run(["bash", str(root / "scripts/build_installer_vi.sh"), "--dry-run"], check=True)
 
@@ -1961,10 +2035,31 @@ for req_sock_opt in ("ListenStream=127.0.0.1:18090", "ListenStream=%t/nidoai-gat
 gw_postinst_txt = (root / "packages/nidoai-gateway/DEBIAN/postinst").read_text(encoding="utf-8")
 assert "sockets.target.wants/nidoai-gateway.socket" in gw_postinst_txt and "rm -f /etc/systemd/user/default.target.wants/nidoai-gateway.service" in gw_postinst_txt, "nidoai-gateway postinst must enable socket activation and clean eager service wants"
 mem_sysctl_txt = (root / "packages/nido-desktop-settings/files/etc/sysctl.d/91-nidoos-memory.conf").read_text(encoding="utf-8")
-for req_mem_opt in ("vm.swappiness = 100", "vm.page-cluster = 0", "vm.watermark_boost_factor = 0", "vm.watermark_scale_factor = 125"):
+for req_mem_opt in (
+    "vm.swappiness = 100",
+    "vm.page-cluster = 0",
+    "vm.watermark_boost_factor = 0",
+    "vm.watermark_scale_factor = 125",
+    "vm.dirty_ratio = 10",
+    "vm.dirty_background_ratio = 5",
+    "vm.vfs_cache_pressure = 50",
+):
     assert req_mem_opt in mem_sysctl_txt, f"91-nidoos-memory.conf missing {req_mem_opt}"
+assert "vm.min_free_kbytes" not in mem_sysctl_txt, "91-nidoos-memory.conf must not hardcode vm.min_free_kbytes"
+eoom_dropin = (root / "packages/nido-desktop-settings/files/usr/lib/systemd/system/earlyoom.service.d/10-nidoos.conf").read_text(encoding="utf-8")
+for req_eoom in ("ExecStart=\n", "/usr/bin/earlyoom", "-m 5 -s 5", "--avoid", "gnome-shell", "--prefer", "ollama"):
+    assert req_eoom in eoom_dropin, f"earlyoom drop-in missing {req_eoom}"
+zram_dropin = (root / "packages/nido-desktop-settings/files/usr/lib/systemd/zram-generator.conf.d/50-nidoos.conf").read_text(encoding="utf-8")
+for req_zram in ("zram-size = min(ram / 2, 8192)", "compression-algorithm = zstd", "swap-priority = 100"):
+    assert req_zram in zram_dropin, f"zram drop-in missing {req_zram}"
+io_udev = (root / "packages/nido-desktop-settings/files/etc/udev/rules.d/60-nido-io-scheduler.rules").read_text(encoding="utf-8")
+for req_io in ('ENV{DEVTYPE}=="disk"', 'ATTR{queue/scheduler}="none"', 'ATTR{queue/scheduler}="mq-deadline"', 'ATTR{queue/scheduler}="bfq"'):
+    assert req_io in io_udev, f"60-nido-io-scheduler.rules missing {req_io}"
+grub_cfg = (root / "packages/nido-desktop-settings/files/etc/default/grub.d/60-nidoos.cfg").read_text(encoding="utf-8")
+assert "nowatchdog" in grub_cfg and "nosmt" not in grub_cfg and "mitigations=off" not in grub_cfg, f"Unexpected grub.d config: {grub_cfg}"
+subprocess.run(["sh", "-n", str(root / "packages/nido-desktop-settings/files/etc/default/grub.d/60-nidoos.cfg")], check=True)
 prune_hook_txt = (root / "iso-builder/config/hooks/live/0110-nido-minimal-prune.hook.chroot").read_text(encoding="utf-8")
-assert "fstrim.timer" in prune_hook_txt, "0110-nido-minimal-prune hook must enable fstrim.timer"
+assert "fstrim.timer" in prune_hook_txt and "min(ram / 2, 8192)" in prune_hook_txt, "0110-nido-minimal-prune hook must enable fstrim.timer & zram 8192 cap"
 gw_aa_txt = (root / "packages/nidoai-gateway/files/etc/apparmor.d/nidoai-gateway").read_text(encoding="utf-8")
 for req_aa in ("/usr/libexec/nidoai/nidoai-sea mrix,", "/usr/bin/secret-tool ix,", "/usr/bin/mkdir ix,", "/usr/bin/chmod ix,", "/usr/lib/cargo/bin/coreutils/chmod ix,", "/usr/bin/which* rix,", "@{PROC}/version* r,", "unix,", "dbus (send, receive) bus=session,", "network inet dgram,"):
     assert req_aa in gw_aa_txt, f"nidoai-gateway AppArmor profile missing {req_aa}"
@@ -1984,6 +2079,7 @@ assert "disabled-extensions=['ding@rastersoft.com']" in cleanup_txt, "native-fir
 assert "timedatectl set-ntp true" in cleanup_txt, "native-first-cleanup must enable NTP clock sync on first boot"
 assert "fstrim.timer" in cleanup_txt, "native-first-cleanup must enable fstrim.timer on installed systems"
 assert "/usr/libexec/ubuntu-nido/" in cleanup_txt and "compileall" in cleanup_txt, "native-first-cleanup must precompile /usr/libexec/ubuntu-nido/ bytecache"
+assert "fc-cache -s" in cleanup_txt, "native-first-cleanup must refresh system font cache incrementally"
 
 # Verify nidooffice-desktop VM software-GPU --disable-gpu detection (bare metal & GPU passthrough untouched)
 office_launcher = root / "packages/nidooffice-desktop/files/usr/bin/nidooffice-desktop"

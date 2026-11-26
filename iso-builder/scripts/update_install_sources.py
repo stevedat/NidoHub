@@ -233,6 +233,12 @@ def main() -> None:
     parser.add_argument("--yaml", required=True, type=Path, help="Path to install-sources.yaml")
     parser.add_argument("--squashfs", required=True, type=Path, help="Path to remastered squashfs")
     parser.add_argument("--name", default="Ubuntu-Nido Desktop", help="English selection name")
+    parser.add_argument(
+        "--size-bytes",
+        type=int,
+        default=None,
+        help="Optional uncompressed rootfs size in bytes (preferred by Subiquity for disk checks & progress)",
+    )
     args = parser.parse_args()
 
     yaml_path = args.yaml.resolve()
@@ -240,7 +246,7 @@ def main() -> None:
     if not squashfs_path.is_file():
         raise FileNotFoundError(f"SquashFS file not found: {squashfs_path}")
 
-    size_bytes = squashfs_path.stat().st_size
+    size_bytes = args.size_bytes if (args.size_bytes is not None and args.size_bytes > 0) else squashfs_path.stat().st_size
     original = yaml_path.read_text(encoding="utf-8") if yaml_path.is_file() else ""
     updated = update_install_sources(
         original,

@@ -175,6 +175,7 @@ if [ -f "$NIDO_SVG" ]; then
     /usr/share/icons/Yaru-prussiangreen-dark/scalable/apps; do
     if [ -d "$yaru_dir" ]; then
       cp -f "$NIDO_SVG" "${yaru_dir}/distributor-logo.svg" 2>/dev/null || true
+      divert_and_replace_file "$NIDO_SVG" "${yaru_dir}/ubiquity.svg"
     fi
   done
 fi
@@ -193,15 +194,16 @@ fi
 
 if [ -f "$NIDO_PNG_256" ] && [ -d /usr/share/icons/Yaru ]; then
   for sz in 16x16 16x16@2x 22x22 24x24 24x24@2x 32x32 32x32@2x 48x48 48x48@2x 256x256 256x256@2x; do
-    dst="/usr/share/icons/Yaru/${sz}/places/distributor-logo.png"
-    if [ -e "$dst" ] || [ -L "$dst" ]; then
-      px="${sz%%x*}"
-      case "$sz" in
-        *@2x) px=$((px * 2)) ;;
-      esac
-      scaled_tmp="${THEME_DIR}/dist-${px}.png"
-      if [ ! -f "$scaled_tmp" ]; then
-        python3 - "$NIDO_PNG_256" "$scaled_tmp" "$px" <<'PY' || cp -f "$NIDO_PNG_256" "$scaled_tmp"
+    for rel_icon in places/distributor-logo.png apps/ubiquity.png apps/ubiquity-kde.png; do
+      dst="/usr/share/icons/Yaru/${sz}/${rel_icon}"
+      if [ -e "$dst" ] || [ -L "$dst" ]; then
+        px="${sz%%x*}"
+        case "$sz" in
+          *@2x) px=$((px * 2)) ;;
+        esac
+        scaled_tmp="${THEME_DIR}/dist-${px}.png"
+        if [ ! -f "$scaled_tmp" ]; then
+          python3 - "$NIDO_PNG_256" "$scaled_tmp" "$px" <<'PY' || cp -f "$NIDO_PNG_256" "$scaled_tmp"
 import sys
 from PIL import Image
 src, dst, px = sys.argv[1], sys.argv[2], int(sys.argv[3])
@@ -209,9 +211,10 @@ im = Image.open(src).convert("RGBA")
 im = im.resize((px, px), Image.Resampling.LANCZOS)
 im.save(dst, format="PNG")
 PY
+        fi
+        divert_and_replace_file "$scaled_tmp" "$dst"
       fi
-      divert_and_replace_file "$scaled_tmp" "$dst"
-    fi
+    done
   done
 fi
 

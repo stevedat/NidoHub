@@ -1,6 +1,14 @@
 #!/bin/sh
 set -e
 
+if [ "${1:-configure}" = "configure" ] && [ -x /usr/bin/nido-vielotus-settings ]; then
+  if ! dpkg-divert --list /usr/bin/vielotus-settings 2>/dev/null | grep -q 'by nido-ime-bridge'; then
+    dpkg-divert --package nido-ime-bridge --add --rename \
+      --divert /usr/bin/vielotus-settings.upstream /usr/bin/vielotus-settings >/dev/null 2>&1 || true
+  fi
+  ln -sf /usr/bin/nido-vielotus-settings /usr/bin/vielotus-settings
+fi
+
 if command -v ibus >/dev/null 2>&1; then
   ibus write-cache --system >/dev/null 2>&1 || true
 fi

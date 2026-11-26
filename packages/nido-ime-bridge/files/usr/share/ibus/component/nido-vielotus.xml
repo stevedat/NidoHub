@@ -6,7 +6,7 @@
 <component>
     <name>org.nidoos.IBus.VieLotus</name>
     <description>NidoOS Sen Việt Zero-Underline Input Method</description>
-    <version>0.2.0</version>
+    <version>0.2.2</version>
     <author>Nido Holdings</author>
     <homepage>https://nido-holdings.com</homepage>
     <license>MIT</license>

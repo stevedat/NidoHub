@@ -16,7 +16,7 @@ DEB_VERSION_SUFFIX="${DEB_VERSION_SUFFIX:-}"
 DRY_RUN=0
 NATIVE_HOST=0
 BASE_IMAGE="${NIDO_IME_BUILD_IMAGE:-ubuntu:24.04}"
-PKG_VERSION="0.2.0"
+PKG_VERSION="0.2.2"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -89,6 +89,7 @@ assemble_deb() {
   mkdir -p "${work_tmp}/files/usr/lib/ibus"
   cp "$bin_path" "${work_tmp}/files/usr/lib/ibus/nido-ibus-vielotus"
   chmod 755 "${work_tmp}/files/usr/lib/ibus/nido-ibus-vielotus" \
+    "${work_tmp}/files/usr/bin/nido-vielotus-settings" \
     "${work_tmp}/DEBIAN/postinst" "${work_tmp}/DEBIAN/postrm"
 
   python3 - "${work_tmp}/DEBIAN/control" "$arch" <<'PY'
@@ -110,6 +111,7 @@ PY
   fi
 
   local out_deb="${OUT_DIR}/nido-ime-bridge_${PKG_VERSION}${DEB_VERSION_SUFFIX}_${arch}.deb"
+  rm -f "${OUT_DIR}"/nido-ime-bridge_*_"${arch}".deb
   python3 "${REPO_ROOT}/scripts/build_deb_portable.py" \
     --source-dir "$work_tmp" \
     --compression xz \

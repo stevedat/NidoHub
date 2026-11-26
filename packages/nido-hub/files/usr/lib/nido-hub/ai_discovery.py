@@ -977,12 +977,24 @@ def _ensure_ollama_user_service(
     ollama_bin: str,
     ram_gb: float | None = None,
     reload_systemd: bool = True,
+    gpu_name: str | None = None,
+    gpu_vram_gb: float | None = None,
 ) -> Path:
     unit_dir = home_dir / ".config" / "systemd" / "user"
     unit_dir.mkdir(parents=True, exist_ok=True)
     unit_file = unit_dir / "ollama.service"
     eff_ram_gb = _read_ram_gb() if ram_gb is None else ram_gb
     mem_high_mib, mem_max_mib = compute_ollama_memory_limits(eff_ram_gb)
+    if gpu_name is None and gpu_vram_gb is None:
+        eff_gpu_name, eff_gpu_vram_gb = _detect_gpu()
+    else:
+        eff_gpu_name = (gpu_name or "").strip()
+        eff_gpu_vram_gb = float(gpu_vram_gb or 0.0)
+    extra_env = ""
+    # On VMs with virtual/software GPUs only, force CPU inference so Ollama skips
+    # broken virtual Vulkan/OpenCL probing; bare-metal & GPU-passthrough stay auto.
+    if eff_gpu_name and "(VM)" in eff_gpu_name and eff_gpu_vram_gb <= 0.0:
+        extra_env = "Environment=OLLAMA_NUM_GPU=0\n"
     unit_file.write_text(
         "[Unit]\n"
         "Description=Ollama Local LLM Runtime (Ubuntu-Nido User Service)\n"
@@ -992,6 +1004,10 @@ def _ensure_ollama_user_service(
         "Environment=OLLAMA_HOST=127.0.0.1:11434\n"
         "Environment=OLLAMA_KEEP_ALIVE=3m\n"
         "Environment=OLLAMA_MAX_LOADED_MODELS=1\n"
+        "Environment=OLLAMA_NUM_PARALLEL=1\n"
+        "Environment=OLLAMA_FLASH_ATTENTION=1\n"
+        f"{extra_env}"
+        "NoNewPrivileges=yes\n"
         f"MemoryHigh={mem_high_mib}M\n"
         f"MemoryMax={mem_max_mib}M\n"
         "OOMScoreAdjust=500\n"

@@ -417,6 +417,10 @@ check_vi(\"/usr/share/fonts/truetype/noto/NotoMono-Regular.ttf\")"
     test -L /etc/systemd/user/gnome-initial-setup-first-login.service
     test -L /etc/systemd/user/update-notifier-release.path
     test -f /etc/systemd/zram-generator.conf
+    test -f /usr/lib/systemd/zram-generator.conf.d/50-nidoos.conf
+    test -f /usr/lib/systemd/system/earlyoom.service.d/10-nidoos.conf
+    test -f /etc/udev/rules.d/60-nido-io-scheduler.rules
+    test -f /etc/default/grub.d/60-nidoos.cfg
     dpkg -s earlyoom >/dev/null 2>&1
     dpkg -s systemd-zram-generator >/dev/null 2>&1
     grep -q "^Prompt=never$" /etc/update-manager/release-upgrades
@@ -487,9 +491,10 @@ check_vi(\"/usr/share/fonts/truetype/noto/NotoMono-Regular.ttf\")"
     dpkg -s flatpak >/dev/null 2>&1
     dpkg -s firefox >/dev/null 2>&1
     dpkg -s vielotus >/dev/null 2>&1
-    dpkg --compare-versions "$(dpkg-query -W -f="\${Version}" vielotus)" ge "2.0.8"
+    dpkg --compare-versions "$(dpkg-query -W -f="\${Version}" vielotus)" ge "2.0.11"
     dpkg -s nido-ime-bridge >/dev/null 2>&1
     test -x /usr/lib/ibus/nido-ibus-vielotus
+    test -x /usr/bin/nido-vielotus-settings
     /usr/lib/ibus/nido-ibus-vielotus --self-test >/dev/null
     dpkg -s nidobox >/dev/null 2>&1
     dpkg --compare-versions "$(dpkg-query -W -f="\${Version}" nidobox)" ge "1.5.0"
@@ -504,7 +509,9 @@ check_vi(\"/usr/share/fonts/truetype/noto/NotoMono-Regular.ttf\")"
     test -f /usr/share/plymouth/themes/nidoos/nidoos.plymouth
     test -f /usr/share/pixmaps/nidoos-logo.png
     test -f /etc/dconf/db/gdm
-    test -f /etc/apt/apt.conf.d/51nidoos-unattended-upgrades
+    test -f /usr/share/ubuntu-nido/51nidoos-unattended-upgrades.conf
+    ! grep -q -- "-updates" /usr/share/ubuntu-nido/51nidoos-unattended-upgrades.conf
+    test ! -e /etc/apt/apt.conf.d/51nidoos-unattended-upgrades
     grep -q "^NAME=\"NidoOS\"\$" /etc/os-release
     grep -q "^LOGO=nidoos-logo\$" /etc/os-release
     apt-get clean

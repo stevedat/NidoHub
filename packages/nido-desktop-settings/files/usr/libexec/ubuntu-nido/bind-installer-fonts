@@ -11,6 +11,7 @@ FONT_ROOT="${NIDO_FONT_ROOT:-/usr/share/fonts}"
 SNAP_ROOT="${NIDO_SNAP_ROOT:-/snap/ubuntu-desktop-bootstrap}"
 SNAP_DESKTOP_DIR="${NIDO_SNAP_DESKTOP_DIR:-/var/lib/snapd/desktop/applications}"
 BUNDLE_DIR="${NIDO_INSTALLER_BUNDLE_DIR:-/usr/libexec/nido-installer/bundle}"
+PATCHED_DESKTOP_TMP="${NIDO_PATCHED_DESKTOP_TMP:-/run/nidoos-installer.desktop}"
 DRY_RUN=0
 
 find_first_font() {
@@ -94,7 +95,86 @@ wait_for_snap_fonts() {
   return 0
 }
 
+rewrite_installer_desktop_file() {
+  local target_file="$1"
+  [[ -f "$target_file" ]] || return 0
+  local tmp_file
+  tmp_file="$(mktemp "${target_file}.tmp.XXXXXX")" || return 0
+  local line wrote_name=0 wrote_comment=0 wrote_icon=0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    case "$line" in
+      Name\[vi\]=*|Comment\[vi\]=*)
+        continue
+        ;;
+      Name=*)
+        if [[ "$wrote_name" -eq 0 ]]; then
+          printf 'Name=Cài đặt NidoOS\nName[vi]=Cài đặt NidoOS\n'
+          wrote_name=1
+        fi
+        ;;
+      Comment=*)
+        if [[ "$wrote_comment" -eq 0 ]]; then
+          printf 'Comment=Cài đặt NidoOS lên máy tính của bạn\nComment[vi]=Cài đặt NidoOS lên máy tính của bạn\n'
+          wrote_comment=1
+        fi
+        ;;
+      Icon=*)
+        if [[ "$wrote_icon" -eq 0 ]]; then
+          printf 'Icon=nidoos-logo\n'
+          wrote_icon=1
+        fi
+        ;;
+      *)
+        printf '%s\n' "$line"
+        ;;
+    esac
+  done < "$target_file" > "$tmp_file"
+  [[ "$wrote_name" -eq 0 ]] && printf 'Name=Cài đặt NidoOS\nName[vi]=Cài đặt NidoOS\n' >> "$tmp_file"
+  [[ "$wrote_icon" -eq 0 ]] && printf 'Icon=nidoos-logo\n' >> "$tmp_file"
+  cat "$tmp_file" > "$target_file" 2>/dev/null || true
+  rm -f "$tmp_file"
+}
+
+brand_live_installer_launchers() {
+  local desktop_file
+  if [[ -d "$SNAP_DESKTOP_DIR" ]]; then
+    shopt -s nullglob
+    for desktop_file in "${SNAP_DESKTOP_DIR}"/ubuntu-desktop-bootstrap*.desktop; do
+      [[ -f "$desktop_file" ]] || continue
+      if [[ "$DRY_RUN" -eq 1 ]]; then
+        printf 'BRAND_DESKTOP:%s\n' "$desktop_file"
+      else
+        rewrite_installer_desktop_file "$desktop_file"
+      fi
+    done
+    shopt -u nullglob
+  fi
+
+  local rev_dir snap_desktop
+  if [[ -d "$SNAP_ROOT" ]]; then
+    shopt -s nullglob
+    for rev_dir in "${SNAP_ROOT}"/*; do
+      [[ -L "$rev_dir" ]] && continue
+      [[ -d "$rev_dir" ]] || continue
+      snap_desktop="${rev_dir}/usr/share/applications/ubuntu-desktop-bootstrap.desktop"
+      [[ -f "$snap_desktop" ]] || continue
+      if [[ "$DRY_RUN" -eq 1 ]]; then
+        printf 'BIND_DESKTOP:%s -> %s\n' "$PATCHED_DESKTOP_TMP" "$snap_desktop"
+      else
+        cp -f "$snap_desktop" "$PATCHED_DESKTOP_TMP"
+        rewrite_installer_desktop_file "$PATCHED_DESKTOP_TMP"
+        chmod 0644 "$PATCHED_DESKTOP_TMP" 2>/dev/null || true
+        if ! (command -v mountpoint >/dev/null 2>&1 && mountpoint -q "$snap_desktop" 2>/dev/null); then
+          mount --bind "$PATCHED_DESKTOP_TMP" "$snap_desktop" 2>/dev/null || true
+        fi
+      fi
+    done
+    shopt -u nullglob
+  fi
+}
+
 clean_live_snap_launchers() {
+  brand_live_installer_launchers
   [[ "$DRY_RUN" -eq 1 ]] && return 0
   [[ -d "$SNAP_DESKTOP_DIR" ]] || return 0
   rm -f \
@@ -110,11 +190,22 @@ run_self_test() {
   trap 'rm -rf "$td"' RETURN
   mkdir -p "${td}/fonts/truetype/noto" "${td}/fonts/truetype/dejavu" \
     "${td}/snap/590/bin/lib" "${td}/snap/590/bin/data/flutter_assets/packages/yaru/assets/fonts" \
+    "${td}/snap/590/usr/share/applications" "${td}/snap-desktop" \
     "${td}/bundle/lib" "${td}/bundle/data/flutter_assets/packages/yaru/assets/fonts"
   printf '#!/bin/sh\n' > "${td}/snap/590/bin/ubuntu_bootstrap"
   printf '#!/bin/sh\n' > "${td}/bundle/ubuntu_bootstrap"
   chmod 755 "${td}/snap/590/bin/ubuntu_bootstrap" "${td}/bundle/ubuntu_bootstrap"
   printf 'AOT' > "${td}/bundle/lib/libapp.so"
+  cat > "${td}/snap/590/usr/share/applications/ubuntu-desktop-bootstrap.desktop" <<'DESK'
+[Desktop Entry]
+Type=Application
+Name=Install RELEASE
+Comment=Install this system permanently to your hard disk
+Exec=ubuntu-desktop-bootstrap
+Icon=ubiquity
+DESK
+  cp "${td}/snap/590/usr/share/applications/ubuntu-desktop-bootstrap.desktop" \
+    "${td}/snap-desktop/ubuntu-desktop-bootstrap_ubuntu-desktop-bootstrap.desktop"
   local f
   # Mirror real Ubuntu fonts-noto-core + fonts-noto-mono filenames (NotoMono-Regular.ttf)
   # plus DejaVuSansMono.ttf to prove UbuntuMono-Regular.ttf never falls back to DejaVuSansMono.
@@ -127,14 +218,22 @@ run_self_test() {
   done
   FONT_ROOT="${td}/fonts"
   SNAP_ROOT="${td}/snap"
+  SNAP_DESKTOP_DIR="${td}/snap-desktop"
   BUNDLE_DIR="${td}/bundle"
+  PATCHED_DESKTOP_TMP="${td}/patched.desktop"
   DRY_RUN=1
   local count=0
   local bundle_count=0
+  local brand_desktop_count=0
+  local bind_desktop_count=0
   local mono_bound=""
   while IFS= read -r line; do
     if [[ "$line" == BIND_BUNDLE:* ]]; then
       bundle_count=$((bundle_count + 1))
+    elif [[ "$line" == BRAND_DESKTOP:* ]]; then
+      brand_desktop_count=$((brand_desktop_count + 1))
+    elif [[ "$line" == BIND_DESKTOP:* ]]; then
+      bind_desktop_count=$((bind_desktop_count + 1))
     elif [[ "$line" == BIND:* ]]; then
       count=$((count + 1))
       if [[ "$line" == *"UbuntuMono-Regular.ttf" ]]; then
@@ -150,11 +249,23 @@ run_self_test() {
     echo "ERROR: Expected 9 installer font bindings, got ${count}" >&2
     return 1
   fi
+  if [[ "$brand_desktop_count" -ne 1 || "$bind_desktop_count" -ne 1 ]]; then
+    echo "ERROR: Expected installer desktop branding (brand=${brand_desktop_count}, bind=${bind_desktop_count})" >&2
+    return 1
+  fi
   if [[ "$mono_bound" != *"NotoMono-Regular.ttf -> "* ]]; then
     echo "ERROR: UbuntuMono-Regular.ttf did not bind to NotoMono-Regular.ttf: ${mono_bound}" >&2
     return 1
   fi
-  echo "bind-installer-fonts self-test passed (3/3 VI bundle mounts + 9/9 Flutter Yaru font targets mapped; mono -> NotoMono-Regular.ttf)."
+  rewrite_installer_desktop_file "${td}/snap-desktop/ubuntu-desktop-bootstrap_ubuntu-desktop-bootstrap.desktop"
+  grep -q '^Name=Cài đặt NidoOS$' "${td}/snap-desktop/ubuntu-desktop-bootstrap_ubuntu-desktop-bootstrap.desktop"
+  grep -q '^Name\[vi\]=Cài đặt NidoOS$' "${td}/snap-desktop/ubuntu-desktop-bootstrap_ubuntu-desktop-bootstrap.desktop"
+  grep -q '^Icon=nidoos-logo$' "${td}/snap-desktop/ubuntu-desktop-bootstrap_ubuntu-desktop-bootstrap.desktop"
+  if grep -q '^Icon=ubiquity$' "${td}/snap-desktop/ubuntu-desktop-bootstrap_ubuntu-desktop-bootstrap.desktop"; then
+    echo "ERROR: Icon=ubiquity was not replaced!" >&2
+    return 1
+  fi
+  echo "bind-installer-fonts self-test passed (3/3 VI bundle mounts + 9/9 Flutter Yaru font targets + NidoOS installer icon/name; mono -> NotoMono-Regular.ttf)."
   return 0
 }
 

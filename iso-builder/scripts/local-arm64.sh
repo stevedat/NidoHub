@@ -33,7 +33,7 @@ Options:
   --img-size SIZE      ext4 workspace image size (default: 18G or $EXT4_IMG_SIZE)
   --iso PATH           Path to pre-downloaded ubuntu-*-desktop-arm64.iso
   --fast               Enable FAST_ISO=1 (zstd level 1; default)
-  --release            Use release xz compression instead of FAST_ISO=1
+  --release            Use release zstd level 15 compression instead of FAST_ISO=1
   --comp COMP          Override SQUASHFS_COMP (zstd or lz4)
   --engine MODE        Runtime engine: auto, host, docker, podman (default: auto)
   --rebuild-image      Rebuild the local ARM64 builder container image

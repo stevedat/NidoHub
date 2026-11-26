@@ -538,10 +538,30 @@ def run_self_test(app_mod: Any) -> int:
             assert 1024 <= hi_mib < mx_mib, (ram_gb, hi_mib, mx_mib)
             assert total_mib - mx_mib >= exp_min_reserve, (ram_gb, hi_mib, mx_mib)
             assert hi_mib % 128 == 0 and mx_mib % 128 == 0, (hi_mib, mx_mib)
-        ol_unit = _ensure_ollama_user_service(backend.home_dir / "ol-home", "/usr/local/bin/ollama", ram_gb=8.0, reload_systemd=False)
+        ol_unit = _ensure_ollama_user_service(
+            backend.home_dir / "ol-home",
+            "/usr/local/bin/ollama",
+            ram_gb=8.0,
+            reload_systemd=False,
+            gpu_name="NVIDIA GeForce RTX 4060",
+            gpu_vram_gb=8.0,
+        )
         ol_txt = ol_unit.read_text(encoding="utf-8")
         assert "OLLAMA_KEEP_ALIVE=3m" in ol_txt and "OLLAMA_MAX_LOADED_MODELS=1" in ol_txt, ol_txt
+        assert "OLLAMA_NUM_PARALLEL=1" in ol_txt and "OLLAMA_FLASH_ATTENTION=1" in ol_txt, ol_txt
+        assert "NoNewPrivileges=yes" in ol_txt and "LimitMEMLOCK=" not in ol_txt, ol_txt
+        assert "OLLAMA_NUM_GPU=0" not in ol_txt, ol_txt
         assert "MemoryHigh=4096M" in ol_txt and "MemoryMax=5248M" in ol_txt and "OOMScoreAdjust=500" in ol_txt, ol_txt
+        ol_vm_unit = _ensure_ollama_user_service(
+            backend.home_dir / "ol-vm-home",
+            "/usr/local/bin/ollama",
+            ram_gb=8.0,
+            reload_systemd=False,
+            gpu_name="VMware SVGA II Adapter (VM)",
+            gpu_vram_gb=0.0,
+        )
+        ol_vm_txt = ol_vm_unit.read_text(encoding="utf-8")
+        assert "OLLAMA_NUM_GPU=0" in ol_vm_txt and "OLLAMA_FLASH_ATTENTION=1" in ol_vm_txt, ol_vm_txt
 
         # Verify NIDOAI_LOCAL_MODEL persists cleanly
         backend.save_ai_settings(

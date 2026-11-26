@@ -435,11 +435,13 @@ def collect_checks(include_apt_update: bool = False, check_online: bool = False)
         )
     )
 
-    # 2. RAM / ZRAM / EarlyOOM / Memory Tuning
+    # 2. RAM / ZRAM / EarlyOOM / Memory & I/O Tuning
     _, zout, _ = _run(["zramctl", "--noheadings"])
     _, eoom, _ = _run(["systemctl", "is-active", "earlyoom"])
     zram_ok = bool(zout)
     mem_cfg = Path("/etc/sysctl.d/91-nidoos-memory.conf").is_file()
+    eoom_pol = Path("/usr/lib/systemd/system/earlyoom.service.d/10-nidoos.conf").is_file()
+    io_rule = Path("/etc/udev/rules.d/60-nido-io-scheduler.rules").is_file()
     pc_path = Path("/proc/sys/vm/page-cluster")
     pc_val = pc_path.read_text(encoding="utf-8", errors="replace").strip() if pc_path.is_file() else ""
     mem_tune = "on" if (mem_cfg and pc_val == "0") else ("cfg" if mem_cfg else "off")
@@ -447,7 +449,8 @@ def collect_checks(include_apt_update: bool = False, check_online: bool = False)
         CheckResult(
             "ZRAM & EarlyOOM",
             "PASS" if (zram_ok and eoom == "active") else "WARN",
-            f"zram={'on' if zram_ok else 'off'}, earlyoom={eoom or 'unknown'}, mem-tune={mem_tune}",
+            f"zram={'on' if zram_ok else 'off'}, earlyoom={eoom or 'unknown'}"
+            f"{'(policy)' if eoom_pol else ''}, mem-tune={mem_tune}, io-sched={'on' if io_rule else 'off'}",
         )
     )
 

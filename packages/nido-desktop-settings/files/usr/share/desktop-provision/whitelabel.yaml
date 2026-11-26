@@ -23,6 +23,10 @@ pages:
     visible: false
     image: "nidoos-mascot-light.svg"
     image-dark: "nidoos-mascot-dark.svg"
+  source-selection:
+    visible: false
+    image: "nidoos-mascot-light.svg"
+    image-dark: "nidoos-mascot-dark.svg"
   ubuntu-pro:
     visible: false
     image: "nidoos-mascot-light.svg"

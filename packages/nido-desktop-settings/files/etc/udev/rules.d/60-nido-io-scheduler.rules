@@ -1,0 +1,7 @@
+# NidoOS Desktop I/O Scheduler Policy
+# NVMe & VirtIO block devices: bypass guest scheduler (hardware/host multi-queue handles scheduling)
+ACTION=="add|change", SUBSYSTEM=="block", ENV{DEVTYPE}=="disk", KERNEL=="nvme[0-9]*|vd[a-z]*", ATTR{queue/rotational}=="0", ATTR{queue/scheduler}="none"
+# SATA / SCSI / eMMC / SD flash storage: mq-deadline for low-latency desktop responsiveness
+ACTION=="add|change", SUBSYSTEM=="block", ENV{DEVTYPE}=="disk", KERNEL=="sd[a-z]*|mmcblk[0-9]*", ATTR{queue/rotational}=="0", ATTR{queue/scheduler}="mq-deadline"
+# Spinning HDDs: bfq for fair interactive desktop bandwidth under background I/O
+ACTION=="add|change", SUBSYSTEM=="block", ENV{DEVTYPE}=="disk", KERNEL=="sd[a-z]*", ATTR{queue/rotational}=="1", ATTR{queue/scheduler}="bfq"

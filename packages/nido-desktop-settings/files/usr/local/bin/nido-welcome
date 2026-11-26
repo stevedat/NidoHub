@@ -28,14 +28,44 @@ is_live_session() {
   return 1
 }
 
-rewrite_installer_desktop_name() {
+rewrite_installer_desktop_entry() {
   local target_file="$1"
-  sed -i \
-    -e '/^Name\[vi\]=/d' \
-    -e 's/^Name=Install .*/Name=Cài đặt NidoOS/' \
-    -e 's/^Name=Cài đặt Ubuntu-Nido$/Name=Cài đặt NidoOS/' \
-    -e 's/^Name=Cài đặt NidoOS$/Name=Cài đặt NidoOS\nName[vi]=Cài đặt NidoOS/' \
-    "$target_file" 2>/dev/null || true
+  [[ -f "$target_file" ]] || return 0
+  local tmp_file
+  tmp_file="$(mktemp "${target_file}.tmp.XXXXXX")" || return 0
+  local line wrote_name=0 wrote_comment=0 wrote_icon=0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    case "$line" in
+      Name\[vi\]=*|Comment\[vi\]=*)
+        continue
+        ;;
+      Name=*)
+        if [[ "$wrote_name" -eq 0 ]]; then
+          printf 'Name=Cài đặt NidoOS\nName[vi]=Cài đặt NidoOS\n'
+          wrote_name=1
+        fi
+        ;;
+      Comment=*)
+        if [[ "$wrote_comment" -eq 0 ]]; then
+          printf 'Comment=Cài đặt NidoOS lên máy tính của bạn\nComment[vi]=Cài đặt NidoOS lên máy tính của bạn\n'
+          wrote_comment=1
+        fi
+        ;;
+      Icon=*)
+        if [[ "$wrote_icon" -eq 0 ]]; then
+          printf 'Icon=nidoos-logo\n'
+          wrote_icon=1
+        fi
+        ;;
+      *)
+        printf '%s\n' "$line"
+        ;;
+    esac
+  done < "$target_file" > "$tmp_file"
+  [[ "$wrote_name" -eq 0 ]] && printf 'Name=Cài đặt NidoOS\nName[vi]=Cài đặt NidoOS\n' >> "$tmp_file"
+  [[ "$wrote_icon" -eq 0 ]] && printf 'Icon=nidoos-logo\n' >> "$tmp_file"
+  cat "$tmp_file" > "$target_file" 2>/dev/null || true
+  rm -f "$tmp_file"
 }
 
 fix_live_installer_shortcuts() {
@@ -55,7 +85,7 @@ fix_live_installer_shortcuts() {
     [[ -d "$d" ]] || continue
     for f in "$d"/ubuntu-desktop-bootstrap*.desktop; do
       [[ -f "$f" ]] || continue
-      rewrite_installer_desktop_name "$f"
+      rewrite_installer_desktop_entry "$f"
       chmod 0755 "$f" 2>/dev/null || true
       if command -v gio >/dev/null 2>&1; then
         gio set "$f" metadata::trusted true >/dev/null 2>&1 || true
@@ -64,13 +94,13 @@ fix_live_installer_shortcuts() {
     done
   done
 
-  local snap_desktop="/var/lib/snapd/desktop/applications/ubuntu-desktop-bootstrap_ubuntu-desktop-bootstrap.desktop"
+  local snap_desktop="${NIDO_SNAP_INSTALLER_DESKTOP:-/var/lib/snapd/desktop/applications/ubuntu-desktop-bootstrap_ubuntu-desktop-bootstrap.desktop}"
   if [[ -f "$snap_desktop" ]]; then
     local local_apps="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
     local local_desktop="${local_apps}/ubuntu-desktop-bootstrap_ubuntu-desktop-bootstrap.desktop"
     mkdir -p "$local_apps"
     cp "$snap_desktop" "$local_desktop"
-    rewrite_installer_desktop_name "$local_desktop"
+    rewrite_installer_desktop_entry "$local_desktop"
   fi
 }
 

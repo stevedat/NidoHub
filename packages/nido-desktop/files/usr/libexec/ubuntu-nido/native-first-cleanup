@@ -13,6 +13,17 @@ fi
 # Defense-in-depth: ensure ISO cdrom.sources never lingers on an installed system
 rm -f /etc/apt/sources.list.d/cdrom.sources 2>/dev/null || true
 
+# Activate security-only Ubuntu unattended-upgrades on installed systems (deferred from
+# ISO rootfs so Subiquity never stalls downloading -updates during OS installation).
+UNATT_TPL="/usr/share/ubuntu-nido/51nidoos-unattended-upgrades.conf"
+UNATT_DST="/etc/apt/apt.conf.d/51nidoos-unattended-upgrades"
+if [ -f "$UNATT_TPL" ]; then
+  if [ ! -f "$UNATT_DST" ] || grep -qs -- '-updates' "$UNATT_DST" 2>/dev/null; then
+    cp -f "$UNATT_TPL" "$UNATT_DST"
+    chmod 0644 "$UNATT_DST"
+  fi
+fi
+
 STAMP_DIR="/var/lib/ubuntu-nido"
 STAMP_FILE="${STAMP_DIR}/native-first-cleaned"
 if [ -f "$STAMP_FILE" ] && [ "${1:-}" != "--force" ]; then
@@ -107,6 +118,11 @@ fi
 
 if command -v update-desktop-database >/dev/null 2>&1; then
   update-desktop-database -q /usr/share/applications || true
+fi
+
+# Refresh system font cache incrementally if installer added language/font packs
+if command -v fc-cache >/dev/null 2>&1; then
+  fc-cache -s >/dev/null 2>&1 || true
 fi
 
 mkdir -p "$STAMP_DIR"
